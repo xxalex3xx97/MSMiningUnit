@@ -617,6 +617,55 @@ local function shipFill()
   if not known then B[#B + 1] = { id = S.last.belt, text = S.last.belt } end
   selSet("Belt", B, S.last.belt)
 end
+-- ===== generic dynamic list: a DynamicEntryBox of a Python-built row WBP. Python widgets are not Is Variable, so boxes and entry children are found by walking
+-- from a variable anchor / the entry root (deepFind). spec: key, anchor (variable widget above the box), box (name), n (row count), bind(e, find, idx) once per new entry,
+-- paint(e, find, i) for every row on every call. Entries live in S.dyn[key].ents[i] = { w = entry, find = fn(name) }.
+local function deepFind(node, name, depth)
+  depth = depth or 0
+  if depth > 12 or not ok(node) then return nil end
+  if nm(node) == name then return node end
+  local okc, cnt = pcall(function() return node:GetChildrenCount() end)
+  if okc and type(cnt) == "number" then
+    for i = 0, cnt - 1 do
+      local okk, c = pcall(function() return node:GetChildAt(i) end)
+      if okk then local r = deepFind(c, name, depth + 1); if r then return r end end
+    end
+  end
+  local okq, c = pcall(function() return node:GetContent() end)
+  if okq and ok(c) then return deepFind(c, name, depth + 1) end
+  return nil
+end
+local function dynList(sp)
+  local anchor = w(sp.anchor); if not anchor then return nil end
+  S.dyn = S.dyn or {}
+  local st = S.dyn[sp.key]
+  if not (st and ok(st.box)) then
+    local box = deepFind(anchor, sp.box)
+    if not ok(box) then L("dynList " .. sp.key .. ": box " .. sp.box .. " not found"); return nil end
+    st = { box = box, ents = {} }; S.dyn[sp.key] = st
+    try("dyn reset", function() box:Reset(true) end)
+  end
+  local function idxOf(e) for i, r in ipairs(st.ents) do if r.w == e then return i end end end
+  while #st.ents < sp.n do
+    local s2, e = pcall(function() return st.box:BP_CreateEntry() end)
+    if not (s2 and ok(e)) then L("dynList " .. sp.key .. " CreateEntry failed: " .. tostring(e)); break end
+    local cache = {}
+    local function find(name)
+      if cache[name] == nil then
+        local s3, root = pcall(function() return e.WidgetTree.RootWidget end)
+        cache[name] = (s3 and deepFind(root, name)) or false
+      end
+      return cache[name] or nil
+    end
+    st.ents[#st.ents + 1] = { w = e, find = find }
+    if sp.bind then sp.bind(e, find, function() return idxOf(e) end) end
+  end
+  while #st.ents > sp.n do
+    local r = table.remove(st.ents); try("RemoveEntry", function() st.box:RemoveEntry(r.w) end)
+  end
+  if sp.paint then for i, r in ipairs(st.ents) do sp.paint(r.w, r.find, i) end end
+  return st
+end
 local udSave   -- defined below
 -- Dynamic dock list: one WBP_DockRow entry (Btn_Sel + Txt_Sel + Btn_Del) per id, created by the Dyn_<name> DynamicEntryBox. list = ids table (S.rd), save = persist fn.
 local function dynDocks(name, getList, save, title, docks, cardName)   -- getList() = current ids table (S.rd is replaced on reload: never hold it)
@@ -801,24 +850,35 @@ function setImgIcon(img, itemId)
   if it and it.icon then try("item icon", function() img:SetBrushFromTexture(it.icon, false) end); setVis(img, 0)
   else setVis(img, 2) end
 end
-local function setIcon(r) local row = S.q.rows[r]; setImgIcon(w("Img_ItemIcon_" .. r), row and row.id) end
 local function qRender()
   holdReads()
   local rows = S.q.rows
-  for r = 1, QN do
-    local p = w("Pnl_ItemRow_" .. r)
-    if r <= #rows then
-      setVis(p, 0)
-      selSet("Item" .. r, qOpts(r), rows[r].id)
-      setIcon(r)
-      local e = w("Edt_ItemAmount_" .. r)
-      if e then try("amount set", function() e:SetText(FText(rows[r].amt)) end) end
-      S.q.shown[r] = rows[r].amt
-    else
-      setVis(p, 1)
-    end
-  end
-  setVis(w("Btn_ItemAdd"), #rows < QN and 0 or 1)
+  dynList{ key = "Items", anchor = "Row_Scroll_Page_Items", box = "Dyn_Items", n = #rows,
+    bind = function(_, find, idx)
+      local function row() local i = idx(); return i and S.q.rows[i], i end
+      local bs, bu, bd, bx = find("Btn_Sel"), find("Btn_Up"), find("Btn_Down"), find("Btn_Del")
+      if BIND and BIND.onClick then
+        if bs then BIND.onClick(bs, function()
+          local rw, i = row(); if not rw then return end
+          modalSelect{ title = "Resource", options = qOpts(i), id = rw.id, onPick = function(id) rw.id = id; qSave(); qRender() end }
+        end) end
+        if bu then BIND.onClick(bu, function() local _, i = row(); local rs = S.q.rows
+          if i and i > 1 then rs[i - 1], rs[i] = rs[i], rs[i - 1]; qSave(); qRender() end end) end
+        if bd then BIND.onClick(bd, function() local _, i = row(); local rs = S.q.rows
+          if i and i < #rs then rs[i], rs[i + 1] = rs[i + 1], rs[i]; qSave(); qRender() end end) end
+        if bx then BIND.onClick(bx, function() local _, i = row(); if i then table.remove(S.q.rows, i); qSave(); qRender() end end) end
+      end
+    end,
+    paint = function(_, find, i)
+      local rw = rows[i]
+      local cur = rw.id
+      for _, o in ipairs(qOpts(i)) do if o.id == rw.id then cur = o.text end end
+      local t = find("Txt_Sel"); if t then try("item text", function() t:SetText(FText(cur or "")) end) end
+      setImgIcon(find("Img_Icon"), rw.id)
+      local e = find("Edt_Amount")
+      if e and S.q.shown[i] ~= rw.amt then try("amount set", function() e:SetText(FText(rw.amt)) end) end
+      S.q.shown[i] = rw.amt
+    end }
 end
 local function itemsLoad()
   if not S.sid or not S.q then return end
@@ -842,7 +902,8 @@ local function itemsTick()
   if not S.sid or not S.q or M.lastTab ~= 2 then return end
   local rows = S.q.rows
   for r = 1, #rows do
-    local e = w("Edt_ItemAmount_" .. r)
+    local rec = S.dyn and S.dyn.Items and S.dyn.Items.ents[r]
+    local e = rec and rec.find("Edt_Amount")
     local s, v = false, nil
     if e and reading() then s, v = pcall(function() return e:GetText() end) end
     if s then
@@ -1179,10 +1240,9 @@ local function logPaint()
   local key = "S" .. table.concat(rows, "\n")
   if key == S.logKey then return end
   S.logKey = key
-  for k = 1, LOGN do
-    setVis(w("Txt_Log_" .. k), k <= #rows and 0 or 1)
-    if k <= #rows then M.setText("Txt_Log_" .. k, rows[k]) end
-  end
+  dynList{ key = "Log", anchor = "Row_LogScroll", box = "Dyn_Log", n = #rows, paint = function(_, find, i)
+    local t = find("Txt"); if t then try("log text", function() t:SetText(FText(rows[i])) end) end
+  end }
   M.setText("Txt_LogHint", "No log yet")
   setVis(w("Txt_LogHint"), #rows == 0 and 0 or 1)
 end
@@ -1667,27 +1727,9 @@ function M.open(ship)
       end)
       bind("Btn_BeltWarp", function() sendCmd("warp_belt") end)  -- single ship (S.sid), not sendSeq: All-ships must not fan out
       M.setBtnText("Btn_BeltWarp", "Warp to sector")
-      for r = 1, QN do
-        selInit("Item" .. r, bind, function(id)
-          local row = S.q.rows[r]; if not row then return end
-          row.id = id; setIcon(r); qSave()
-        end, "Resource")
-        bind("Btn_ItemUp_" .. r, function()
-          local rows = S.q.rows
-          if r > 1 and r <= #rows then rows[r - 1], rows[r] = rows[r], rows[r - 1]; qSave(); qRender() end
-        end)
-        bind("Btn_ItemDown_" .. r, function()
-          local rows = S.q.rows
-          if r < #rows then rows[r], rows[r + 1] = rows[r + 1], rows[r]; qSave(); qRender() end
-        end)
-        bind("Btn_ItemDel_" .. r, function()
-          local rows = S.q.rows
-          if r <= #rows then table.remove(rows, r); qSave(); qRender() end
-        end)
-      end
       bind("Btn_ItemAdd", function()
         local rows = S.q.rows
-        if #rows < QN then rows[#rows + 1] = { id = "", amt = "" }; qSave(); qRender() end
+        rows[#rows + 1] = { id = "", amt = "" }; qSave(); qRender()
       end)
       bind("Btn_ApplyGlobal", opDefault)
     else

@@ -82,3 +82,57 @@ def slot(w, pad=None, fill=None, h=None, v=None):
 def save(wbp):
     U.BlueprintEditorLibrary.compile_blueprint(wbp)
     U.EditorAssetLibrary.save_loaded_asset(wbp)
+
+
+def text(wbp, name, parent, size=14, color=None, wrap=False, var=False, slot_kw=None):
+    t = add(wbp, U.TextBlock, name, parent, var)
+    t.set_editor_property('text', U.Text(''))
+    f = t.get_editor_property('font'); f.set_editor_property('size', size); t.set_editor_property('font', f)
+    if color is not None:
+        t.set_editor_property('color_and_opacity', slate_color(color))
+    if wrap:
+        t.set_editor_property('auto_wrap_text', True)
+    if slot_kw:
+        slot(t, **slot_kw)
+    return t
+
+
+def icon_button(wbp, name, parent, icon, size_px, tint, box=None):
+    """transparent icon button (NoDrawType) with an Image child; box=(w,h) wraps it in a SizeBox"""
+    if box:
+        sz = add(wbp, U.SizeBox, 'Sz_' + name, parent)
+        sz.set_editor_property('width_override', float(box[0])); sz.set_editor_property('height_override', float(box[1]))
+        parent = 'Sz_' + name
+    b = add(wbp, U.Button, name, parent)
+    nb = U.SlateBrush(); nb.set_editor_property('draw_as', U.SlateBrushDrawType.NO_DRAW_TYPE)
+    b.set_editor_property('widget_style', button_style(nb, nb, nb))
+    im = add(wbp, U.Image, 'Img_' + name, name)
+    im.set_editor_property('brush', image_brush('/Game/MiningUnitUI/%s.%s' % (icon, icon), tint, size_px))
+    slot(im, h='Center', v='Center')
+    return b
+
+
+def remove(wbp, name):
+    w = ELib.find_source_widget_by_name(wbp, name)
+    if w and w.get_parent():
+        w.get_parent().remove_child(w)
+        return True
+    return False
+
+
+def dyn_box(wbp, name, parent, entry_wbp, spacing=6.0):
+    d = ELib.find_source_widget_by_name(wbp, name) or add(wbp, U.DynamicEntryBox, name, parent)
+    d.set_editor_property('entry_widget_class', U.load_class(None, '%s/%s.%s_C' % (ASSETS, entry_wbp, entry_wbp)))
+    d.set_editor_property('entry_box_type', U.DynamicBoxType.VERTICAL)
+    d.set_editor_property('entry_spacing', U.Vector2D(0.0, spacing))
+    d.set_editor_property('entry_horizontal_alignment', U.HorizontalAlignment.H_ALIGN_FILL)
+    return d
+
+
+def move_last(panel_name, wbp, child_name):
+    """move an existing child to the end of its panel (VerticalBox / ScrollBox)"""
+    p = ELib.find_source_widget_by_name(wbp, panel_name)
+    c = ELib.find_source_widget_by_name(wbp, child_name)
+    p.remove_child(c)
+    (p.add_child if isinstance(p, U.ScrollBox) else p.add_child_to_vertical_box)(c)
+    return c
