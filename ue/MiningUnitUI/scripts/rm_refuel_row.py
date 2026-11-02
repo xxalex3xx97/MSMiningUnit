@@ -7,7 +7,6 @@ lab = ELib.find_source_widget_by_name(wbp, 'Txt_ShipRefuelDockLabel')
 if lab:
     row = lab.get_parent()
     print('ROW', row.get_name(), row.get_class().get_name(), 'in', row.get_parent().get_name())
-    row.get_parent().remove_child(row)
-    print('REMOVED; still found:', bool(ELib.find_source_widget_by_name(wbp, 'Txt_ShipRefuelDockLabel')))
+    print('REMOVED', remove(wbp, row.get_name()), 'parent now', row.get_parent())
 save(wbp)
 print('SAVED')

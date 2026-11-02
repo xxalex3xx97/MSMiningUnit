@@ -1242,8 +1242,9 @@ local function logPaint()
   if key == S.logKey then return end
   S.logKey = key
   L("logPaint rows=" .. #rows .. " sid=" .. tostring(S.sid))
-  dynList{ key = "Log", anchor = "Row_LogScroll", box = "Dyn_Log", n = #rows, paint = function(_, find, i)
-    local t = find("Txt"); if t then try("log text", function() t:SetText(FText(rows[i])) end) end
+  dynList{ key = "Log", anchor = "Row_LogScroll", box = "Dyn_Log", n = #rows, paint = function(e, _, i)
+    local s2, t = pcall(function() return e.WidgetTree.RootWidget end)   -- the row's root widget is the TextBlock itself
+    if s2 and ok(t) then try("log text", function() t:SetText(FText(rows[i])) end) end
   end }
   M.setText("Txt_LogHint", "No log yet")
   setVis(w("Txt_LogHint"), #rows == 0 and 0 or 1)

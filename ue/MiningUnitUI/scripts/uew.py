@@ -113,11 +113,19 @@ def icon_button(wbp, name, parent, icon, size_px, tint, box=None):
 
 
 def remove(wbp, name):
+    """detach a widget from its parent panel; verified (ScrollBox ignores remove_child, so fall back to remove_child_at)"""
     w = ELib.find_source_widget_by_name(wbp, name)
-    if w and w.get_parent():
-        w.get_parent().remove_child(w)
-        return True
-    return False
+    par = w.get_parent() if w else None
+    if not par:
+        return False
+    par.remove_child(w)
+    if w.get_parent():
+        par.remove_child_at(par.get_child_index(w))
+    if w.get_parent():
+        w.set_editor_property('visibility', U.SlateVisibility.COLLAPSED)
+        print('REMOVE-FALLBACK collapsed', name)
+        return False
+    return True
 
 
 def dyn_box(wbp, name, parent, entry_wbp, spacing=6.0):
