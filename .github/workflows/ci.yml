@@ -1,0 +1,29 @@
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  ci:
+    name: ci
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Build luac (Lua 5.4.7)
+        shell: pwsh
+        run: |
+          $d = Join-Path $env:RUNNER_TEMP 'luac'
+          New-Item -ItemType Directory -Force $d | Out-Null
+          Set-Location $env:RUNNER_TEMP
+          curl.exe -fsSL --retry 3 -o lua.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz
+          tar -xzf lua.tar.gz
+          $srcs = Get-ChildItem lua-5.4.7\src\*.c | Where-Object { $_.Name -ne 'lua.c' } | ForEach-Object FullName
+          cl /nologo /O2 /MD /W0 /I lua-5.4.7\src $srcs "/Fe:$d\luac.exe" "/Fo:$d\"
+          if ($LASTEXITCODE -ne 0) { throw 'luac build failed' }
+          Add-Content $env:GITHUB_PATH $d
+      - name: Tests
+        shell: pwsh
+        run: |
+          luac -v
+          ./tests/run.ps1
