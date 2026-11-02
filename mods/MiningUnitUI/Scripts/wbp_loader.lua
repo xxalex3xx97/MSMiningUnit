@@ -1559,18 +1559,6 @@ function M.open(ship)
       .. " desired=" .. (function() local s, d = pcall(function() return wbp:GetDesiredSize() end) return s and v2(d) or "?" end)()
       .. " slot=" .. (function() local s, d = pcall(function() return wbp.Slot end) return s and nm(d, true) or "?" end)())
 
-    local fn, pr, miss = 0, 0, {}
-    for _, n in ipairs(NAMES) do
-      local s, x = pcall(function() return S.w:GetWidgetFromName(FName(n)) end)
-      if s and ok(x) then fn = fn + 1
-      else
-        local s2, y = pcall(function() return S.w[n] end)
-        if s2 and ok(y) then pr = pr + 1 else miss[#miss + 1] = n end
-      end
-    end
-    L("names resolved " .. fn .. " by GetWidgetFromName + " .. pr .. " by property = " .. (fn + pr) .. "/" .. #NAMES)
-    if #miss > 0 then L("names MISSING: " .. table.concat(miss, ", ")); dumpTree() end
-
     S.sel, S.modal = nil, nil
     selField("Remote").empty = "No ship"
     selSet("Remote", list, sid)
