@@ -144,3 +144,17 @@ def move_last(panel_name, wbp, child_name):
     p.remove_child(c)
     (p.add_child if isinstance(p, U.ScrollBox) else p.add_child_to_vertical_box)(c)
     return c
+
+
+def dyn_list(wbp, name, parent, row_wbp, add_btn=None, spacing=6.0, **slot_kw):
+    """The one way to make a list: DynamicEntryBox `name` (vertical, full width) of `row_wbp` under panel `parent`;
+    add_btn = optional size-box name of an Add button that must sit after the list."""
+    d = dyn_box(wbp, name, parent, row_wbp, spacing)
+    slot(d, h='Fill', **slot_kw)
+    if add_btn:
+        p = ELib.find_source_widget_by_name(wbp, parent)
+        a = ELib.find_source_widget_by_name(wbp, add_btn)
+        if p.get_child_index(a) < p.get_child_index(d):
+            move_last(parent, wbp, add_btn)
+            slot(a, pad=(0, 4, 0, 0), h='Fill')
+    return d

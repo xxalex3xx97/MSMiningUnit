@@ -667,70 +667,24 @@ local function dynList(sp)
   if sp.paint then for i, r in ipairs(st.ents) do sp.paint(r.w, r.find, i) end end
   return st
 end
-local udSave   -- defined below
--- Dynamic dock list: one WBP_DockRow entry (Btn_Sel + Txt_Sel + Btn_Del) per id, created by the Dyn_<name> DynamicEntryBox. list = ids table (S.rd), save = persist fn.
-local function dynDocks(name, getList, save, title, docks, cardName)   -- getList() = current ids table (S.rd is replaced on reload: never hold it)
-  local list = getList()
-  -- Python-built widgets are not Is Variable (w() cannot find them): walk Pnl_<name>Card > body Border > inner VerticalBox and pick the child named Dyn_<name>
-  local box = w("Dyn_" .. name)
-  if not box then
-    local ok2, found = pcall(function()
-      local inner = w(cardName or ("Pnl_" .. name .. "Card")):GetContent():GetContent()
-      for i = 0, inner:GetChildrenCount() - 1 do
-        local c = inner:GetChildAt(i)
-        if nm(c) == "Dyn_" .. name then return c end
-      end
-    end)
-    if ok2 and ok(found) then box = found
-    elseif not S.dynDiag then   -- one-time diagnostics: where the walk broke
-      S.dynDiag = true
-      L("dynDocks walk failed: ok=" .. tostring(ok2) .. " res=" .. tostring(found))
-      pcall(function()
-        local c1 = w("Pnl_" .. name .. "Card"):GetContent(); L("dyn c1=" .. nm(c1) .. " [" .. nm(c1, true) .. "]")
-        local c2 = c1:GetContent(); L("dyn c2=" .. nm(c2) .. " [" .. nm(c2, true) .. "]")
-        local n = c2:GetChildrenCount(); L("dyn children=" .. tostring(n))
-        for i = math.max(0, n - 4), n - 1 do local c = c2:GetChildAt(i); L("dyn child " .. i .. " " .. nm(c) .. " [" .. nm(c, true) .. "]") end
-      end)
-    end
-  end
-  L("dynDocks " .. name .. " box=" .. tostring(box ~= nil) .. " n=" .. #list)
-  if not box then return end
-  S.dyn = S.dyn or {}
-  local st = S.dyn[name]
-  local bid = box:GetFullName()   -- new Lua object per lookup: compare by name (changes with each window instance)
-  if not st or st.bid ~= bid then st = { box = box, bid = bid, ents = {} }; S.dyn[name] = st; try("dyn reset", function() box:Reset(true) end) end
-  -- WBP_DockRow children are Python-built (not Is Variable): Row_Root[0] = Btn_Sel > Txt_Sel, Row_Root[1] = SizeBox > Btn_Del
-  local function child(e, n)
-    local s2, x = pcall(function()
-      local root = e.WidgetTree.RootWidget
-      if n == "Btn_Sel" then return root:GetChildAt(0) end
-      if n == "Txt_Sel" then return root:GetChildAt(0):GetContent() end
-      if n == "Btn_Del" then return root:GetChildAt(1):GetContent() end
-    end)
-    if s2 and ok(x) then return x end
-  end
-  local function idx(e) for i, x in ipairs(st.ents) do if x == e then return i end end end
-  while #st.ents < #list do
-    local s2, e = pcall(function() return box:BP_CreateEntry() end)
-    if not (s2 and ok(e)) then L("dynDocks " .. name .. " CreateEntry failed: " .. tostring(e)); break end
-    st.ents[#st.ents + 1] = e
-    if BIND and BIND.onClick then
-      local bs, bd = child(e, "Btn_Sel"), child(e, "Btn_Del")
+local udSave, dynDocks   -- defined below
+-- Dock list = dynList of WBP_DockRow (Btn_Sel + Txt_Sel + Btn_Del). getList() = current ids table (S.rd / S.ud[x] are replaced on reload: never hold one).
+function dynDocks(name, getList, save, title, docks, cardName)
+  dynList{ key = name, anchor = cardName or ("Pnl_" .. name .. "Card"), box = "Dyn_" .. name, n = #getList(),
+    bind = function(_, find, idx)
+      if not (BIND and BIND.onClick) then return end
+      local bs, bd = find("Btn_Sel"), find("Btn_Del")
       if bs then BIND.onClick(bs, function()
-        local i = idx(e); if not i then return end
+        local i = idx(); if not i then return end
         modalSelect{ title = title, options = S.docks or {}, id = getList()[i], onPick = function(id) getList()[i] = id; save() end }
       end) end
-      if bd then BIND.onClick(bd, function() local i = idx(e); if i then table.remove(getList(), i); save() end end) end
-    end
-  end
-  while #st.ents > #list do
-    local e = table.remove(st.ents); try("RemoveEntry", function() box:RemoveEntry(e) end)
-  end
-  for i, e in ipairs(st.ents) do
-    local t, cur = child(e, "Txt_Sel"), list[i]
-    for _, o in ipairs(docks) do if o.id == list[i] then cur = o.text end end
-    if t then try("dock text", function() t:SetText(FText(cur or "")) end) end
-  end
+      if bd then BIND.onClick(bd, function() local i = idx(); if i then table.remove(getList(), i); save() end end) end
+    end,
+    paint = function(_, find, i)
+      local id = getList()[i]; local cur = id
+      for _, o in ipairs(docks) do if o.id == id then cur = o.text end end
+      local t = find("Txt_Sel"); if t then try("dock text", function() t:SetText(FText(cur or "")) end) end
+    end }
 end
 -- Ship tab dock lists. S.ud[<ini>] = unload dock ids of the ore, S.rd = refuel dock ids (this ship; All ships = first ship of the set).
 -- Ore card shown only while the global ore_<ini> flag is on (default on). Warning = ore on + empty list (not in All ships mode).

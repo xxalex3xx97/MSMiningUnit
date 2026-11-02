@@ -142,3 +142,8 @@ Pnl_Modal = Overlay, Is Variable, Collapsed, 2nd child of Root (anchors like Pan
 - CN = 40 now (FN stays 20). Modal card list Row_ModalCardScroll interleaves per slot: Row_CardHdr_<c> (HorizontalBox, Is Variable, Collapsed) > Btn_CardHdr_<c> > Txt_CardHdr_<c> (fleet/All header, gold-or-grey bg by Lua) + Btn_CardFold_<c> > Txt_CardFold_<c> (">"/"v", Collapsed), then Opt_Card_<c>.
 - Btn_ModalDone > Txt_ModalDone (Done button, Collapsed, below Row_ModalCardScroll; multi mode only).
 - Dock card header icons (Image, Hidden, 24x24, Is Variable, Lua sets brush): Img_UDockOre_<ok> (ore icon) in each unload card; Img_RDockFuelDeuterium, Img_RDockFuelHydrogen, Img_RDockFuelWarp in the refuel card. Unload cards are ordered Water Ice, Titanium, Silica, Nickel, Iridium, Graphite, Cobalt.
+
+## Lists (all dynamic, 2026-11-03)
+Every variable-length list is a `DynamicEntryBox` `Dyn_<name>` of a small row Widget Blueprint, built headless by `scripts/build_lists.py` (helpers in `scripts/uew.py`: `dyn_list`). No row limits; rows exist only as the data needs.
+Row WBPs: `WBP_DockRow` (refuel + 7 unload lists), `WBP_ItemRow` (Items queue), `WBP_LogLine` (Log). Select-style rows share one child-naming convention (see build_lists.py); this file is parsed for widget names, so none are listed here.
+Lua side: one function `dynList{key, anchor, box, n, bind, paint}` in `wbp_loader.lua` (`dynDocks` is a thin wrapper). Python-built widgets are not Is Variable, so Lua finds them by walking from a variable anchor. Never delete a widget from Python (cook fails on stale variable GUIDs): collapse a stub instead.
