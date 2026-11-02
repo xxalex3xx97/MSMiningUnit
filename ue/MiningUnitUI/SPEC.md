@@ -66,7 +66,6 @@ Ship select = key Remote in the Fleet Control box (Sel_Remote, Txt_SelRemote). L
 Page_Ship (select fields, keys: dock_id, refuel_dock_id; dock_name_filter key is not touched):
 - Single Unload dock row removed. Txt_ShipWarn (yellow F2D21E, Collapsed; Lua text). Per ore <ok> (7 ore keys): card Pnl_UDockCard_<ok> (Collapsed), rows m=1..5: Pnl_UDockRow_<ok>_<m> (Collapsed) = select field Sel_UDock_<ok>_<m>, Txt_SelUDock_<ok>_<m> + trash Btn_UDockDel_<ok>_<m>; Btn_UDockAdd_<ok>. Refuel list: Pnl_RDockCard (Collapsed), Pnl_RDockRow_<m> = Sel_RDock_<m>, Txt_SelRDock_<m> + Btn_RDockDel_<m>; Btn_RDockAdd.
 - Operation tab "Warp management" card (Lbl_HdrWarp): Txt_OpBeltLabel "Sector Selector" / select field "Belt": Sel_Belt (Button), Txt_SelBelt; Btn_BeltPinned "Use pinned sector"; Btn_BeltWarp "Warp to belt"
-- Txt_ShipRefuelDockLabel "Refuel dock" / select field "RefuelDock": Sel_RefuelDock, Txt_SelRefuelDock; first option "(none)"
 - Select field = Sel_<key> (Button, shows the current choice in Txt_Sel<key>). Click opens the shared modal Pnl_Modal (no panel or options per field). Click a row = select + close + save to MiningBench.ini.
 - Edt_* style: black text, font size 11, light grey bg kept (WidgetStyle).
 

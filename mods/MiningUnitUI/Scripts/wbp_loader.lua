@@ -24,7 +24,7 @@ local TAB_OFF = { R = 0.012983, G = 0.012983, B = 0.012983, A = 0.95 }
 local TXT_ON = { R = 0.010330, G = 0.010330, B = 0.010330, A = 1.0 }
 local TXT_OFF = { R = 1.0, G = 1.0, B = 1.0, A = 1.0 }
 local EST_RED_TXT = { R = 1.0, G = 0.25, B = 0.2, A = 1.0 }   -- Txt_StatusAction tint on an ERROR status
-local UDN = 5  -- max docks per unload-ore list and per refuel list (= gen_paste UDOCK_N)
+local UDN = 20 -- max docks per unload-ore list and per refuel list (= gen_paste UDOCK_N)
 -- ore key k = widget part (Pnl_UDockCard_<k>, modal key UDock_<k>_<n>); ini = INI key part (unload_docks_<ini>, ore_<ini>)
 local UD_ORES = { { k = "Cobalt", ini = "cobalt" }, { k = "Graphite", ini = "graphite" }, { k = "Iridium", ini = "iridium" },
   { k = "Nickel", ini = "nickel" }, { k = "Silica", ini = "silica" }, { k = "Titanium", ini = "titanium" }, { k = "WaterIce", ini = "waterice" } }
@@ -608,9 +608,6 @@ local function loadSectors()
   return out
 end
 local function shipFill()
-  local R = { { id = "", text = "(none)" } }
-  for _, d in ipairs(S.docks or {}) do R[#R + 1] = d end
-  selSet("RefuelDock", R, S.last.refuel)
   -- belt field text: AUTO / (none) / "<name> (<id>)"; unknown id shows the id
   local B, known = {}, false
   for _, o in ipairs(loadSectors()) do
@@ -1614,7 +1611,6 @@ function M.open(ship)
         if #S.rd >= UDN then return end
         modalSelect{ title = "Refuel dock", options = S.docks or {}, onPick = function(id) table.insert(S.rd, id); udSave() end }
       end)
-      selInit("RefuelDock", bind, function(id) S.last.refuel = id; iniSave({ refuel_dock_id = id }); S.docks = loadDocks(); shipFill() end, "Refuel dock")
       selInit("Belt", bind, function(id) S.last.belt = id; iniSave({ belt_sector = id }); shipFill() end, "Sector Selector", function(o) return { cols = o.cols, ores = o.ores } end, loadSectors, function() return { "Sector", "ID", "Distance" } end)
       bind("Btn_BeltPinned", function()
         local p = rdlines(M.DATA .. "MiningPinned.txt")
