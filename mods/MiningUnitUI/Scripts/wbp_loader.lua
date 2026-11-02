@@ -636,7 +636,8 @@ local function deepFind(node, name, depth)
   return nil
 end
 local function dynList(sp)
-  local anchor = w(sp.anchor); if not anchor then return nil end
+  local anchor = w(sp.anchor)
+  if not anchor then S.dynWarn = S.dynWarn or {}; if not S.dynWarn[sp.key] then S.dynWarn[sp.key] = true; L("dynList " .. sp.key .. ": anchor " .. sp.anchor .. " not found") end; return nil end
   S.dyn = S.dyn or {}
   local st = S.dyn[sp.key]
   if not (st and ok(st.box)) then
@@ -853,7 +854,7 @@ end
 local function qRender()
   holdReads()
   local rows = S.q.rows
-  dynList{ key = "Items", anchor = "Row_Scroll_Page_Items", box = "Dyn_Items", n = #rows,
+  dynList{ key = "Items", anchor = "Page_Items", box = "Dyn_Items", n = #rows,
     bind = function(_, find, idx)
       local function row() local i = idx(); return i and S.q.rows[i], i end
       local bs, bu, bd, bx = find("Btn_Sel"), find("Btn_Up"), find("Btn_Down"), find("Btn_Del")
@@ -1240,6 +1241,7 @@ local function logPaint()
   local key = "S" .. table.concat(rows, "\n")
   if key == S.logKey then return end
   S.logKey = key
+  L("logPaint rows=" .. #rows .. " sid=" .. tostring(S.sid))
   dynList{ key = "Log", anchor = "Row_LogScroll", box = "Dyn_Log", n = #rows, paint = function(_, find, i)
     local t = find("Txt"); if t then try("log text", function() t:SetText(FText(rows[i])) end) end
   end }
@@ -1360,7 +1362,7 @@ function M.close()
   S.pend, S.arm, S.estop, S.etaS, S.etaKind = nil, nil, nil, nil, nil
   S.req, S.simple = nil, nil
   S.fleet, S.holoOut = nil, nil
-  S.ud, S.rd, S.warn, S.dyn, S.dynDiag = nil, nil, nil, nil, nil
+  S.ud, S.rd, S.warn, S.dyn, S.dynDiag, S.dynWarn = nil, nil, nil, nil, nil, nil
   if not (S.root or S.p or S.frame) then return end
   local root, p = S.root, S.p
   S.root, S.p, S.w, S.frame = nil, nil, nil, nil
