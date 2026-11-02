@@ -81,7 +81,7 @@ def slot(w, pad=None, fill=None, h=None, v=None):
 
 def save(wbp):
     U.BlueprintEditorLibrary.compile_blueprint(wbp)
-    U.EditorAssetLibrary.save_loaded_asset(wbp)
+    U.EditorAssetLibrary.save_loaded_asset(wbp, False)
 
 
 def text(wbp, name, parent, size=14, color=None, wrap=False, var=False, slot_kw=None):
