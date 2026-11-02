@@ -1,0 +1,91 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Mining Unit preview (static mock, 1600x900)</title>
+<style>
+/* Approximation of the generated UMG tree (3 native-style windows). Not a Slate render. */
+body{margin:0;background:#111;font-family:Roboto,Segoe UI,Arial,sans-serif;color:#fff}
+.stage{width:1600px;height:900px;position:relative;background:linear-gradient(135deg,#6b6f75,#2a2d33)}
+.root{position:absolute;left:240px;top:135px;width:1120px;height:630px;padding:20px;box-sizing:border-box;display:flex;gap:16px}
+.win{display:flex;flex-direction:column;min-width:0}
+.c{flex:.2;align-self:flex-start}.lc{flex:.2;align-self:flex-start;display:flex;flex-direction:column}.lc .win{flex:none}.m{flex:.55}.s{flex:.25;align-self:flex-start}
+.head{display:flex;align-items:stretch;height:40px}
+.tab{background:#c38800;padding:2px 28px 2px 22px;font-size:24px;white-space:nowrap;max-width:420px;overflow:hidden;text-overflow:ellipsis;height:40px;box-sizing:border-box;display:flex;align-items:center;flex:0 1 auto}
+.line{flex:1;height:40px;background:linear-gradient(to bottom,transparent 17.5%,#c38800 17.5%,#c38800 65%,transparent 65%)}
+.x{width:40px;height:40px;background:#c38800;color:#1a1a1a;display:flex;align-items:center;justify-content:center;flex:none}
+.outline{background:#1c1c1c;padding:2px;flex:1;display:flex}
+.body{background:#3a3a3a;padding:10px;flex:1;display:flex}
+.inset{background:#2b2b2b;padding:12px 16px;flex:1;display:flex;flex-direction:column}
+.estop{background:repeating-linear-gradient(45deg,#151515 0 8px,#e8b800 8px 16px);padding:9px;margin-bottom:0}
+.estop .rim{background:#e8b800;padding:3px}
+.estop .btn{background:#c81414;border-radius:6px;height:64px;display:flex;align-items:center;justify-content:center;text-align:center;color:#fff;font-size:16px;line-height:1.1}
+.big{background:#4a4a4a;height:56px;display:flex;align-items:center;justify-content:center;font-size:18px;margin-bottom:12px}
+.tabs{display:flex;gap:6px;margin-bottom:14px}
+.t{flex:1;text-align:center;padding:8px 16px;font-size:16px;background:rgba(30,30,30,.95)}
+.t.on{background:#c38800;color:#1a1a1a}
+.pages{flex:1;overflow:auto;padding-right:12px}
+.row{display:flex;align-items:center;margin-bottom:10px;font-size:15px}
+.row .l{min-width:220px;margin-right:12px}.row .v{flex:1;min-width:160px}
+.edt{background:#1a1a1a;border:1px solid #555;height:26px}
+.sec{color:#f2b01e;font-size:16px;margin:8px 0}
+.chk{display:inline-flex;align-items:center;min-width:150px;margin-right:12px;font-size:15px}
+.chk i{width:18px;height:18px;border:1px solid #888;background:#1a1a1a;margin-right:8px;display:inline-block}
+.btn{display:inline-block;background:#4a4a4a;padding:8px 14px;min-width:180px;font-size:15px;text-align:center;margin-right:12px}
+.fuel{display:flex;align-items:center;margin-bottom:8px;font-size:14px}
+.fuel .chk{flex:1}.fuel .edt{width:80px}.fuel span{margin-right:6px}
+.card{background:#1c1c1c;padding:2px;margin:0 12px 10px 0}.cb{background:#3a3a3a;padding:8px 8px 2px}
+.ct{color:#f2b01e;font-size:16px;padding-bottom:4px;border-bottom:2px solid #c38800;margin-bottom:8px}
+.cols{display:flex;gap:10px;margin-right:12px}.cols>div:first-child{flex:1.2}.cols>div:last-child{flex:.8}.cols .card{margin-right:0}.cols>div:first-child{display:flex;flex-direction:column}.cols>div:first-child .card{flex:1;margin-bottom:0}.ic{width:24px;height:24px;background:#777;margin-right:8px;flex:none}
+.cr{display:flex;align-items:center;margin-bottom:8px;font-size:15px}.cr .l{flex:1}.cr .edt{width:80px}.cr .l{white-space:nowrap}.cg{display:flex}.cg .chk{flex:1;min-width:0}.cg2{display:flex;gap:16px}.cg2 .cr{flex:1}
+.card .chk{min-width:0;margin-right:8px}
+.act{font-size:20px}.row2{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}.eta{font-size:15px}
+.cargo{display:flex;justify-content:space-between;font-size:15px;margin-bottom:6px}
+.pb{height:18px;background:#1a1a1a;margin-bottom:14px}.pb i{display:block;width:0;height:100%;background:#42da41}
+.small{font-size:15px;margin-bottom:6px}
+.note{position:absolute;left:10px;bottom:6px;font-size:12px;color:#ccd}
+</style>
+<div class="stage"><div class="root">
+ <div class="lc">
+ <div class="win">
+  <div class="head"><div class="tab">Control</div><div class="line"></div></div>
+  <div class="outline"><div class="body"><div class="inset">
+   <div class="estop"><div class="rim"><div class="btn">EMERGENCY STOP</div></div></div>
+   <div class="big">Start loop</div><div class="big">Stop loop</div>
+  </div></div></div>
+ </div>
+ <div class="win" style="margin-top:16px">
+  <div class="head"><div class="tab">Actions</div><div class="line"></div></div>
+  <div class="outline"><div class="body"><div class="inset">
+   <div class="big" style="margin-bottom:6px">Dock</div><div class="big" style="margin-bottom:6px">Undock</div><div class="big" style="margin-bottom:6px">Refuel</div><div class="big" style="margin-bottom:0">Unload</div>
+  </div></div></div>
+ </div>
+ </div>
+ <div class="win m">
+  <div class="head"><div class="tab">Mining Unit - &lt;ship name&gt;</div><div class="line"></div><div class="x">X</div></div>
+  <div class="outline"><div class="body"><div class="inset">
+   <div class="tabs"><div class="t on">Ship</div><div class="t">Items</div><div class="t">Operation</div></div>
+   <div class="pages">
+    <div class="sec">Ship (Page_Ship)</div>
+    <div class="row"><span class="l">Dock filter</span><div class="v edt"></div></div>
+    <div class="row"><span class="l">Refuel dock</span><span></span></div>
+    <div class="sec">Operation (Page_Operation, shown stacked for the mock)</div>
+    <div class="cols"><div><div class="card"><div class="cb"><div class="ct">Mining</div><div class="cr"><span class="l">Radius</span><div class="edt"></div></div><div class="cr"><span class="l">Mining distance</span><div class="edt"></div></div><div class="cr"><span class="l">Max radius (global)</span><div class="edt"></div></div></div></div></div><div><div class="card"><div class="cb"><div class="ct">Timing</div><div class="cr"><span class="l">Idle seconds</span><div class="edt"></div></div><div class="cr"><span class="l">Wait seconds</span><div class="edt"></div></div></div></div><div class="card"><div class="cb"><div class="ct">Run</div><div class="cg" style="margin-bottom:8px"><span class="chk"><i></i>Enabled</span><span class="chk"><i></i>Repeat</span></div></div></div></div></div>
+    <div class="card"><div class="cb"><div class="ct">Fuel</div><div class="fuel"><i class="ic"></i><span class="chk"><i></i>Deuterium</span><span>min</span><div class="edt" style="margin-right:16px"></div><span>max</span><div class="edt"></div></div><div class="fuel"><i class="ic"></i><span class="chk"><i></i>Hydrogen</span><span>min</span><div class="edt" style="margin-right:16px"></div><span>max</span><div class="edt"></div></div><div class="fuel"><i class="ic"></i><span class="chk"><i></i>Warp</span><span>min</span><div class="edt" style="margin-right:16px"></div><span>max</span><div class="edt"></div></div></div></div>
+    <div class="card"><div class="cb"><div class="ct">Unload ores</div><div class="cg" style="margin-bottom:8px"><span style="display:flex;flex:1;align-items:center"><i class="ic"></i><span class="chk"><i></i>Cobalt</span></span><span style="display:flex;flex:1;align-items:center"><i class="ic"></i><span class="chk"><i></i>Graphite</span></span><span style="display:flex;flex:1;align-items:center"><i class="ic"></i><span class="chk"><i></i>Iridium</span></span><span style="display:flex;flex:1;align-items:center"><i class="ic"></i><span class="chk"><i></i>Nickel</span></span></div><div class="cg" style="margin-bottom:8px"><span style="display:flex;flex:1;align-items:center"><i class="ic"></i><span class="chk"><i></i>Silica</span></span><span style="display:flex;flex:1;align-items:center"><i class="ic"></i><span class="chk"><i></i>Titanium</span></span><span style="display:flex;flex:1;align-items:center"><i class="ic"></i><span class="chk"><i></i>Water Ice</span></span><span class="chk"></span></div></div></div>
+    <div class="row" style="justify-content:flex-end;margin-right:12px"><span class="btn" style="margin-right:0">Set as default</span></div>
+   </div>
+  </div></div></div>
+ </div>
+ <div class="win s">
+  <div class="head"><div class="tab">Status</div><div class="line"></div></div>
+  <div class="outline"><div class="body"><div class="inset">
+   <div class="row2"><span class="act">Idle</span><span class="eta">ETA: --</span></div>
+   <div class="small" style="margin-bottom:14px">Next: -</div>
+   <div class="cargo"><span>Cargo</span><b>0%</b></div>
+   <div class="pb"><i></i></div>
+   <div class="small" style="margin-bottom:14px">Speed: 0 m/s</div>
+   <div style="font-size:14px;min-height:18px">(Txt_Status message line)</div>
+  </div></div></div>
+ </div>
+</div>
+<div class="note">Static mock at 70% window. Header corner cut / rounding is approximated; Page_* stacked only to show content, in UMG one page shows at a time and the ScrollBox scrolls overflow.</div>
+</div>

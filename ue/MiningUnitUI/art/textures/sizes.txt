@@ -1,0 +1,57 @@
+T_UI_Arrow2	32x16	PF_DXT5	mips=1
+T_UI_BasicPanel_2	128x128	PF_DXT5	mips=1
+T_UI_CheckEmpty	64x64	PF_DXT5	mips=1
+T_UI_CheckFilled	64x64	PF_DXT5	mips=1
+T_UI_Checkbox2_Empty	64x64	PF_DXT5	mips=1
+T_UI_Checkbox2_Hovered	64x64	PF_DXT5	mips=1
+T_UI_Checkbox2_Selected	64x64	PF_DXT5	mips=1
+T_UI_CircleIndicator	64x64	PF_DXT5	mips=1
+T_UI_CircleIndicator_OFF	ERROR ValueError('cannot locate mip data (trailing header not found)')
+T_UI_CircleIndicator_ON	ERROR ValueError('cannot locate mip data (trailing header not found)')
+T_UI_CleanButton_2	ERROR ValueError('cannot locate mip data (trailing header not found)')
+T_UI_CleanButton_3	ERROR ValueError('cannot locate mip data (trailing header not found)')
+T_UI_CleanButton_4	ERROR ValueError('cannot locate mip data (trailing header not found)')
+T_UI_CleanTab	64x64	PF_DXT1	mips=1
+T_UI_DropShadow	64x64	PF_DXT5	mips=1
+T_UI_Edit	32x32	PF_DXT5	mips=1
+T_UI_Fleet_2	ERROR ValueError('cannot locate mip data (trailing header not found)')
+T_UI_Footer	120x40	PF_DXT5	mips=1
+T_UI_FrontPanel	48x48	PF_DXT5	mips=1
+T_UI_Header_Bar	40x40	PF_DXT5	mips=1
+T_UI_Header_Bar_R	40x40	PF_DXT5	mips=1
+T_UI_Header_L	40x40	PF_DXT5	mips=1
+T_UI_Header_R	40x40	PF_DXT5	mips=1
+T_UI_Header_R_In	40x40	PF_DXT5	mips=1
+T_UI_Header_R_Out	40x40	PF_DXT5	mips=1
+T_UI_Hotbar	ERROR ValueError('cannot locate mip data (trailing header not found)')
+T_UI_Inset_01	64x64	PF_DXT1	mips=1
+T_UI_Inset_02	64x64	PF_DXT1	mips=1
+T_UI_ItemTransport	ERROR ValueError('cannot locate mip data (trailing header not found)')
+T_UI_OffscreenArrow_02	ERROR ValueError('cannot locate mip data (trailing header not found)')
+T_UI_OffscreenHUDArrow	ERROR ValueError('cannot locate mip data (trailing header not found)')
+T_UI_POI	128x64	PF_DXT5	mips=1
+T_UI_Panel_01	64x64	PF_DXT5	mips=1
+T_UI_Panel_02	64x64	PF_DXT5	mips=1
+T_UI_Panel_03	64x64	PF_DXT5	mips=1
+T_UI_Panel_04	64x64	PF_DXT5	mips=1
+T_UI_Plus	ERROR ValueError('cannot locate mip data (trailing header not found)')
+T_UI_Portrait	128x128	PF_DXT5	mips=1
+T_UI_Progress	16x16	PF_DXT1	mips=1
+T_UI_Progress_2	16x16	PF_DXT5	mips=1
+T_UI_Progress_Fill	16x16	PF_DXT5	mips=1
+T_UI_RedAlert	512x256	PF_DXT5	mips=1
+T_UI_Research	ERROR ValueError('cannot locate mip data (trailing header not found)')
+T_UI_Return	32x32	PF_DXT5	mips=1
+T_UI_ShipHUD_2	128x512	PF_DXT5	mips=10	UBULK (not extracted)
+T_UI_SidePanel_L	20x60	PF_DXT5	mips=1
+T_UI_Slant	64x64	PF_DXT5	mips=1
+T_UI_SmallButton_01	64x64	PF_DXT5	mips=1
+T_UI_SmallButton_02	32x32	PF_DXT5	mips=1
+T_UI_SmallButton_02_Pressed	32x32	PF_DXT5	mips=1
+T_UI_Storage	128x128	PF_DXT5	mips=8	UBULK (not extracted)
+T_UI_TilingDashes	128x128	PF_DXT5	mips=8	UBULK (not extracted)
+T_UI_Toggle_L	64x32	PF_DXT5	mips=1
+T_UI_Toggle_R	64x32	PF_DXT5	mips=1
+T_UI_Warning	32x32	PF_DXT5	mips=1
+T_UI_Warp	64x64	PF_DXT5	mips=1
+T_UI_X	32x32	PF_DXT5	mips=1

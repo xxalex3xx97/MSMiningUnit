@@ -1,0 +1,6 @@
+Saved/
+Intermediate/
+DerivedDataCache/
+Binaries/
+# pack outputs and installed-pak backups (binary, not source)
+build/

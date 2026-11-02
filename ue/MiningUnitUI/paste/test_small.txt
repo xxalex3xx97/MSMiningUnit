@@ -1,0 +1,17 @@
+Begin Object Class=/Script/UMG.Border Name="TestBorder" ExportPath="/Script/UMG.Border'/Game/MiningUnitUI/WBP_MiningUnit.WBP_MiningUnit:WidgetTree.TestBorder'"
+   Begin Object Class=/Script/UMG.BorderSlot Name="S_TestText" ExportPath="/Script/UMG.BorderSlot'/Game/MiningUnitUI/WBP_MiningUnit.WBP_MiningUnit:WidgetTree.TestBorder.S_TestText'"
+   End Object
+   Begin Object Name="S_TestText" ExportPath="/Script/UMG.BorderSlot'/Game/MiningUnitUI/WBP_MiningUnit.WBP_MiningUnit:WidgetTree.TestBorder.S_TestText'"
+      Parent="/Script/UMG.Border'TestBorder'"
+      Content="/Script/UMG.TextBlock'TestText'"
+   End Object
+   Slots(0)="/Script/UMG.BorderSlot'S_TestText'"
+End Object
+Begin Object Class=/Script/UMGEditor.WidgetSlotPair Name="WidgetSlotPair_0" ExportPath="/Script/UMGEditor.WidgetSlotPair'/Engine/Transient.WidgetSlotPair_0'"
+   WidgetName="TestBorder"
+End Object
+Begin Object Class=/Script/UMG.TextBlock Name="TestText" ExportPath="/Script/UMG.TextBlock'/Game/MiningUnitUI/WBP_MiningUnit.WBP_MiningUnit:WidgetTree.TestText'"
+   bIsVariable=True
+   Font=(Size=15)
+   Text=INVTEXT("hello")
+End Object

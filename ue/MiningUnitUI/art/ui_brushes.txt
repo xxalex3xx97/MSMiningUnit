@@ -1,0 +1,226 @@
+UI brush dump 2026-10-28 12:51:18 instances=40
+INSTANCE 1 WBP_WindowHeader_C /Game/Blueprints/Widgets/Basic/WBP_Window_01.WBP_Window_01_C:WidgetTree.WBP_WindowHeader
+INSTANCE 2 WBP_WindowHeader_C /Game/Blueprints/Widgets/Basic/WBP_WindowBase.WBP_WindowBase_C:WidgetTree.WBP_WindowHeader
+INSTANCE 3 WBP_WindowHeader_C /Engine/Transient.GameEngine_2147482591:GameInstance_2147482545.WBP_Building_C_2147428257.WidgetTree_2147428256.WBP_WindowBase.WidgetTree_2147428255.WBP_WindowHeader
+  Border_0 [Border] ColorAndOpacity=TrivialObject: 000002BE0AC30108,TrivialObject: 000002BE0AC30108,TrivialObject: 000002BE0AC30108,TrivialObject: 000002BE0AC30108 BrushColor=1.000,0.443,0.000,1.000
+  Border_0 [Border] DrawAs=TrivialObject: 000002BE0AC2F898 Margin=TrivialObject: 000002BE0AC2F898/TrivialObject: 000002BE0AC2F898/TrivialObject: 000002BE0AC2F898/TrivialObject: 000002BE0AC2F898 ImageSize=TrivialObject: 000002BE0AC2F898xTrivialObject: 000002BE0AC2F898 Tint=TrivialObject: 000002BE0AC2F898,TrivialObject: 000002BE0AC2F898,TrivialObject: 000002BE0AC2F898,TrivialObject: 000002BE0AC2F898 Res=nil tex=-
+  Image [Image] ColorAndOpacity=1.000,1.000,1.000,1.000 BrushColor=TrivialObject: 000002BE0AC30018,TrivialObject: 000002BE0AC30018,TrivialObject: 000002BE0AC30018,TrivialObject: 000002BE0AC30018
+  Image [Image] DrawAs=3 Margin=0.000/0.000/0.000/0.000 ImageSize=28.000x28.000 Tint=1.000,1.000,1.000,1.000 Res=nil tex=-
+  BarImage [Image] ColorAndOpacity=1.000,0.443,0.000,1.000 BrushColor=TrivialObject: 000002BE0C100618,TrivialObject: 000002BE0C100618,TrivialObject: 000002BE0C100618,TrivialObject: 000002BE0C100618
+  BarImage [Image] DrawAs=1 Margin=0.490/0.490/0.490/0.490 ImageSize=40.000x40.000 Tint=1.000,1.000,1.000,1.000 Res=Texture2D /Game/Materials/UI_Textures/T_UI_Header_Bar.T_UI_Header_Bar tex=?x?
+  RightBorder [Border] ColorAndOpacity=TrivialObject: 000002BE03BFD198,TrivialObject: 000002BE03BFD198,TrivialObject: 000002BE03BFD198,TrivialObject: 000002BE03BFD198 BrushColor=1.000,0.443,0.000,1.000
+  RightBorder [Border] DrawAs=TrivialObject: 000002BE03BFCFB8 Margin=TrivialObject: 000002BE03BFCFB8/TrivialObject: 000002BE03BFCFB8/TrivialObject: 000002BE03BFCFB8/TrivialObject: 000002BE03BFCFB8 ImageSize=TrivialObject: 000002BE03BFCFB8xTrivialObject: 000002BE03BFCFB8 Tint=TrivialObject: 000002BE03BFCFB8,TrivialObject: 000002BE03BFCFB8,TrivialObject: 000002BE03BFCFB8,TrivialObject: 000002BE03BFCFB8 Res=nil tex=-
+  Button_86 [Button] Normal DrawAs=1 Margin=0.490/0.490/0.490/0.490 ImageSize=40.000x40.000 Tint=1.000,1.000,1.000,1.000 Res=Texture2D /Game/Materials/UI_Textures/T_UI_Header_R_Out.T_UI_Header_R_Out tex=?x?
+  Button_86 [Button] Hovered DrawAs=1 Margin=0.490/0.490/0.490/0.490 ImageSize=40.000x40.000 Tint=1.000,1.000,1.000,1.000 Res=Texture2D /Game/Materials/UI_Textures/T_UI_Header_R_Out.T_UI_Header_R_Out tex=?x?
+  Button_86 [Button] Pressed DrawAs=1 Margin=0.490/0.490/0.490/0.490 ImageSize=40.000x40.000 Tint=1.000,1.000,1.000,1.000 Res=Texture2D /Game/Materials/UI_Textures/T_UI_Header_R_In.T_UI_Header_R_In tex=?x?
+  CloseButtonImage [Image] ColorAndOpacity=1.000,1.000,1.000,1.000 BrushColor=TrivialObject: 000002BE0A871958,TrivialObject: 000002BE0A871958,TrivialObject: 000002BE0A871958,TrivialObject: 000002BE0A871958
+  CloseButtonImage [Image] DrawAs=3 Margin=0.000/0.000/0.000/0.000 ImageSize=12.000x12.000 Tint=0.255,0.255,0.255,1.000 Res=Texture2D /Game/Materials/UI_Textures/T_UI_X.T_UI_X tex=?x?
+INSTANCE 4 WBP_WindowHeader_C /Engine/Transient.GameEngine_2147482591:GameInstance_2147482545.WBP_Assembler_C_2147427790.WidgetTree_2147427789.WBP_WindowBase.WidgetTree_2147427784.WBP_WindowHeader
+  Border_0 [Border] ColorAndOpacity=TrivialObject: 000002BE13B8B638,TrivialObject: 000002BE13B8B638,TrivialObject: 000002BE13B8B638,TrivialObject: 000002BE13B8B638 BrushColor=1.000,0.443,0.000,1.000
+  Border_0 [Border] DrawAs=TrivialObject: 000002BE13B8AEB8 Margin=TrivialObject: 000002BE13B8AEB8/TrivialObject: 000002BE13B8AEB8/TrivialObject: 000002BE13B8AEB8/TrivialObject: 000002BE13B8AEB8 ImageSize=TrivialObject: 000002BE13B8AEB8xTrivialObject: 000002BE13B8AEB8 Tint=TrivialObject: 000002BE13B8AEB8,TrivialObject: 000002BE13B8AEB8,TrivialObject: 000002BE13B8AEB8,TrivialObject: 000002BE13B8AEB8 Res=nil tex=-
+  Image [Image] ColorAndOpacity=1.000,1.000,1.000,1.000 BrushColor=TrivialObject: 000002BE041199E8,TrivialObject: 000002BE041199E8,TrivialObject: 000002BE041199E8,TrivialObject: 000002BE041199E8
+  Image [Image] DrawAs=3 Margin=0.000/0.000/0.000/0.000 ImageSize=28.000x28.000 Tint=1.000,1.000,1.000,1.000 Res=nil tex=-
+  BarImage [Image] ColorAndOpacity=1.000,0.443,0.000,1.000 BrushColor=TrivialObject: 000002BE04119808,TrivialObject: 000002BE04119808,TrivialObject: 000002BE04119808,TrivialObject: 000002BE04119808
+  BarImage [Image] DrawAs=1 Margin=0.490/0.490/0.490/0.490 ImageSize=40.000x40.000 Tint=1.000,1.000,1.000,1.000 Res=Texture2D /Game/Materials/UI_Textures/T_UI_Header_Bar.T_UI_Header_Bar tex=?x?
+  RightBorder [Border] ColorAndOpacity=TrivialObject: 000002BE0BDBF698,TrivialObject: 000002BE0BDBF698,TrivialObject: 000002BE0BDBF698,TrivialObject: 000002BE0BDBF698 BrushColor=1.000,0.443,0.000,1.000
+  RightBorder [Border] DrawAs=TrivialObject: 000002BE0BDBF788 Margin=TrivialObject: 000002BE0BDBF788/TrivialObject: 000002BE0BDBF788/TrivialObject: 000002BE0BDBF788/TrivialObject: 000002BE0BDBF788 ImageSize=TrivialObject: 000002BE0BDBF788xTrivialObject: 000002BE0BDBF788 Tint=TrivialObject: 000002BE0BDBF788,TrivialObject: 000002BE0BDBF788,TrivialObject: 000002BE0BDBF788,TrivialObject: 000002BE0BDBF788 Res=nil tex=-
+  Button_86 [Button] Normal DrawAs=1 Margin=0.490/0.490/0.490/0.490 ImageSize=40.000x40.000 Tint=1.000,1.000,1.000,1.000 Res=Texture2D /Game/Materials/UI_Textures/T_UI_Header_R_Out.T_UI_Header_R_Out tex=?x?
+  Button_86 [Button] Hovered DrawAs=1 Margin=0.490/0.490/0.490/0.490 ImageSize=40.000x40.000 Tint=1.000,1.000,1.000,1.000 Res=Texture2D /Game/Materials/UI_Textures/T_UI_Header_R_Out.T_UI_Header_R_Out tex=?x?
+  Button_86 [Button] Pressed DrawAs=1 Margin=0.490/0.490/0.490/0.490 ImageSize=40.000x40.000 Tint=1.000,1.000,1.000,1.000 Res=Texture2D /Game/Materials/UI_Textures/T_UI_Header_R_In.T_UI_Header_R_In tex=?x?
+  CloseButtonImage [Image] ColorAndOpacity=1.000,1.000,1.000,1.000 BrushColor=TrivialObject: 000002BE0BDC02C8,TrivialObject: 000002BE0BDC02C8,TrivialObject: 000002BE0BDC02C8,TrivialObject: 000002BE0BDC02C8
+  CloseButtonImage [Image] DrawAs=3 Margin=0.000/0.000/0.000/0.000 ImageSize=12.000x12.000 Tint=0.254,0.254,0.254,1.000 Res=Texture2D /Game/Materials/UI_Textures/T_UI_X.T_UI_X tex=?x?
+INSTANCE 5 WBP_WindowHeader_C /Engine/Transient.GameEngine_2147482591:GameInstance_2147482545.WBP_Assembler_C_2147427790.WidgetTree_2147427789.WBP_WindowBase_0.WidgetTree_2147427744.WBP_WindowHeader
+  Border_0 [Border] ColorAndOpacity=TrivialObject: 000002BE13D36188,TrivialObject: 000002BE13D36188,TrivialObject: 000002BE13D36188,TrivialObject: 000002BE13D36188 BrushColor=1.000,0.443,0.000,1.000
+  Border_0 [Border] DrawAs=TrivialObject: 000002BE13D36548 Margin=TrivialObject: 000002BE13D36548/TrivialObject: 000002BE13D36548/TrivialObject: 000002BE13D36548/TrivialObject: 000002BE13D36548 ImageSize=TrivialObject: 000002BE13D36548xTrivialObject: 000002BE13D36548 Tint=TrivialObject: 000002BE13D36548,TrivialObject: 000002BE13D36548,TrivialObject: 000002BE13D36548,TrivialObject: 000002BE13D36548 Res=nil tex=-
+  Image [Image] ColorAndOpacity=1.000,1.000,1.000,1.000 BrushColor=TrivialObject: 000002BE13D36BD8,TrivialObject: 000002BE13D36BD8,TrivialObject: 000002BE13D36BD8,TrivialObject: 000002BE13D36BD8
+  Image [Image] DrawAs=3 Margin=0.000/0.000/0.000/0.000 ImageSize=28.000x28.000 Tint=1.000,1.000,1.000,1.000 Res=nil tex=-
+  BarImage [Image] ColorAndOpacity=1.000,0.443,0.000,1.000 BrushColor=TrivialObject: 000002BE16625A28,TrivialObject: 000002BE16625A28,TrivialObject: 000002BE16625A28,TrivialObject: 000002BE16625A28
+  BarImage [Image] DrawAs=1 Margin=0.490/0.490/0.490/0.490 ImageSize=40.000x40.000 Tint=1.000,1.000,1.000,1.000 Res=Texture2D /Game/Materials/UI_Textures/T_UI_Header_Bar_R.T_UI_Header_Bar_R tex=?x?
+  RightBorder [Border] ColorAndOpacity=TrivialObject: 000002BE16626478,TrivialObject: 000002BE16626478,TrivialObject: 000002BE16626478,TrivialObject: 000002BE16626478 BrushColor=1.000,0.443,0.000,1.000
+  RightBorder [Border] DrawAs=TrivialObject: 000002BE16625488 Margin=TrivialObject: 000002BE16625488/TrivialObject: 000002BE16625488/TrivialObject: 000002BE16625488/TrivialObject: 000002BE16625488 ImageSize=TrivialObject: 000002BE16625488xTrivialObject: 000002BE16625488 Tint=TrivialObject: 000002BE16625488,TrivialObject: 000002BE16625488,TrivialObject: 000002BE16625488,TrivialObject: 000002BE16625488 Res=nil tex=-
+  Button_86 [Button] Normal DrawAs=1 Margin=0.490/0.490/0.490/0.490 ImageSize=40.000x40.000 Tint=1.000,1.000,1.000,1.000 Res=Texture2D /Game/Materials/UI_Textures/T_UI_Header_R_Out.T_UI_Header_R_Out tex=?x?
+  Button_86 [Button] Hovered DrawAs=1 Margin=0.490/0.490/0.490/0.490 ImageSize=40.000x40.000 Tint=1.000,1.000,1.000,1.000 Res=Texture2D /Game/Materials/UI_Textures/T_UI_Header_R_Out.T_UI_Header_R_Out tex=?x?
+  Button_86 [Button] Pressed DrawAs=1 Margin=0.490/0.490/0.490/0.490 ImageSize=40.000x40.000 Tint=1.000,1.000,1.000,1.000 Res=Texture2D /Game/Materials/UI_Textures/T_UI_Header_R_In.T_UI_Header_R_In tex=?x?
+  CloseButtonImage [Image] ColorAndOpacity=1.000,1.000,1.000,1.000 BrushColor=TrivialObject: 000002BE16625668,TrivialObject: 000002BE16625668,TrivialObject: 000002BE16625668,TrivialObject: 000002BE16625668
+  CloseButtonImage [Image] DrawAs=3 Margin=0.000/0.000/0.000/0.000 ImageSize=12.000x12.000 Tint=0.255,0.255,0.255,1.000 Res=Texture2D /Game/Materials/UI_Textures/T_UI_X.T_UI_X tex=?x?
+INSTANCE 6 WBP_WindowHeader_C /Engine/Transient.GameEngine_2147482591:GameInstance_2147482545.WBP_AssemblerRecipeSelect_C_2147427735.WidgetTree_2147427734.WBP_WindowBase.WidgetTree_2147427732.WBP_WindowHeader
+  Border_0 [Border] ColorAndOpacity=TrivialObject: 000002BE59CAB618,TrivialObject: 000002BE59CAB618,TrivialObject: 000002BE59CAB618,TrivialObject: 000002BE59CAB618 BrushColor=1.000,0.443,0.000,1.000
+  Border_0 [Border] DrawAs=TrivialObject: 000002BE59CAA088 Margin=TrivialObject: 000002BE59CAA088/TrivialObject: 000002BE59CAA088/TrivialObject: 000002BE59CAA088/TrivialObject: 000002BE59CAA088 ImageSize=TrivialObject: 000002BE59CAA088xTrivialObject: 000002BE59CAA088 Tint=TrivialObject: 000002BE59CAA088,TrivialObject: 000002BE59CAA088,TrivialObject: 000002BE59CAA088,TrivialObject: 000002BE59CAA088 Res=nil tex=-
+  Image [Image] ColorAndOpacity=1.000,1.000,1.000,1.000 BrushColor=TrivialObject: 000002BE59CAA8F8,TrivialObject: 000002BE59CAA8F8,TrivialObject: 000002BE59CAA8F8,TrivialObject: 000002BE59CAA8F8
+  Image [Image] DrawAs=3 Margin=0.000/0.000/0.000/0.000 ImageSize=28.000x28.000 Tint=1.000,1.000,1.000,1.000 Res=nil tex=-
+  BarImage [Image] ColorAndOpacity=1.000,0.443,0.000,1.000 BrushColor=TrivialObject: 000002BE59CAADA8,TrivialObject: 000002BE59CAADA8,TrivialObject: 000002BE59CAADA8,TrivialObject: 000002BE59CAADA8
+  BarImage [Image] DrawAs=1 Margin=0.490/0.490/0.490/0.490 ImageSize=40.000x40.000 Tint=1.000,1.000,1.000,1.000 Res=Texture2D /Game/Materials/UI_Textures/T_UI_Header_Bar.T_UI_Header_Bar tex=?x?
+  RightBorder [Border] ColorAndOpacity=TrivialObject: 000002BE59CAA9E8,TrivialObject: 000002BE59CAA9E8,TrivialObject: 000002BE59CAA9E8,TrivialObject: 000002BE59CAA9E8 BrushColor=1.000,0.443,0.000,1.000
+  RightBorder [Border] DrawAs=TrivialObject: 000002BE59CAA628 Margin=TrivialObject: 000002BE59CAA628/TrivialObject: 000002BE59CAA628/TrivialObject: 000002BE59CAA628/TrivialObject: 000002BE59CAA628 ImageSize=TrivialObject: 000002BE59CAA628xTrivialObject: 000002BE59CAA628 Tint=TrivialObject: 000002BE59CAA628,TrivialObject: 000002BE59CAA628,TrivialObject: 000002BE59CAA628,TrivialObject: 000002BE59CAA628 Res=nil tex=-
+  Button_86 [Button] Normal DrawAs=1 Margin=0.490/0.490/0.490/0.490 ImageSize=40.000x40.000 Tint=1.000,1.000,1.000,1.000 Res=Texture2D /Game/Materials/UI_Textures/T_UI_Header_R_Out.T_UI_Header_R_Out tex=?x?
+  Button_86 [Button] Hovered DrawAs=1 Margin=0.490/0.490/0.490/0.490 ImageSize=40.000x40.000 Tint=1.000,1.000,1.000,1.000 Res=Texture2D /Game/Materials/UI_Textures/T_UI_Header_R_Out.T_UI_Header_R_Out tex=?x?
+  Button_86 [Button] Pressed DrawAs=1 Margin=0.490/0.490/0.490/0.490 ImageSize=40.000x40.000 Tint=1.000,1.000,1.000,1.000 Res=Texture2D /Game/Materials/UI_Textures/T_UI_Header_R_In.T_UI_Header_R_In tex=?x?
+  CloseButtonImage [Image] ColorAndOpacity=1.000,1.000,1.000,1.000 BrushColor=TrivialObject: 000002BE02BF03D8,TrivialObject: 000002BE02BF03D8,TrivialObject: 000002BE02BF03D8,TrivialObject: 000002BE02BF03D8
+  CloseButtonImage [Image] DrawAs=3 Margin=0.000/0.000/0.000/0.000 ImageSize=12.000x12.000 Tint=0.255,0.255,0.255,1.000 Res=Texture2D /Game/Materials/UI_Textures/T_UI_X.T_UI_X tex=?x?
+INSTANCE 7 WBP_WindowHeader_C /Engine/Transient.GameEngine_2147482591:GameInstance_2147482545.WBP_CharacterStatus_C_2147423241.WidgetTree_2147423240.WBP_Window_01.WidgetTree_2147423239.WBP_WindowHeader
+  Border_0 [Border] ColorAndOpacity=TrivialObject: 000002BE02BF0E28,TrivialObject: 000002BE02BF0E28,TrivialObject: 000002BE02BF0E28,TrivialObject: 000002BE02BF0E28 BrushColor=1.000,0.443,0.000,1.000
+  Border_0 [Border] DrawAs=TrivialObject: 000002BE02BEF4D8 Margin=TrivialObject: 000002BE02BEF4D8/TrivialObject: 000002BE02BEF4D8/TrivialObject: 000002BE02BEF4D8/TrivialObject: 000002BE02BEF4D8 ImageSize=TrivialObject: 000002BE02BEF4D8xTrivialObject: 000002BE02BEF4D8 Tint=TrivialObject: 000002BE02BEF4D8,TrivialObject: 000002BE02BEF4D8,TrivialObject: 000002BE02BEF4D8,TrivialObject: 000002BE02BEF4D8 Res=nil tex=-
+  Image [Image] ColorAndOpacity=1.000,1.000,1.000,1.000 BrushColor=TrivialObject: 000002BE02BF0B58,TrivialObject: 000002BE02BF0B58,TrivialObject: 000002BE02BF0B58,TrivialObject: 000002BE02BF0B58
+  Image [Image] DrawAs=3 Margin=0.000/0.000/0.000/0.000 ImageSize=28.000x28.000 Tint=1.000,1.000,1.000,1.000 Res=nil tex=-
+  BarImage [Image] ColorAndOpacity=1.000,0.443,0.000,1.000 BrushColor=TrivialObject: 000002BE02BEF6B8,TrivialObject: 000002BE02BEF6B8,TrivialObject: 000002BE02BEF6B8,TrivialObject: 000002BE02BEF6B8
+  BarImage [Image] DrawAs=1 Margin=0.490/0.490/0.490/0.490 ImageSize=40.000x40.000 Tint=1.000,1.000,1.000,1.000 Res=Texture2D /Game/Materials/UI_Textures/T_UI_Header_Bar.T_UI_Header_Bar tex=?x?
+  RightBorder [Border] ColorAndOpacity=TrivialObject: 000002BE170DF988,TrivialObject: 000002BE170DF988,TrivialObject: 000002BE170DF988,TrivialObject: 000002BE170DF988 BrushColor=1.000,0.443,0.000,1.000
+  RightBorder [Border] DrawAs=TrivialObject: 000002BE170DF028 Margin=TrivialObject: 000002BE170DF028/TrivialObject: 000002BE170DF028/TrivialObject: 000002BE170DF028/TrivialObject: 000002BE170DF028 ImageSize=TrivialObject: 000002BE170DF028xTrivialObject: 000002BE170DF028 Tint=TrivialObject: 000002BE170DF028,TrivialObject: 000002BE170DF028,TrivialObject: 000002BE170DF028,TrivialObject: 000002BE170DF028 Res=nil tex=-
+  Button_86 [Button] Normal DrawAs=1 Margin=0.490/0.490/0.490/0.490 ImageSize=40.000x40.000 Tint=1.000,1.000,1.000,1.000 Res=Texture2D /Game/Materials/UI_Textures/T_UI_Header_R_Out.T_UI_Header_R_Out tex=?x?
+  Button_86 [Button] Hovered DrawAs=1 Margin=0.490/0.490/0.490/0.490 ImageSize=40.000x40.000 Tint=1.000,1.000,1.000,1.000 Res=Texture2D /Game/Materials/UI_Textures/T_UI_Header_R_Out.T_UI_Header_R_Out tex=?x?
+  Button_86 [Button] Pressed DrawAs=1 Margin=0.490/0.490/0.490/0.490 ImageSize=40.000x40.000 Tint=1.000,1.000,1.000,1.000 Res=Texture2D /Game/Materials/UI_Textures/T_UI_Header_R_In.T_UI_Header_R_In tex=?x?
+  CloseButtonImage [Image] ColorAndOpacity=1.000,1.000,1.000,1.000 BrushColor=TrivialObject: 000002BE170DEB78,TrivialObject: 000002BE170DEB78,TrivialObject: 000002BE170DEB78,TrivialObject: 000002BE170DEB78
+  CloseButtonImage [Image] DrawAs=3 Margin=0.000/0.000/0.000/0.000 ImageSize=12.000x12.000 Tint=0.255,0.255,0.255,1.000 Res=Texture2D /Game/Materials/UI_Textures/T_UI_X.T_UI_X tex=?x?
+INSTANCE 8 WBP_WindowHeader_C /Engine/Transient.GameEngine_2147482591:GameInstance_2147482545.WBP_CharacterStatus_C_2147423241.WidgetTree_2147423240.WBP_HUDMarkerList.WidgetTree_2147423221.WBP_Window_01.WidgetTree_2147423220.WBP_WindowHeader
+  Border_0 [Border] ColorAndOpacity=TrivialObject: 000002BE170DE4E8,TrivialObject: 000002BE170DE4E8,TrivialObject: 000002BE170DE4E8,TrivialObject: 000002BE170DE4E8 BrushColor=1.000,0.443,0.000,1.000
+  Border_0 [Border] DrawAs=TrivialObject: 000002BE170DE218 Margin=TrivialObject: 000002BE170DE218/TrivialObject: 000002BE170DE218/TrivialObject: 000002BE170DE218/TrivialObject: 000002BE170DE218 ImageSize=TrivialObject: 000002BE170DE218xTrivialObject: 000002BE170DE218 Tint=TrivialObject: 000002BE170DE218,TrivialObject: 000002BE170DE218,TrivialObject: 000002BE170DE218,TrivialObject: 000002BE170DE218 Res=nil tex=-
+  Image [Image] ColorAndOpacity=1.000,1.000,1.000,1.000 BrushColor=TrivialObject: 000002BE170DF7A8,TrivialObject: 000002BE170DF7A8,TrivialObject: 000002BE170DF7A8,TrivialObject: 000002BE170DF7A8
+  Image [Image] DrawAs=3 Margin=0.000/0.000/0.000/0.000 ImageSize=28.000x28.000 Tint=1.000,1.000,1.000,1.000 Res=nil tex=-
+  BarImage [Image] ColorAndOpacity=1.000,0.443,0.000,1.000 BrushColor=TrivialObject: 000002BE0BEF4F08,TrivialObject: 000002BE0BEF4F08,TrivialObject: 000002BE0BEF4F08,TrivialObject: 000002BE0BEF4F08
+  BarImage [Image] DrawAs=1 Margin=0.490/0.490/0.490/0.490 ImageSize=40.000x40.000 Tint=1.000,1.000,1.000,1.000 Res=Texture2D /Game/Materials/UI_Textures/T_UI_Header_Bar_R.T_UI_Header_Bar_R tex=?x?
+  RightBorder [Border] ColorAndOpacity=TrivialObject: 000002BE0BEF5688,TrivialObject: 000002BE0BEF5688,TrivialObject: 000002BE0BEF5688,TrivialObject: 000002BE0BEF5688 BrushColor=1.000,0.443,0.000,1.000
+  RightBorder [Border] DrawAs=TrivialObject: 000002BE0BEF5598 Margin=TrivialObject: 000002BE0BEF5598/TrivialObject: 000002BE0BEF5598/TrivialObject: 000002BE0BEF5598/TrivialObject: 000002BE0BEF5598 ImageSize=TrivialObject: 000002BE0BEF5598xTrivialObject: 000002BE0BEF5598 Tint=TrivialObject: 000002BE0BEF5598,TrivialObject: 000002BE0BEF5598,TrivialObject: 000002BE0BEF5598,TrivialObject: 000002BE0BEF5598 Res=nil tex=-
+  Button_86 [Button] Normal DrawAs=1 Margin=0.490/0.490/0.490/0.490 ImageSize=40.000x40.000 Tint=1.000,1.000,1.000,1.000 Res=Texture2D /Game/Materials/UI_Textures/T_UI_Header_R_Out.T_UI_Header_R_Out tex=?x?
+  Button_86 [Button] Hovered DrawAs=1 Margin=0.490/0.490/0.490/0.490 ImageSize=40.000x40.000 Tint=1.000,1.000,1.000,1.000 Res=Texture2D /Game/Materials/UI_Textures/T_UI_Header_R_Out.T_UI_Header_R_Out tex=?x?
+  Button_86 [Button] Pressed DrawAs=1 Margin=0.490/0.490/0.490/0.490 ImageSize=40.000x40.000 Tint=1.000,1.000,1.000,1.000 Res=Texture2D /Game/Materials/UI_Textures/T_UI_Header_R_In.T_UI_Header_R_In tex=?x?
+  CloseButtonImage [Image] ColorAndOpacity=1.000,1.000,1.000,1.000 BrushColor=TrivialObject: 000002BE17D8A928,TrivialObject: 000002BE17D8A928,TrivialObject: 000002BE17D8A928,TrivialObject: 000002BE17D8A928
+  CloseButtonImage [Image] DrawAs=3 Margin=0.000/0.000/0.000/0.000 ImageSize=12.000x12.000 Tint=0.255,0.255,0.255,1.000 Res=Texture2D /Game/Materials/UI_Textures/T_UI_X.T_UI_X tex=?x?
+INSTANCE 9 WBP_WindowHeader_C /Engine/Transient.GameEngine_2147482591:GameInstance_2147482545.WBP_CharacterStatus_C_2147423241.WidgetTree_2147423240.WBP_MissionsPanel.WidgetTree_2147423214.WBP_Window_01_0.WidgetTree_2147423213.WBP_WindowHeader
+  Border_0 [Border] ColorAndOpacity=TrivialObject: 000002BE17D8C188,TrivialObject: 000002BE17D8C188,TrivialObject: 000002BE17D8C188,TrivialObject: 000002BE17D8C188 BrushColor=1.000,0.443,0.000,1.000
+  Border_0 [Border] DrawAs=TrivialObject: 000002BE17D8B828 Margin=TrivialObject: 000002BE17D8B828/TrivialObject: 000002BE17D8B828/TrivialObject: 000002BE17D8B828/TrivialObject: 000002BE17D8B828 ImageSize=TrivialObject: 000002BE17D8B828xTrivialObject: 000002BE17D8B828 Tint=TrivialObject: 000002BE17D8B828,TrivialObject: 000002BE17D8B828,TrivialObject: 000002BE17D8B828,TrivialObject: 000002BE17D8B828 Res=nil tex=-
+  Image [Image] ColorAndOpacity=1.000,1.000,1.000,1.000 BrushColor=TrivialObject: 000002BE17D8D448,TrivialObject: 000002BE17D8D448,TrivialObject: 000002BE17D8D448,TrivialObject: 000002BE17D8D448
+  Image [Image] DrawAs=3 Margin=0.000/0.000/0.000/0.000 ImageSize=28.000x28.000 Tint=1.000,1.000,1.000,1.000 Res=nil tex=-
+  BarImage [Image] ColorAndOpacity=1.000,0.443,0.000,1.000 BrushColor=TrivialObject: 000002BE17D8ADD8,TrivialObject: 000002BE17D8ADD8,TrivialObject: 000002BE17D8ADD8,TrivialObject: 000002BE17D8ADD8
+  BarImage [Image] DrawAs=1 Margin=0.490/0.490/0.490/0.490 ImageSize=40.000x40.000 Tint=1.000,1.000,1.000,1.000 Res=Texture2D /Game/Materials/UI_Textures/T_UI_Header_Bar_R.T_UI_Header_Bar_R tex=?x?
+  RightBorder [Border] ColorAndOpacity=TrivialObject: 000002BE17D8A478,TrivialObject: 000002BE17D8A478,TrivialObject: 000002BE17D8A478,TrivialObject: 000002BE17D8A478 BrushColor=1.000,0.443,0.000,1.000
+  RightBorder [Border] DrawAs=TrivialObject: 000002BE17D8AFB8 Margin=TrivialObject: 000002BE17D8AFB8/TrivialObject: 000002BE17D8AFB8/TrivialObject: 000002BE17D8AFB8/TrivialObject: 000002BE17D8AFB8 ImageSize=TrivialObject: 000002BE17D8AFB8xTrivialObject: 000002BE17D8AFB8 Tint=TrivialObject: 000002BE17D8AFB8,TrivialObject: 000002BE17D8AFB8,TrivialObject: 000002BE17D8AFB8,TrivialObject: 000002BE17D8AFB8 Res=nil tex=-
+  Button_86 [Button] Normal DrawAs=1 Margin=0.490/0.490/0.490/0.490 ImageSize=40.000x40.000 Tint=1.000,1.000,1.000,1.000 Res=Texture2D /Game/Materials/UI_Textures/T_UI_Header_R_Out.T_UI_Header_R_Out tex=?x?
+  Button_86 [Button] Hovered DrawAs=1 Margin=0.490/0.490/0.490/0.490 ImageSize=40.000x40.000 Tint=1.000,1.000,1.000,1.000 Res=Texture2D /Game/Materials/UI_Textures/T_UI_Header_R_Out.T_UI_Header_R_Out tex=?x?
+  Button_86 [Button] Pressed DrawAs=1 Margin=0.490/0.490/0.490/0.490 ImageSize=40.000x40.000 Tint=1.000,1.000,1.000,1.000 Res=Texture2D /Game/Materials/UI_Textures/T_UI_Header_R_In.T_UI_Header_R_In tex=?x?
+  CloseButtonImage [Image] ColorAndOpacity=1.000,1.000,1.000,1.000 BrushColor=TrivialObject: 000002BE17D8BFA8,TrivialObject: 000002BE17D8BFA8,TrivialObject: 000002BE17D8BFA8,TrivialObject: 000002BE17D8BFA8
+  CloseButtonImage [Image] DrawAs=3 Margin=0.000/0.000/0.000/0.000 ImageSize=12.000x12.000 Tint=0.255,0.255,0.255,1.000 Res=Texture2D /Game/Materials/UI_Textures/T_UI_X.T_UI_X tex=?x?
+INSTANCE 10 WBP_Window_01_C /Game/Blueprints/Widgets/Popups/WBP_TagSelectPopup.WBP_TagSelectPopup_C:WidgetTree.WBP_Window_01
+INSTANCE 11 WBP_Window_01_C /Game/Blueprints/Widgets/Popups/WBP_DockSelectPopup.WBP_DockSelectPopup_C:WidgetTree.WBP_Window_01
+INSTANCE 12 WBP_Window_01_C /Game/Blueprints/Widgets/Windows/WBP_Elevator.WBP_Elevator_C:WidgetTree.WBP_Window_01
+INSTANCE 13 WBP_Window_01_C /Game/Blueprints/Widgets/Windows/WBP_StationProsperity.WBP_StationProsperity_C:WidgetTree.WBP_Window_01
+INSTANCE 14 WBP_Window_01_C /Game/Blueprints/Widgets/Windows/WBP_TradeConsole.WBP_TradeConsole_C:WidgetTree.WBP_Window_01
+INSTANCE 15 WBP_Window_01_C /Game/Blueprints/Widgets/Windows/WBP_Teleporter.WBP_Teleporter_C:WidgetTree.WBP_Window_01
+INSTANCE 16 WBP_Window_01_C /Game/Blueprints/Widgets/Windows/WBP_ShipDamageReport.WBP_ShipDamageReport_C:WidgetTree.WBP_Window_01
+INSTANCE 17 WBP_Window_01_C /Game/Blueprints/Widgets/Menus/WBP_PauseMenu.WBP_PauseMenu_C:WidgetTree.WBP_Window_01
+INSTANCE 18 WBP_Window_01_C /Game/Blueprints/Widgets/Windows/WBP_CharacterStatus.WBP_CharacterStatus_C:WidgetTree.WBP_Window_01
+INSTANCE 19 WBP_Window_01_C /Game/Blueprints/Widgets/Windows/WBP_Fleet.WBP_Fleet_C:WidgetTree.WBP_Window
+INSTANCE 20 WBP_Window_01_C /Game/Blueprints/Widgets/Windows/WBP_Fleet.WBP_Fleet_C:WidgetTree.WBP_Window_01
+INSTANCE 21 WBP_Window_01_C /Game/Blueprints/Widgets/Windows/WBP_Fleet.WBP_Fleet_C:WidgetTree.WBP_Window_01_0
+INSTANCE 22 WBP_Window_01_C /Game/Blueprints/Widgets/Windows/WBP_Codex.WBP_Codex_C:WidgetTree.WBP_Window_01
+INSTANCE 23 WBP_Window_01_C /Game/Blueprints/Widgets/Windows/WBP_Container.WBP_Container_C:WidgetTree.LogisticFiltersWindow
+INSTANCE 24 WBP_Window_01_C /Game/Blueprints/Widgets/Windows/WBP_MiningDroneBay.WBP_MiningDroneBay_C:WidgetTree.WBP_Window_01
+INSTANCE 25 WBP_Window_01_C /Game/Blueprints/Widgets/Windows/WBP_Dock.WBP_Dock_C:WidgetTree.WBP_Window_01
+INSTANCE 26 WBP_Window_01_C /Game/Blueprints/Widgets/Windows/WBP_SmallHangar.WBP_SmallHangar_C:WidgetTree.WBP_Window_01
+INSTANCE 27 WBP_Window_01_C /Game/Blueprints/Widgets/Windows/WBP_RemoteStationStatus.WBP_RemoteStationStatus_C:WidgetTree.WBP_Window_01
+INSTANCE 28 WBP_Window_01_C /Game/Blueprints/Widgets/Windows/WBP_RemoteShipStatus.WBP_RemoteShipStatus_C:WidgetTree.WBP_Window_01
+INSTANCE 29 WBP_Window_01_C /Game/Blueprints/Widgets/Windows/WBP_HUDMarkerList.WBP_HUDMarkerList_C:WidgetTree.WBP_Window_01
+INSTANCE 30 WBP_Window_01_C /Game/Blueprints/Widgets/Windows/WBP_ShipAutopilot.WBP_ShipAutopilot_C:WidgetTree.WBP_Window_01
+INSTANCE 31 WBP_Window_01_C /Game/Blueprints/Widgets/Windows/WBP_ShipAutopilot.WBP_ShipAutopilot_C:WidgetTree.WBP_Window_01_0
+INSTANCE 32 WBP_Window_01_C /Game/Blueprints/Widgets/Windows/WBP_MissionsPanel.WBP_MissionsPanel_C:WidgetTree.WBP_Window_01_0
+INSTANCE 33 WBP_Window_01_C /Game/Blueprints/Widgets/Windows/WBP_ShipStatus.WBP_ShipStatus_C:WidgetTree.WBP_Window_01
+INSTANCE 34 WBP_Window_01_C /Game/Blueprints/Widgets/Windows/WBP_FireGroupConfig.WBP_FireGroupConfig_C:WidgetTree.WBP_Window_01
+INSTANCE 35 WBP_Window_01_C /Game/Blueprints/Widgets/Windows/WBP_NewShipWindow.WBP_NewShipWindow_C:WidgetTree.WBP_Window_01
+INSTANCE 36 WBP_Window_01_C /Game/Blueprints/Widgets/Windows/WBP_Shipyard.WBP_Shipyard_C:WidgetTree.WBP_Window_01
+INSTANCE 37 WBP_Window_01_C /Game/Blueprints/Widgets/Windows/WBP_Shipyard.WBP_Shipyard_C:WidgetTree.WBP_Window_01_107
+INSTANCE 38 WBP_Window_01_C /Game/Blueprints/Widgets/Windows/WBP_WarpDestination.WBP_WarpDestination_C:WidgetTree.WBP_Window
+INSTANCE 39 WBP_Window_01_C /Game/Blueprints/Widgets/Windows/WBP_WarpDestination.WBP_WarpDestination_C:WidgetTree.WBP_Window_01
+INSTANCE 40 WBP_Window_01_C /Game/Blueprints/Widgets/Windows/WBP_WarpDestination.WBP_WarpDestination_C:WidgetTree.WBP_Window_1
+TEXTURES count=93
+TEX ?x? Texture2D /Game/Materials/Icons/Map/T_UI_Map_Asteroids.T_UI_Map_Asteroids
+TEX ?x? Texture2D /Game/Materials/Icons/Map/T_UI_Map_Planet.T_UI_Map_Planet
+TEX ?x? Texture2D /Game/Materials/Icons/Map/T_UI_Sun.T_UI_Sun
+TEX ?x? Texture2D /Game/Materials/Icons/UI/T_UI_Arrow.T_UI_Arrow
+TEX ?x? Texture2D /Game/Materials/Icons/UI/T_UI_Autopilot.T_UI_Autopilot
+TEX ?x? Texture2D /Game/Materials/Icons/UI/T_UI_Boost.T_UI_Boost
+TEX ?x? Texture2D /Game/Materials/Icons/UI/T_UI_BuildHeightDown.T_UI_BuildHeightDown
+TEX ?x? Texture2D /Game/Materials/Icons/UI/T_UI_BuildHeightUp.T_UI_BuildHeightUp
+TEX ?x? Texture2D /Game/Materials/Icons/UI/T_UI_BuildLength.T_UI_BuildLength
+TEX ?x? Texture2D /Game/Materials/Icons/UI/T_UI_Building.T_UI_Building
+TEX ?x? Texture2D /Game/Materials/Icons/UI/T_UI_BuildingGrid.T_UI_BuildingGrid
+TEX ?x? Texture2D /Game/Materials/Icons/UI/T_UI_Checkmark.T_UI_Checkmark
+TEX ?x? Texture2D /Game/Materials/Icons/UI/T_UI_Codex.T_UI_Codex
+TEX ?x? Texture2D /Game/Materials/Icons/UI/T_UI_ColourPallete.T_UI_ColourPallete
+TEX ?x? Texture2D /Game/Materials/Icons/UI/T_UI_Commendation.T_UI_Commendation
+TEX ?x? Texture2D /Game/Materials/Icons/UI/T_UI_Delete.T_UI_Delete
+TEX ?x? Texture2D /Game/Materials/Icons/UI/T_UI_Disassemble.T_UI_Disassemble
+TEX ?x? Texture2D /Game/Materials/Icons/UI/T_UI_Experience.T_UI_Experience
+TEX ?x? Texture2D /Game/Materials/Icons/UI/T_UI_Filter.T_UI_Filter
+TEX ?x? Texture2D /Game/Materials/Icons/UI/T_UI_Gear.T_UI_Gear
+TEX ?x? Texture2D /Game/Materials/Icons/UI/T_UI_ItemStacking.T_UI_ItemStacking
+TEX ?x? Texture2D /Game/Materials/Icons/UI/T_UI_Lock.T_UI_Lock
+TEX ?x? Texture2D /Game/Materials/Icons/UI/T_UI_MapMarkerIcon.T_UI_MapMarkerIcon
+TEX ?x? Texture2D /Game/Materials/Icons/UI/T_UI_Mouse.T_UI_Mouse
+TEX ?x? Texture2D /Game/Materials/Icons/UI/T_UI_Pin.T_UI_Pin
+TEX ?x? Texture2D /Game/Materials/Icons/UI/T_UI_PinFilled.T_UI_PinFilled
+TEX ?x? Texture2D /Game/Materials/Icons/UI/T_UI_Power.T_UI_Power
+TEX ?x? Texture2D /Game/Materials/Icons/UI/T_UI_Random.T_UI_Random
+TEX ?x? Texture2D /Game/Materials/Icons/UI/T_UI_Retrieve.T_UI_Retrieve
+TEX ?x? Texture2D /Game/Materials/Icons/UI/T_UI_Scan.T_UI_Scan
+TEX ?x? Texture2D /Game/Materials/Icons/UI/T_UI_Ship2.T_UI_Ship2
+TEX ?x? Texture2D /Game/Materials/Icons/UI/T_UI_SingleShip.T_UI_SingleShip
+TEX ?x? Texture2D /Game/Materials/Icons/UI/T_UI_Snapping.T_UI_Snapping
+TEX ?x? Texture2D /Game/Materials/Icons/UI/T_UI_Sort.T_UI_Sort
+TEX ?x? Texture2D /Game/Materials/Icons/UI/T_UI_StationIcon.T_UI_StationIcon
+TEX ?x? Texture2D /Game/Materials/Icons/UI/T_UI_Timer.T_UI_Timer
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_Arrow2.T_UI_Arrow2
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_BasicPanel_2.T_UI_BasicPanel_2
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_CheckEmpty.T_UI_CheckEmpty
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_CheckFilled.T_UI_CheckFilled
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_Checkbox2_Empty.T_UI_Checkbox2_Empty
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_Checkbox2_Hovered.T_UI_Checkbox2_Hovered
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_Checkbox2_Selected.T_UI_Checkbox2_Selected
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_CircleIndicator.T_UI_CircleIndicator
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_CircleIndicator_OFF.T_UI_CircleIndicator_OFF
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_CircleIndicator_ON.T_UI_CircleIndicator_ON
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_CleanButton_2.T_UI_CleanButton_2
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_CleanButton_3.T_UI_CleanButton_3
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_CleanButton_4.T_UI_CleanButton_4
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_CleanTab.T_UI_CleanTab
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_DropShadow.T_UI_DropShadow
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_Edit.T_UI_Edit
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_Fleet_2.T_UI_Fleet_2
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_Footer.T_UI_Footer
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_FrontPanel.T_UI_FrontPanel
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_Header_Bar.T_UI_Header_Bar
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_Header_Bar_R.T_UI_Header_Bar_R
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_Header_L.T_UI_Header_L
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_Header_R.T_UI_Header_R
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_Header_R_In.T_UI_Header_R_In
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_Header_R_Out.T_UI_Header_R_Out
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_Hotbar.T_UI_Hotbar
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_Inset_01.T_UI_Inset_01
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_Inset_02.T_UI_Inset_02
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_ItemTransport.T_UI_ItemTransport
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_OffscreenArrow_02.T_UI_OffscreenArrow_02
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_OffscreenHUDArrow.T_UI_OffscreenHUDArrow
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_POI.T_UI_POI
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_Panel_01.T_UI_Panel_01
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_Panel_02.T_UI_Panel_02
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_Panel_03.T_UI_Panel_03
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_Panel_04.T_UI_Panel_04
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_Plus.T_UI_Plus
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_Portrait.T_UI_Portrait
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_Progress.T_UI_Progress
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_Progress_2.T_UI_Progress_2
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_Progress_Fill.T_UI_Progress_Fill
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_RedAlert.T_UI_RedAlert
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_Research.T_UI_Research
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_Return.T_UI_Return
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_ShipHUD_2.T_UI_ShipHUD_2
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_SidePanel_L.T_UI_SidePanel_L
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_Slant.T_UI_Slant
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_SmallButton_01.T_UI_SmallButton_01
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_SmallButton_02.T_UI_SmallButton_02
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_SmallButton_02_Pressed.T_UI_SmallButton_02_Pressed
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_Storage.T_UI_Storage
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_TilingDashes.T_UI_TilingDashes
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_Toggle_L.T_UI_Toggle_L
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_Toggle_R.T_UI_Toggle_R
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_Warning.T_UI_Warning
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_Warp.T_UI_Warp
+TEX ?x? Texture2D /Game/Materials/UI_Textures/T_UI_X.T_UI_X

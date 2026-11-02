@@ -1,0 +1,671 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Main Sequence Developer Reference</title>
+<style>
+:root{--bg:#14171c;--panel:#1b1f26;--line:#2b313b;--tx:#d7dde5;--dim:#8b95a3;--ac:#4aa8ff;--ok:#4cc38a;--inf:#e0b04a;--unk:#e0675a;--code:#0f1216}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.55 system-ui,Segoe UI,sans-serif;display:flex;min-height:100vh}
+nav{width:290px;flex:none;position:sticky;top:0;height:100vh;overflow:auto;background:var(--panel);border-right:1px solid var(--line);padding:14px 0}
+nav h1{font-size:15px;margin:0 16px 10px;color:var(--ac)}
+nav input{width:calc(100% - 32px);margin:0 16px 10px;padding:7px 9px;background:var(--code);border:1px solid var(--line);color:var(--tx);border-radius:4px}
+nav .grp{margin:12px 16px 3px;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim)}
+nav a{display:block;padding:3px 16px 3px 22px;color:var(--tx);text-decoration:none;font-size:13.5px;border-left:2px solid transparent}
+nav a:hover{background:#232932;border-left-color:var(--ac)}
+nav a.hide{display:none}
+main{flex:1;min-width:0;max-width:1000px;padding:28px 40px 120px}
+h2{font-size:24px;border-bottom:1px solid var(--line);padding-bottom:6px;margin:48px 0 14px}
+h2:first-child{margin-top:0}
+h3{font-size:17px;margin:30px 0 6px;color:#fff}
+h3 small{font-weight:400;color:var(--dim);font-size:13px;margin-left:8px}
+h4{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);margin:14px 0 4px}
+code,pre{font-family:Consolas,Menlo,monospace;font-size:13px}
+code{background:var(--code);padding:1px 5px;border-radius:3px}
+pre{background:var(--code);border:1px solid var(--line);border-radius:5px;padding:10px 12px;overflow:auto;margin:6px 0 12px}
+table{border-collapse:collapse;width:100%;margin:6px 0 14px;font-size:13.5px}
+th,td{border:1px solid var(--line);padding:5px 9px;text-align:left;vertical-align:top}
+th{background:var(--panel);color:var(--dim);font-weight:600}
+.badge{display:inline-block;font-size:10.5px;font-weight:700;letter-spacing:.05em;padding:1px 6px;border-radius:3px;margin-right:4px;vertical-align:1px}
+.v{background:#173a2b;color:var(--ok)}.i{background:#3d3112;color:var(--inf)}.u{background:#3f1b17;color:var(--unk)}
+.sig{background:var(--code);border-left:3px solid var(--ac);padding:8px 12px;margin:6px 0 10px;font-family:Consolas,monospace;font-size:13px;overflow:auto}
+.note{border-left:3px solid var(--inf);background:#1f1b10;padding:7px 12px;margin:10px 0}
+.bad{border-left-color:var(--unk);background:#201211}
+.good{border-left-color:var(--ok);background:#0f1e17}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:13px;color:var(--dim)}
+a{color:var(--ac)}
+@media(max-width:800px){body{display:block}nav{position:static;width:auto;height:auto;max-height:50vh}main{padding:20px 16px 80px}}
+</style>
+</head>
+<body>
+<nav id="nav">
+<h1>Main Sequence<br>Developer Reference</h1>
+<input id="q" placeholder="Filter (e.g. warp, dock, chunk)..." autocomplete="off">
+</nav>
+<main id="main">
+
+<h2 id="overview">Overview</h2>
+<p>Reference for <b>Main Sequence Demo</b> (Steam, Unreal Engine 5.7, shipping build, IoStore, unencrypted) built from reverse engineering, UE4SS probes and the MiningBenchMod project (<code>&lt;repo&gt;</code>). It documents how the game simulation works, which classes, functions and input commands exist, what each one does, and how the mod uses them.</p>
+<div class="legend">
+<span><span class="badge v">VERIFIED</span>seen working in game / in logs</span>
+<span><span class="badge i">INFERRED</span>from decompile or reflection data, not run</span>
+<span><span class="badge u">UNKNOWN</span>open question</span>
+</div>
+<table>
+<tr><th>Item</th><th>Value</th></tr>
+<tr><td>Game dir</td><td><code>&lt;game dir&gt;</code> (Paks in <code>Content\Paks</code>; launch via <code>Windows\MainSequence.exe</code> only)</td></tr>
+<tr><td>Executable</td><td><code>MainSequence-Win64-Shipping.exe</code>, 149 200 896 bytes, image base <code>0x140000000</code>, no symbols</td></tr>
+<tr><td>Native module</td><td><code>/Script/MainSequence</code> (all gameplay logic is C++; Blueprints are thin shells)</td></tr>
+<tr><td>Mod loader</td><td>RE-UE4SS (experimental/zDEV, built at <code>cdbc0b66</code>), C++ mod <code>MiningBenchMod</code> + Lua mod <code>SandboxMenu</code></td></tr>
+<tr><td>Asset tooling</td><td>retoc (IoStore &harr; legacy, master build), FModel, UAssetGUI, UE 5.7.4 project <code>ue\MiningUnitUI</code> for the mod's UMG window</td></tr>
+<tr><td>RE tooling</td><td>Ghidra 12.2 + JDK 25 (portable, <code>&lt;ghidra dir&gt;</code>), custom headless scripts <code>&lt;ghidra work dir&gt;\scripts\Lean.java</code> (full auto-analysis OOMs at 28 GB, so import with <code>-noanalysis</code>)</td></tr>
+<tr><td>Mod version</td><td>0.3.1 (<code>mb_version.hpp</code>), branch <code>refactor/clean-code</code></td></tr>
+</table>
+
+<h3 id="arch-diagram">Big picture</h3>
+<pre>
+ Player / Mod                Local machine (every machine simulates the WHOLE world: deterministic lockstep)
+ ------------                ------------------------------------------------------------------------------
+ UI click / hotkey  ----->   DMSPlayerController  --AddInputCommand(receiverId, cmd)-->  input queue (0x768)
+ Lua / C++ mod      ----->   (SetThrottleInput, SetShipAutopilot, ...)                          |
+                                                                                  flushed + replicated (co-op)
+                                                                                               v
+                                                      sim objects (SaveableObject): DMSPlayerObject, DMSPlayerShipObject,
+                                                      SolarSystem, SolarSystemSector, Chunk, Dock, orders ...
+                                                                                               |
+                                                                           presentation layer (local only)
+                                                                                               v
+                                                      Actors: BP_Scout (ship visuals), BP_GenericResourceAsteroid_C, HUD
+</pre>
+<p>Key consequence: <b>input commands are the only way to change the simulation</b>. Writing a property on a sim object only changes your local copy. In co-op that desyncs. The mod therefore sends the same commands the UI does.</p>
+
+<!-- ============ ARCHITECTURE ============ -->
+<h2 id="architecture">Game architecture</h2>
+
+<h3 id="lockstep">Lockstep simulation &amp; co-op</h3>
+<span class="badge i">INFERRED</span>
+<p>Co-op is deterministic lockstep. Every machine runs the full sim, only inputs travel. Actor streaming (what you see) is purely local presentation. Rules for mods: <b>do not mutate sim state locally</b>, send input commands, keep logic deterministic. The mod must not interfere with co-op.</p>
+<h4>DMSPlayerController net RPCs</h4>
+<table>
+<tr><th>Function</th><th>Role</th></tr>
+<tr><td><code>Server_RequestJoin(InAccountOverride:Str)</code></td><td>client asks to join</td></tr>
+<tr><td><code>Server_NotifyClientReady</code>, <code>Server_PossessCharacter</code></td><td>join flow</td></tr>
+<tr><td><code>Server_ReceiveClientInput(UpdateIndex, NetPlayerInput)</code></td><td>client sends its input bundle for a frame</td></tr>
+<tr><td><code>Server_ValidateDeterminismResponse(Report)</code> / <code>Client_ValidateDeterminism(Checksum)</code></td><td>desync detection</td></tr>
+<tr><td><code>Client_AddRemotePlayer(NewRemotePlayerID, NewPlayerNickname, StartingFrame)</code></td><td>adds a remote sim player (PlayerObject + input stream, no controller/pawn)</td></tr>
+<tr><td><code>Client_ReceiveRemoteInput</code>, <code>Client_ReceiveExistingInput</code>, <code>Client_RemovePlayer</code>, <code>Client_SetPlayerStartFrame</code>, <code>Client_ResumeGame</code></td><td>input replication / lifecycle</td></tr>
+<tr><td><code>Client_ReceiveWorldTransferBunch</code></td><td>world save transfer to the joiner</td></tr>
+</table>
+<p>Props: <code>CurrentInputFrame</code>, <code>TargetInputDelay</code>, <code>MaxInputDelay</code>, <code>NetworkState</code>, <code>NetworkController</code>, <code>WorldTransferBunches</code>, <code>InputCommandBundles</code>, <code>AccountOverride</code>. <code>IsSinglePlayer()</code>.</p>
+
+<h3 id="fixedpoint">Fixed-point numbers &amp; coordinates</h3>
+<table>
+<tr><th>Type</th><th>Layout</th><th>Notes</th></tr>
+<tr><td><code>PNum</code></td><td>struct with one int32/int64 field <code>Value</code></td><td><span class="badge v">VERIFIED</span> 65536 raw = 1 metre (<code>g_raw_per_m</code>). Rock radii come out as exact 8 / 70 m. An early guess of 21845 was 3x wrong.</td></tr>
+<tr><td><code>PVector</code></td><td>X, Y, Z PNum</td><td>Location inside a chunk</td></tr>
+<tr><td><code>Quat</code></td><td>W, X, Y, Z PNum</td><td>divide by 65536 for a unit quaternion; identity = W 65536</td></tr>
+<tr><td><code>IntVector</code></td><td>X, Y, Z int</td><td>chunk coordinates</td></tr>
+<tr><td>Chunk size</td><td>2048 m (=134 217 728 raw per axis)</td><td><span class="badge v">VERIFIED</span> from a 270.9 km measurement. Used for km distance column.</td></tr>
+<tr><td>Actor floats</td><td><code>K2_GetActorLocation</code> etc.</td><td>UE units, 100 uu = 1 m</td></tr>
+</table>
+<div class="note"><b>Save-object <code>Location</code> is chunk-relative.</b> World position = <code>ChunkLocation * 134217728 + Location</code> (raw). Never measure distances from <code>Location</code> alone. The mod uses actor positions for local distances and absolute (chunk*134217728+loc) positions for sector-scale checks (<code>warp_check</code>, tolerance 6 553 600 raw = 100 m).</div>
+
+<h3 id="hierarchy">Class hierarchy</h3>
+<pre>
+Controller   BP_PlayerController_C &gt; DMSPlayerController &gt; DMSNetController &gt; PlayerController
+Pawn         BP_CameraPawn_C &gt; Pawn            (what Controller.Pawn returns; no movement component)
+Walking body BP_Character_C &gt; DMSCharacter &gt; DMSActorBase &gt; Actor     (NOT ACharacter: no CharacterMovement, no Jump)
+Ship (sim)   BP_NewShipObject_C / BP_PlayerShipObject_C &gt; DMSPlayerShipObject &gt; ... SaveableObject
+Ship visual  BP_Scout                         (receives OnJumpStartCharging / OnJumpStart / OnJumpEnd / UpdateJumpChargeProgress; cosmetic only)
+Console      BP_PilotConsoleObject            (components only; the ship's pilot seat)
+Player sim   DMSPlayerObject &gt; SaveableObject (PlayerID, Nickname, PilotedShip, CachedChunkLocation, ChunkLoadingDistance ...)
+World        SolarSystem &gt; SolarSystemSector, Chunk, AsteroidBelt, Dock objects
+Rock (sim)   SmallResourceAsteroidObject      (save object, ID = DMSActorBase.ObjectId of the actor)
+Rock (actor) BP_GenericResourceAsteroid_C &gt; DMSActorBase &gt; Actor
+</pre>
+<p><span class="badge v">VERIFIED</span> Ship and console Blueprints hold <b>no logic</b>: all jump/charge/fuel/autopilot code is native in <code>/Script/MainSequence</code>.</p>
+
+<h3 id="ids">Object IDs</h3>
+<p>Every <code>SaveableObject</code> has an int <code>ID</code> (and <code>ParentID</code>). The command system addresses sim objects by id (<code>receiver</code>). Ids seen:</p>
+<table>
+<tr><th>Id</th><th>What</th></tr>
+<tr><td>2325</td><td>player object / controller receiver (sample session)</td></tr>
+<tr><td>41536</td><td>pilot console id used in <code>SetPilotingInput</code> sample</td></tr>
+<tr><td>41529, 41627, 41707, 41787</td><td>Observator + Miners 1-3 (sample session)</td></tr>
+<tr><td>6</td><td>SolarSystem 6 (21 sectors)</td></tr>
+<tr><td>1008</td><td>SolarSystemSector "Rich Asteroid Field", chunk (-255,0,0), ParentID 6</td></tr>
+<tr><td>768, 1008, 1247, 1488</td><td>Rich Asteroid Fields</td></tr>
+<tr><td>265, 435, 602</td><td>Fractured fields</td></tr>
+<tr><td>1977-1981</td><td>Icy fields</td></tr>
+<tr><td>1728, 1969-1972</td><td>Asteroid Fields</td></tr>
+<tr><td>1909 / 1973</td><td>Trading Outpost / Relic Destroyer</td></tr>
+</table>
+
+<!-- ============ INPUT COMMANDS ============ -->
+<h2 id="commands">Input command system</h2>
+<p>All gameplay actions are <code>InputCommand</code> objects pushed to the controller's queue. They are created via <code>CreateInput*</code> static factories (or <code>NewObject</code> for native-only ones), then sent with <code>AddInputCommand</code>.</p>
+
+<h3 id="AddInputCommand">DMSPlayerController:AddInputCommand</h3><span class="badge v">VERIFIED</span>
+<div class="sig">AddInputCommand(ReceiverId:int, Cmd:InputCommand)   // native thunk 0x144211920 -> FUN_1442609d0</div>
+<p>Sets <code>cmd+0x38 = ReceiverId</code> and appends to the controller queue at <code>+0x768</code> (<code>AccumulatedPlayerInput</code>). The flush (<code>FUN_144265260</code>) <b>drops any command whose <code>cmd+0x28</code> type id is 0</b>, serialises the type id + payload and replicates it. The receiver id selects the target sim object: a ship id for ship commands, the player object id (2325) for player/map commands.</p>
+<div class="note">Commands created with a <code>CreateInput*</code> factory have the type id set. Commands built with <code>NewObject</code> (no factory exists) leave <code>+0x28 = 0</code> and are silently dropped unless the mod writes the id by hand (see <a href="#ShipMovementInputCommand">ShipMovementInputCommand</a>).</div>
+
+<h3 id="ViewInput">ViewInput <small>steering</small></h3><span class="badge v">VERIFIED</span>
+<div class="sig">ViewInput.CreateInputView(ControlMode=SHIP(1), ViewRotation)  -> AddInputCommand(PilotConsole id, cmd)</div>
+<p><code>ViewRotation</code> is an <b>aim offset relative to the ship nose</b>, not an absolute rotation. The ship turns at a rate growing with the offset; there is a <b>~7 deg dead zone</b>; <code>(0,0)</code> stops rotation. This is how the mod rotates unpiloted ships (<code>view_send</code>, <code>view_zero</code>, <code>zero_all</code>). The receiver is the ship's <code>PilotConsoleObject</code> (<code>pilot_console_of</code>).</p>
+
+<h3 id="SetThrottleInput">SetThrottleInput <small>controller, not a command</small></h3><span class="badge v">VERIFIED</span>
+<div class="sig">DMSPlayerController:SetThrottleInput(value:int)   // thunk 0x144213c40 -> FUN_144263ca0</div>
+<p>Only stores <code>ctrl+0x80c = value</code> and sets the dirty flag <code>ctrl+0x808</code>. The controller tick (<code>FUN_144261794</code>) turns a dirty input into a <code>ShipMovementInputCommand</code> addressed to the <b>PlayerObject id</b> (<code>cmd+0x38 = PlayerObject+0x30</code>). Per-frame state, not per-ship. Does not work for unpiloted ships (that is why the mod builds the command itself).</p>
+
+<h3 id="ShipMovementInputCommand">ShipMovementInputCommand <small>type id 0x3a</small></h3><span class="badge v">VERIFIED</span>
+<table>
+<tr><th>Field</th><th>Offset</th><th>Notes</th></tr>
+<tr><td><code>DeltaThrottle</code> int32</td><td>0x40</td><td>+1 / -1 = throttle step</td></tr>
+<tr><td><code>RotationImpulse</code> struct(3 ints)</td><td>0x44</td><td></td></tr>
+<tr><td><code>StrafeImpulse</code> struct</td><td>0x50</td><td></td></tr>
+<tr><td>type id (non-reflected int)</td><td>0x28</td><td>must be <b>0x3a</b>; the constructor leaves 0, flush drops it</td></tr>
+<tr><td>receiver id</td><td>0x38</td><td>set by <code>AddInputCommand</code></td></tr>
+</table>
+<p>There is no <code>CreateInput</code> factory for it. The mod does <code>NewObject(/Script/MainSequence.ShipMovementInputCommand)</code>, writes <code>DeltaThrottle</code> by reflection and the type id 0x3a at <code>+0x28</code> by raw pointer, then <code>AddInputCommand(shipId, cmd)</code> (<code>send_ship_throttle</code> in <code>mb_warpreal.hpp</code>). Ship handler: <code>FUN_144287a1b</code>. <b>No pilot check</b> in the handler, so an unpiloted ship accepts it. <span class="badge v">CONFIRMED</span> in game (commit 7d94fcb): this is what starts a warp charge.</p>
+
+<h3 id="ShipTeleportInput">ShipTeleportInput <small>warp / teleport</small></h3><span class="badge v">VERIFIED</span>
+<pre>ShipTeleportInput {
+  bSetTarget  = 1      // 1 = only set the jump target (game then charges + warps); 0/other combos = instant teleport
+  bClearTarget= 0
+  NewLocation = PVector{X,Y,Z .Value}      // fixed-point, chunk-relative
+  NewQuat     = {W=65536, X=0, Y=0, Z=0}
+  NewChunkLocation = IntVector
+  NewSolarSystem   = int (sector.ParentID)
+}   -> AddInputCommand(shipId, cmd)</pre>
+<p>The player's manual warp wraps it: <code>SetPilotingInput(receiver=2325, bNewPiloting=1, ConsoleID)</code> &rarr; <code>ShipTeleportInput(ship)</code> &rarr; <code>SetPilotingInput(bNewPiloting=0)</code>. With <code>bSetTarget=1</code> the ship gets <code>bJumpTargetSet=1</code> and the jump target fields, no movement yet. With the full sequence and no further commands the ship <b>teleports instantly and costs no warp fuel</b> (FUELWARP: consumed = no).</p>
+
+<h3 id="SetPilotingInput">SetPilotingInput</h3><span class="badge v">VERIFIED</span>
+<div class="sig">SetPilotingInput(receiver = player object id, bNewPiloting:bool, ConsoleID:int)</div>
+<p>Seats / unseats the player in a console. The "seat hack" (piloting an unpiloted ship by sending this with a ship's console id) works but the user dislikes it; removed in the final warp flow.</p>
+
+<h3 id="ShipFiringInput">ShipFiringInput</h3><span class="badge v">VERIFIED</span>
+<div class="sig">ShipFiringInput{bPrimary, bSecondary}  -> AddInputCommand(shipId)</div>
+<p>Fire groups. <b>Mining laser = primary, item scooper / tractor beam = secondary.</b> The mining cannon shares the primary group, so the mod fires the laser via its own weapon only. Writing the <code>bFiring</code> flag alone does <b>not</b> fire. Stop silences all weapons. Mining laser range 270 m, tractor 300 m (user-reported).</p>
+
+<h3 id="MapPinInputCommand">MapPinInputCommand</h3><span class="badge v">VERIFIED</span>
+<div class="sig">MapPinInputCommand{ObjectId = sector id, bShow, bHide, bDestroy}  -> AddInputCommand(2325)</div>
+<p>Right-click "mark" on a sector in the galaxy map. The mod hooks <code>AddInputCommand</code> (pre-hook, <code>mb_pin.hpp</code>) to store the last <code>bShow=1</code> pin id as <code>g_pinned_sector</code> (written to <code>MiningPinned.txt</code>). The hook compares class pointers only (no name strings, no logging) to stay cheap.</p>
+
+<h3 id="SetViewTarget">SetViewTarget</h3><span class="badge v">VERIFIED</span>
+<div class="sig">SetViewTarget(InViewTarget:Object)</div>
+<p>Galaxy map select/hover. Targets seen: <code>SolarSystemSector{ID,ParentID,ChunkLocation,HalfExtents(2,2,2),GenParams,Biome,GenerationID}</code>, <code>SolarSystem{DisplayName,WorldGenParams,StarGenParams,AsteroidBelts[]}</code>, asteroids, ships, stations.</p>
+
+<h3 id="SetDestinationTarget">SetDestinationTarget <small>J-warp window</small></h3><span class="badge v">VERIFIED</span>
+<p><code>WBP_WarpDestination</code> (opened by <code>IA_WarpJump</code> if <code>PilotedShip:CanWarp()</code>) row click &rarr; <code>SetDestinationTarget(SaveableObject = sector)</code> &rarr; calls <code>GetJumpArrivalLocation</code> &rarr; the ship gets <code>bJumpTargetSet=1</code>, <code>JumpTargetLocation</code>, <code>JumpTargetChunkLocation</code>. A <code>BPO_JumpTarget_C</code> object (parent = player 2325) is created with Location / ChunkLocation / SolarSystemID. The controller itself sends no warp command. The warp key only opens the window.</p>
+
+<h3 id="orders">Order commands</h3>
+<table>
+<tr><th>Command</th><th>Factory</th><th>Notes</th></tr>
+<tr><td><code>NewShipOrderInput</code></td><td><code>CreateInputNewShipOrder(InClass)</code></td><td>Creating a <code>DeliverOrder</code> alone does <b>not</b> move the ship (brief Update 24). Mod: <code>send_new_deliver_order</code>.</td></tr>
+<tr><td><code>UpdateShipOrderInput</code></td><td><code>CreateInputUpdateShipOrder(InTargetID, InItem, InComparison, InAmount)</code></td><td>sets dock / item / comparison / amount on an order (<code>send_update_order</code>, <code>send_update_order_dock</code>)</td></tr>
+<tr><td><code>DeleteShipOrder</code></td><td></td><td><code>send_delete_order</code></td></tr>
+<tr><td><code>SetShipAutopilot(ShipID, bool)</code></td><td>controller function</td><td>on/off</td></tr>
+<tr><td><code>SkipToOrder(ShipID, idx)</code></td><td>controller function</td><td>the player's dock flow = autopilot on + SkipToOrder(0) on the EXISTING order</td></tr>
+<tr><td><code>LogisticFilterInput</code></td><td><code>CreateInputLogisticFilter(InIndex, InItemStack{Item,Amount}, InAction, bInRemove)</code></td><td>Action LIMIT=0, BUFFER=1. Row flow: index N with empty item = new row, then item (amount 0), then amount, then action. <code>mb_filters.hpp</code>.</td></tr>
+</table>
+
+<h3 id="other-cmds">Other commands seen</h3>
+<p><code>ShipBoosting</code>, <code>Ability</code>, <code>Hotbar</code>, <code>SetPiloting(false,0)</code>, <code>SetJumpTarget</code>, <code>WarpJump</code> (hooks never fired in probes; the jump trigger is the throttle command, see <a href="#warp">Warp</a>).</p>
+
+<!-- ============ CLASS REFERENCE ============ -->
+<h2 id="classes">Class &amp; property reference</h2>
+
+<h3 id="DMSPlayerController">DMSPlayerController</h3>
+<table>
+<tr><th>Member</th><th>Offset</th><th>Notes</th></tr>
+<tr><td>PlayerObject</td><td>0x798</td><td>local DMSPlayerObject</td></tr>
+<tr><td>AccumulatedPlayerInput</td><td>0x768</td><td>command queue</td></tr>
+<tr><td>ShipMovementInput (struct) / dirty</td><td>0x808</td><td></td></tr>
+<tr><td>throttle int</td><td>0x80c</td><td>written by SetThrottleInput</td></tr>
+<tr><td>RotationImpulse / StrafeImpulse</td><td>0x810 / 0x81c</td><td></td></tr>
+<tr><td>ViewDistance</td><td>0x7b0</td><td>= 2 (<span class="badge i">INFERRED</span>)</td></tr>
+<tr><td>bChunksHidden</td><td>0x960</td><td></td></tr>
+<tr><td>PlayerCachedChunkLocation (IntVector)</td><td>0x964</td><td>overwritten by LoadChunks (do not write)</td></tr>
+<tr><td>CurrentLoadedChunks TArray / Set</td><td>0x970 / 0x980</td><td>125 entries normally</td></tr>
+<tr><td>ScannableHUDMarkers</td><td></td><td>the game's V-scan list; the mod's rock list source</td></tr>
+<tr><td>CharacterInputEnabled</td><td></td><td>bool</td></tr>
+</table>
+<p>Functions: <code>AddInputCommand</code>, <code>SetThrottleInput</code>, <code>SetShipAutopilot</code>, <code>SkipToOrder</code>, <code>LoadChunks()</code>, <code>UnloadChunks()</code>, <code>SetLocalPlayerChunk(obj)</code>, <code>FixedUpdate()</code>, <code>UpdateSolarLocation()</code>, <code>IsSinglePlayer()</code>. Input actions: <code>IA_Throttle</code>, <code>IA_WarpJump</code> (ship warp, not a body jump).</p>
+
+<h3 id="DMSPlayerShipObject">DMSPlayerShipObject <small>the ship</small></h3>
+<table>
+<tr><th>Property</th><th>Offset</th><th>Notes</th></tr>
+<tr><td>Health</td><td>0x2e8</td><td>int (e.g. 350/350, MaxHealth 500). <code>Hull.Value</code> raw = hp*65536. <code>GetCurrentHull</code>. Shields 0 on these ships.</td></tr>
+<tr><td>FlightModel</td><td>0x4e0</td><td>ptr, <code>DAT_SmallShipFlightModel</code></td></tr>
+<tr><td>Throttle</td><td>0x4e8</td><td>int clamped -10..10; cooldown <code>LastThrottleUpdateFrame</code> 0x4ec</td></tr>
+<tr><td>bAutopilot</td><td>0x5e8</td><td><span class="badge i">INFERRED</span></td></tr>
+<tr><td>CurrentOrderIndex / Orders</td><td>0x5ec / 0x5f0</td><td></td></tr>
+<tr><td>bJumpTargetSet / bAlignedWithJumpTarget / bInsufficientWarpFuel</td><td>0x668 / 0x669 / 0x66a</td><td></td></tr>
+<tr><td>JumpTargetID</td><td>0x66c</td><td></td></tr>
+<tr><td>bTravelling</td><td>0x670</td><td></td></tr>
+<tr><td>JumpProgress / JumpArrivalProgress</td><td>0x678 / 0x67c</td><td></td></tr>
+<tr><td>ChargeToJump / RequiredChargeToJump</td><td>0x68c / 0x690</td><td>RequiredChargeToJump = 30</td></tr>
+<tr><td>JumpAnimProgress</td><td>0x694</td><td>0 = idle, &ge;1 = charging (tick increments)</td></tr>
+<tr><td>JumpTargetLocation / Chunk / SolarSystemId</td><td>0x6bc / 0x6c8 / 0x6d4</td><td></td></tr>
+<tr><td>WarpDrive (ptr) / WarpDriveID</td><td>0x7e0 / 0x7e8</td><td></td></tr>
+<tr><td>Dock / DockID / TargetDockID</td><td>0x898 / 0x8a0 / 0x8a4</td><td></td></tr>
+<tr><td>bDockingAutopilot</td><td>0x8a8</td><td>docking autopilot active</td></tr>
+<tr><td>DockTargetLocation / Chunk / Quat</td><td>0x8ac / 0x8b8 / 0x8c4</td><td></td></tr>
+<tr><td>Pilot / PilotID</td><td>0x970 / 0x978</td><td>PilotID == controller id means the player flies it</td></tr>
+<tr><td>solar system id / chunk</td><td>0xa0 / 0x94</td><td>by usage</td></tr>
+</table>
+<p>Functions: <code>CanWarp()</code>, <code>GetJumpCost(...)</code>, <code>GetAvailableJumpFuel()</code>, <code>GetJumpArrivalLocation(...)</code>, <code>IsShipInCombat()</code>, <code>GetCurrentHull()</code>. Props: <code>TargettedBy[]</code> (enemies targeting the ship = early warning), <code>DamageState.MinorDamage</code> (counter rising with hits), <code>DistanceToTarget</code> (polled for autopilot), <code>LogisticFilters</code>, <code>Weapons</code>, <code>Subobjects</code>, <code>BuildingBlocks</code>, <code>Target</code>.</p>
+
+<h3 id="FlightModel">FlightModel <small>DAT_SmallShipFlightModel</small></h3>
+<table>
+<tr><th>Property</th><th>Offset</th></tr>
+<tr><td>WarpFuelConsumption</td><td>0xc0 <span class="badge u">UNKNOWN</span> not used by cost code</td></tr>
+<tr><td>JumpAnimLength</td><td>0xc4</td></tr>
+<tr><td>WarpArrivalDistance</td><td>0xc8</td></tr>
+<tr><td>MinChunkDistanceToJump</td><td>0xd4</td></tr>
+<tr><td>RequiredAlignmentToJump</td><td>0xd8 (dot product threshold)</td></tr>
+<tr><td>RequiredChargeToJump</td><td>0xdc</td></tr>
+<tr><td>throttle cooldown frames</td><td>0x30 (name unknown)</td></tr>
+</table>
+
+<h3 id="WarpDrive">WarpDrive</h3>
+<p>Offsets: fuel item <code>+0x1b0</code>, fuel stats array <code>+0x1c0</code> (16-byte <code>WarpFuelStats</code> entries), secondary containers <code>+0x1e8 / +0x1f8</code>, inventory component <code>+0x1f0 -&gt; +0x68</code>. <b>Fuel = items in the drive's own inventory</b> (not loose cargo). Sample: <code>GetAvailableJumpFuel</code> 100 / 50.</p>
+
+<h3 id="DMSPlayerObject">DMSPlayerObject</h3>
+<p>Fields: <code>PlayerID, UserId, Nickname, bDead, Faction, CurrentChunk, bLocal, PilotedShipID, PilotedShip, Character, Controller, InputView, SpectatorView, ChunkLoadingDistance (0x104, =2), CachedChunkLocation, bHasRefreshedLocalChunks</code>. Chunk location at <code>+0x94</code> (the streaming source), solar system id at <code>+0xa0</code>, registry at <code>+0x28</code>, id at <code>+0x30</code>.</p>
+
+<h3 id="DMSCharacter">DMSCharacter <small>walking body</small></h3>
+<p>Fn: <code>SetCharacterLocation(NewLocation, bInterp)</code>, <code>ApplyLocalMovement(Delta)</code>, <code>PredictMovement(DeltaSeconds, Input, ViewRotation)</code>, <code>InterpolateMovement</code>, <code>SetLookRotation</code>, <code>GetDeltaMovementInput</code>. Props: <code>bMoving, MovementDelta, PredictedLocation, LocalLocation, LocalEnv, MovementInterp</code>; <code>BP_Character_C</code>: <code>Speed, Sprinting, Sitting, Capsule, Char_Root</code>. Get via <code>FindFirstOf("DMSCharacter")</code>.</p>
+<div class="note bad"><b>Space jump abandoned.</b> No CharacterMovement / Jump. <code>SetCharacterLocation({X={Value=..},..}, false)</code> works but needs ~70000 units to clear a block and landing is unreliable (the sim keeps its own Z). Code removed (commits 1d704fa..8de1f80, impl at 7683ba7).</div>
+
+<h3 id="SolarSystem">SolarSystem / SolarSystemSector / Chunk</h3>
+<table>
+<tr><th>Class</th><th>Fields</th></tr>
+<tr><td>SolarSystem</td><td><code>ID, DisplayName, WorldGenParams{ResourceAbundance, ResourceRichness, EnemyLevel}, StarGenParams, AsteroidBelts[], ChunkMap</code> (TMap IntVector&rarr;Chunk* at <code>S+0xe0</code>), <code>ChunkSaveList, MacroChunkMap, SpawnChunk</code></td></tr>
+<tr><td>SolarSystemSector</td><td><code>ID, ParentID (= system id), ChunkLocation, HalfExtents (2,2,2), GenParams, Biome, GenerationID</code>; fns <code>GetCenterChunk(), GetDisplayName(), GetSolarSystem()</code></td></tr>
+<tr><td>SectorGenParams (data asset)</td><td><code>ResourceRichness[] {Item, Amount}</code> (Rich field: 6 entries, amounts 3,3,3,3,1,1; plain field: 4 x 1), <code>ThreatLevel</code> (1 or 2), <code>WarpArrivalDistance</code> (Rich 1008: 91 750 400), <code>Biome{Features, MacroFeatures}</code></td></tr>
+<tr><td>AsteroidBelt</td><td><code>SectorGenParams[], Distance</code></td></tr>
+<tr><td>Chunk</td><td><code>ChunkSeed, DynamicObjectIDs, DetailLevels, Location, Colliders, ExtrudingColliders, DynamicColliders, Biome, BiomeStrength, bWarpTraversable, bGenerated, bLoaded</code>; raw <code>+0x70</code> object array, <code>+0xa0</code> applied level, <code>+0xa4</code> target level, <code>+0xfd</code> generated flag</td></tr>
+</table>
+<p>There is no "Territory" class. Unvisited sectors are fully readable (<code>SECTOR-LIST</code>: 21 sectors in system 6). Item names in <code>ResourceRichness</code> come out empty via <code>DisplayName</code>; use the item's <code>GetName()</code> (e.g. <code>ITEM_CobaltOre</code>), which the mod's <code>item_name</code> / <code>ore_label</code> do.</p>
+
+<h3 id="rocks">Rocks: SmallResourceAsteroidObject &amp; BP_GenericResourceAsteroid_C</h3>
+<table>
+<tr><th>Save object field</th><th>Offset</th></tr>
+<tr><td>DamageToMine / Damage</td><td>+0x100 / +0x104</td></tr>
+<tr><td>ResourceItems (array)</td><td>+0x108</td></tr>
+<tr><td>FloatingOreClass</td><td>+0x118</td></tr>
+<tr><td>Miner / MinerID / bOccupied / bMineable</td><td>+0x120 / +0x128 / ...</td></tr>
+</table>
+<p>Functions: <code>GetRadius</code> (raw; 8 m or 70 m), <code>GetItemStack</code>, <code>GetMineable(Radius, Items)</code>, <code>IsEmpty</code>, <code>IsOccupied</code>, <code>SetRadius</code>. Gen data: <code>HealthPerOre, ItemsPerFloatingOre, ResourceMaxHealth, ResourceRadius, ThreatPerItem</code>. Actor: ore via <code>BPI_HUDMarkerActor.GetScanItem(Item)</code>, id = <code>DMSActorBase.ObjectId</code>, <code>SetAsteroidData(InData{ISMComponent, Mesh, InstanceObjects, Scale, MaxVisibleZoom})</code>. ~39 000 rocks exist as save objects in the demo world; actors only exist where chunks are loaded.</p>
+
+<!-- ============ SYSTEMS ============ -->
+<h2 id="systems">Systems</h2>
+
+<h3 id="warp">Warp / jump</h3>
+<h4>Native rules (Ghidra)</h4>
+<p><span class="badge i">INFERRED</span> from decompile, <span class="badge v">CONFIRMED</span> in game for the final flow.</p>
+<pre>
+ChangeThrottle(ship, delta, bForce)           // FUN_144283910
+  Health &lt; 1                          -> return
+  docked (Dock, flag bit30 clear)     -> return
+  !bForce: if bAutopilot return; bDockingAutopilot = 0
+  bTravelling: if delta &gt;= 0 return; else JumpAnimProgress = 1 (exit-warp)
+  cooldown: frame - LastThrottleUpdateFrame &lt;= FlightModel[0x30] -> return
+  if no WarpDrive or !bJumpTargetSet:  Throttle = clamp(Throttle + delta, -10, 10)   // normal flying
+  else (jump target set):               // Throttle is NOT touched
+      if delta &lt; 1 or !bAligned return
+      if JumpAnimProgress == 0 and WarpDrive:
+          cost = GetJumpCost(ship, JumpTargetLocation, Chunk, SolarSystemId)
+          if cost &lt;= GetFuel(WarpDrive): ConsumeFuel(WarpDrive, cost); OnJumpStartCharging; JumpAnimProgress = 1
+
+ship tick: if JumpAnimProgress &gt; 0: JumpAnimProgress++; UpdateJumpChargeProgress(...)
+           when JumpAnimProgress &gt;= RequiredChargeToJump -> FUN_144286920 (start real warp, OnJumpStart)
+           if bJumpTargetSet and JumpAnimProgress == 0:
+               bInsufficientWarpFuel = GetFuel &lt; GetJumpCost ; bAligned = dot(forward, dirToTarget) &gt; RequiredAlignmentToJump
+</pre>
+<ul>
+<li><b>No pilot is required.</b> Requirements: Health&gt;0, not docked, not on autopilot, not travelling, WarpDrive present, <code>bJumpTargetSet</code>, <code>bAligned</code>, fuel &ge; cost, throttle cooldown elapsed, a +1 throttle <i>command</i>.</li>
+<li><b>Fuel</b> is removed in <b>one lump at charge start</b> (nothing at arrival). <code>GetJumpCost</code> = length of the fixed-point delta vector (chunk delta*65536 + loc) scaled by a constant, &gt;&gt;16, minimum 1 (measured cost 5). It does not use <code>FlightModel.WarpFuelConsumption</code>. Mod rule: 1 warp-fuel item = 50 km; drive max 100.</li>
+<li><b>Autopilot jumps by itself</b> (<code>FlyTowards</code> FUN_144285240) only to a <i>dock</i> object (<code>order.Dock</code> / <code>TargetDockID</code>); the solar system comes from the dock object. No sector or map-pin target feeds it. It sets the jump target ~7 s after autopilot on and sends no command. <code>pos = tgt - dir * FlightModel.WarpArrivalDistance</code>. Same fuel check/consume as above. So dock trips need no mod warp code.</li>
+<li><b>Arrival point</b> per sector is ~deterministic: fixed spot at distance <code>WarpArrivalDistance</code> (Rich 1008: 91.75M raw) with ~4000 raw jitter.</li>
+</ul>
+
+<h4>Final mod flow (variant "e", <code>warp_real_cmd</code>, commit 7d94fcb + ef7b1a8)</h4>
+<ol>
+<li>Undock first if docked (<code>job_start undock</code>); queue behind other warping ships (<code>g_wr_wait</code>, one <code>g_wr</code> state at a time).</li>
+<li><code>ShipTeleportInput{bSetTarget=1, sector arrival, sector chunk, sector.ParentID}</code> &rarr; ship has a jump target.</li>
+<li>Own auto-aim (<code>wr_e_aim</code>): position delta rotated by the ship quaternion &rarr; <code>view_send</code> aim offset until <code>bAlignedWithJumpTarget=1</code>.</li>
+<li>Build <code>ShipMovementInputCommand{DeltaThrottle=+1}</code> with type id 0x3a, <code>AddInputCommand(shipId)</code> (<code>send_ship_throttle</code>).</li>
+<li>The game charges (JumpAnimProgress 1&rarr;30), consumes drive fuel, warps. Timeouts 60 s (<code>wr_start</code>) / 90 s (mining). <code>warp_cancel(sid)</code> aborts and clears the queue (STOP ALL).</li>
+</ol>
+<div class="note good"><b>Instant fallback</b> <code>warp_sector:&lt;id|pinned&gt;</code> (<code>mb_warp.hpp</code>) does the teleport without fuel or travel; kept for the Dev Menu only. <code>warp_check</code> verifies the new absolute position 1.5 s later and retries once with the SetPiloting wrapper.</div>
+<h4>Failed warp attempts <small>(do not repeat)</small></h4>
+<table>
+<tr><th>Variant</th><th>Idea</th><th>Result</th></tr>
+<tr><td>a</td><td>order class to jump</td><td>no such order class</td></tr>
+<tr><td>b / c</td><td>write jump props locally / BPO_JumpTarget target</td><td>local-only, no effect</td></tr>
+<tr><td>d</td><td>fake dock order to a sector</td><td>server ignores non-dock targets</td></tr>
+<tr><td>f / g / h</td><td>autopilot Target + TargetId</td><td>autopilot only goes to dock orders</td></tr>
+<tr><td>i</td><td>delete orders then aim</td><td>aim then stops</td></tr>
+<tr><td>write <code>Throttle</code> prop</td><td>"set throttle to charge"</td><td>can never start charge: the +1 command does (Throttle untouched in the jump branch)</td></tr>
+<tr><td>seat hack</td><td>SetPilotingInput into the unpiloted ship</td><td>works, but user dislikes it, removed</td></tr>
+</table>
+
+<h3 id="docking">Docking, orders, autopilot</h3>
+<ul>
+<li><span class="badge v">VERIFIED</span> The player's dock flow: <code>SetShipAutopilot(ship, true)</code> + <code>SkipToOrder(ship, 0)</code> on the existing <b>DeliverOrder</b>. An order created with <code>NewShipOrderInput</code> alone does not move the ship.</li>
+<li><code>DeliverOrder</code>: <code>Dock, DockID, WaitConditions[]</code>; tick <code>FUN_144298b60</code> uses <code>FlyTowards</code> (dock approach), docks on arrival via <code>FUN_14428c350</code>. <code>WaitOrder</code> / <code>WaitForTimeOrder</code> never fly.</li>
+<li>Mod job layer (<code>mb_dockjob.hpp</code>): one job per ship: <code>dock_mining</code> (unload), <code>dock_refuel</code>, <code>dock_auto</code>, <code>undock</code>. Stages 3: clear orders, build the refuel/unload list via <code>ob_*</code> (<code>mb_orders.hpp</code>) and filters via <code>pf_*</code> (<code>mb_filters.hpp</code>). Undock uses the old "reuse path" with a leave-dock watch (<code>undock_tick</code>).</li>
+<li><b>Busy docks</b>: occupancy is derived (<code>dock_busy</code>: another ship has that DockID/Dock or a job targets it). Status "Waiting for dock", retry backoff 2, 5, 10, 20, 40, 60 s forever. Occupancy exported to the UI (<code>dock_occ_write</code>).</li>
+<li><b>Dock time limit</b> (<code>dock_hold_limit</code>, default 300 s, 0 = off): on hit, <code>MS_DLWAIT</code> retry: undock + 30 s wait + redo the same trip kind, up to <code>MINE_DOCK_RETRIES=10</code>; the 11th hit halts non-error ("Dock time limit reached 10 times, undocked, idle").</li>
+<li>Dock names: <code>DisplayName</code> TextProperty (game-made docks have an empty <code>Name</code>). <code>dock_id</code> can be a number or a name.</li>
+<li>Game windows: <code>WBP_ShipAutopilot_C</code> opens natively via <code>ShowWidget(...)</code>.</li>
+</ul>
+
+<h3 id="mining">Mining</h3>
+<ul>
+<li><b>Rock list</b> = <code>DMSPlayerController.ScannableHUDMarkers</code> (V-scan). Cached and refreshed every 5-10 s: looping <code>FindAllOf</code> or reflecting every rock each second freezes the game. Cached actor pointers can be freed by streaming &rarr; validate with <code>actor_ok()</code> before touching.</li>
+<li><b>Fallback list</b> (<code>rock_fallback_merge</code>): <code>FindAllOf(BP_GenericResourceAsteroid_C)</code> when a belt seek requested it (6 s window, at most every 5 s). Residual risk: pointers reused up to 5 s can be freed.</li>
+<li><b>Approach</b> (<code>mb_steer.hpp</code>): <code>face_rock</code> then <code>approach_rock</code>; throttle steps 1..10 by remaining distance, brake, stop when surface distance reaches <code>mining_distance</code>. Per-ship <code>g_mvs</code> (move jobs), <code>g_spds</code> (speed monitors), <code>g_sel_rocks</code>. Speed safety abort <code>MV_SPEED_ABORT</code>. Rock contention between ships is allowed; a lost rock = free retry.</li>
+<li><b>Weapons</b> (<code>mb_weapons.hpp</code>): <code>set_all_firing</code>, <code>fire_input(group)</code>, <code>class_firing</code>. Laser primary, scooper secondary.</li>
+<li><b>Loop</b> (<code>mb_mining.hpp</code>): see state machine below. Row logic: each queue row <code>ITEM:n</code> = target ore mined (<code>got</code> counter), <code>n=0</code> unlimited (until cargo full). Dock only on cargo full or fuel low. Cargo % excludes fuel slots.</li>
+<li><b>Mining Unit</b>: our own block + actor <code>BP_MiningMod</code> ("Press F to Use Mining Unit") opens the UMG window <code>WBP_MiningUnit</code>. A cloned building block ("MiningBench") is produced by <code>mods/MiningUnitBlockPak</code> (<code>clone.js</code>, <code>patch_registry.py</code>).</li>
+</ul>
+
+<h3 id="chunks">Chunk streaming &amp; chunk hold</h3>
+<span class="badge v">VERIFIED</span>
+<p>Rocks are actors; actors exist only for loaded chunks. <b>The only streaming source is the local player</b>: <code>DMSPlayerController.LoadChunks()</code> (native <code>FUN_144212f00</code>) centres on <code>PlayerObject+0x94</code> with radius <code>ViewDistance</code> (2 = 5&sup3; = 125 chunks):</p>
+<ol>
+<li><code>S = FUN_14425f2e0(PlayerObject)</code> (the SolarSystem sim object via registry <code>P+0x28</code>, key <code>P+0xa0</code>).</li>
+<li>Every chunk in <code>CurrentLoadedChunks</code> gets level 0.</li>
+<li>The cube C&plusmn;R gets level 1 if Chebyshev distance &le; 1, else level 2.</li>
+<li>If <code>bChunksHidden==0</code>, each chunk is applied and level-0 ones pruned; finally writes <code>PlayerCachedChunkLocation = C</code>.</li>
+</ol>
+<table>
+<tr><th>Native</th><th>RVA</th><th>Role</th></tr>
+<tr><td>get_system(obj)</td><td>0x425f2e0</td><td>object &rarr; SolarSystem*</td></tr>
+<tr><td>SetLevel(S, &amp;chunkKey, level)</td><td>0x42512e0</td><td>if chunk in ChunkMap and <code>+0xfd != 0</code>: <code>chunk+0xa4 = level</code></td></tr>
+<tr><td>Apply(S, &amp;chunkKey)</td><td>0x424cbc0 (&rarr; 0x424d400)</td><td>if applied(+0xa0) != target(+0xa4): level 0 despawns, 1/2 create objects; applied = target</td></tr>
+</table>
+<p><b>Chunk hold</b> (<code>mb_chunkhold.hpp</code>, commit d70be9a) uses exactly SetLevel+Apply to keep a 3&times;3&times;3 cube loaded around a far AI ship: 0 &rarr; 316 rocks within 1 s, stable, no crash, <code>CurrentLoadedChunks</code> stays 125.</p>
+<div class="sig">chunk_hold_update(sid, ship) &nbsp;| chunk_hold_release(sid) &nbsp;| chunk_hold_tick(sid) &nbsp;| chunk_hold_settling(sid) &nbsp;| chunk_hold_keep_only(sids) &nbsp;| chunk_hold_release_all()</div>
+<ul>
+<li>Never for the ship the player flies; no hold within <code>CH_NEAR_CH</code> (5) chunks of the player in the same system; the player's own zone (&plusmn;2) is never set or cleared; per-chunk refcount; cap 150 chunks.</li>
+<li><b>Safety</b>: exe size 149 200 896 and FNV-1a hashes of 4 KB at each RVA (<code>0x425f2e0 0x7a5cc955385905fc</code>, <code>0x42512e0 0xcd568e69c197486e</code>, <code>0x424cbc0 0xa7d5bf1b9846e2b0</code>) must match; every native call under SEH; any failure releases all and disables the feature for the session (<code>CHUNKHOLD</code> log). Called from the game thread only (never from delayed Lua callbacks).</li>
+<li>Belt counters wait 4 s after a set so the actors can appear. Forced rock passes at +1 s and +3 s.</li>
+</ul>
+<h4>Dead ends</h4>
+<table>
+<tr><th>Attempt</th><th>Why it fails</th></tr>
+<tr><td>write <code>ship.bForceLoadChunks</code></td><td>never read by the loader</td></tr>
+<tr><td>write <code>controller.PlayerCachedChunkLocation</code> + <code>LoadChunks()</code></td><td>LoadChunks recomputes the centre from the PlayerObject and overwrites the field (LOADTEST negative)</td></tr>
+<tr><td>fake / second PlayerObject</td><td>nothing iterates players; a sim mutation risks desync</td></tr>
+<tr><td>raise ViewDistance / ChunkLoadingDistance</td><td>cube explodes at 270 km</td></tr>
+<tr><td>pawn / camera / view target tricks</td><td>LoadChunks reads none of them</td></tr>
+</table>
+
+<h3 id="fuel-damage">Refuel, cargo &amp; flee</h3>
+<ul>
+<li><b>Fuels / ores</b> are item ids shared by INI, item objects and Lua UI (<code>docks.txt</code>/<code>items.txt</code>); cargo capacity unknown (probe idea only).</li>
+<li><b>Flee on damage</b> (<code>flee_now</code>): hull value drop (350&rarr;320 seen; 206&rarr;202 triggers) halts the ship and goes home; idle ships check hull in step 0 after <code>MINE_FLEE_GRACE_S</code>; skipped when the player flies the ship (<code>player_flies</code>: <code>PilotID == controller id</code>, partly <span class="badge u">UNVERIFIED</span>). <code>IsShipInCombat()</code> and <code>TargettedBy</code> give early warning; shields are 0 on these ships. HALT happens at trip end (after unload).</li>
+<li><b>Belt choice</b> (<code>belt_target</code>): same system only, ore must exist in the sector, score = squared chunk distance; current sector and an explicit sector id win; AUTO is the default.</li>
+</ul>
+
+<!-- ============ MOD ============ -->
+<h2 id="mod">MiningBenchMod (C++ UE4SS mod)</h2>
+<p>Header-only split, one responsibility per file, each starting with a banner (WHAT / WHY / DEPENDS ON / USED BY / GAME FACTS). No game SDK headers: every field and function is found by reflection name. Include order (dependency order): <code>mb_version, mb_common, mb_config, mb_ue, mb_math, mb_docks, mb_diag, mb_ships, mb_weapons, mb_orders, mb_filters, mb_cmdstate, mb_rocks, mb_steer, mb_dockjob, mb_pin, mb_warp, mb_warpreal, mb_belt, mb_mining, mb_chunkhold, mb_testcmd</code>; <code>dllmain.cpp</code> is only the entry point and the tick glue.</p>
+
+<h3 id="files">Source map</h3>
+<table>
+<tr><th>File</th><th>Lines</th><th>What</th></tr>
+<tr><td><code>mb_common.hpp</code></td><td>226</td><td>includes, globals, string/file/log helpers, <code>alive()</code>, <code>log_line</code> (keep-list: lines only logged if they contain a keep word or debug is on)</td></tr>
+<tr><td><code>mb_config.hpp</code></td><td>515</td><td><code>Config</code>, <code>MiningBench.ini</code> parse + hot reload, per-ship <code>[ship.&lt;id&gt;]</code> overrides via <code>eff_cfg(sid)</code></td></tr>
+<tr><td><code>mb_ue.hpp</code></td><td>586</td><td>reflection plumbing: property get/set, PNum/PVector/Quat readers, ProcessEvent calls, struct dumps, inventory totals</td></tr>
+<tr><td><code>mb_math.hpp</code></td><td>75</td><td>quaternion/vector helpers, no UE calls</td></tr>
+<tr><td><code>mb_docks.hpp</code></td><td>222</td><td>dock + item lookup, <code>docks.txt</code>/<code>items.txt</code>, MiningBeacon finder</td></tr>
+<tr><td><code>mb_diag.hpp</code></td><td>615</td><td>diagnostics, class dumps, manual-run recorder</td></tr>
+<tr><td><code>mb_ships.hpp</code></td><td>196</td><td>bench-ship scan, <code>ships.txt</code>, one-shot cleanup of old orders/beacons</td></tr>
+<tr><td><code>mb_weapons.hpp</code></td><td>125</td><td>weapon lookup and firing</td></tr>
+<tr><td><code>mb_orders.hpp</code></td><td>411</td><td>AddInputCommand wrapper, order creation, <code>OrderBuild</code> step machine <code>ob_*</code></td></tr>
+<tr><td><code>mb_filters.hpp</code></td><td>214</td><td>logistic filters <code>pf_*</code></td></tr>
+<tr><td><code>mb_cmdstate.hpp</code></td><td>112</td><td>command poller state, <code>DockJob</code>, MiningCmd.txt reader</td></tr>
+<tr><td><code>mb_rocks.hpp</code></td><td>511</td><td>rock list, aim frame, picking</td></tr>
+<tr><td><code>mb_steer.hpp</code></td><td>622</td><td>steering, speed monitor, move jobs</td></tr>
+<tr><td><code>mb_dockjob.hpp</code></td><td>457</td><td>dock/undock jobs, occupancy</td></tr>
+<tr><td><code>mb_pin.hpp</code></td><td>64</td><td>map pin hook</td></tr>
+<tr><td><code>mb_warp.hpp</code></td><td>499</td><td>instant warp, arrival math, jump cost</td></tr>
+<tr><td><code>mb_warpreal.hpp</code></td><td>359</td><td>real warp (variant e)</td></tr>
+<tr><td><code>mb_belt.hpp</code></td><td>263</td><td>sector read, belt target, <code>Sectors.txt</code></td></tr>
+<tr><td><code>mb_mining.hpp</code></td><td>1102</td><td>the mining loop state machine + status files</td></tr>
+<tr><td><code>mb_chunkhold.hpp</code></td><td>496</td><td>far-chunk streaming</td></tr>
+<tr><td><code>mb_testcmd.hpp</code></td><td>1163</td><td>command poller + dispatcher (<code>run_cmd</code>)</td></tr>
+</table>
+
+<h3 id="funcs">Function reference</h3>
+
+<h4>mb_ue.hpp <small>reflection helpers</small></h4>
+<table>
+<tr><th>Function</th><th>Does</th></tr>
+<tr><td><code>first_of(cls)</code> / <code>find_by_id(cls, id)</code></td><td>first object of class / object whose <code>ID</code> property equals id (cached lookups, <code>cached_ok</code>)</td></tr>
+<tr><td><code>obj_id(o)</code>, <code>obj_display(o)</code>, <code>read_text_prop</code></td><td>save id / display name (<code>DisplayName</code> TextProperty, fallback <code>GetDisplayName</code>)</td></tr>
+<tr><td><code>get_int_prop / set_int_prop / get_bool_prop / set_bool_prop / get_obj_prop</code></td><td>named property access</td></tr>
+<tr><td><code>pnum_prop</code>, <code>call_pnum</code>, <code>call_int</code>, <code>call_text</code>, <code>call_struct_text</code></td><td>read PNum props / call getter UFunctions</td></tr>
+<tr><td><code>get_loc</code>, <code>quat4</code>, <code>pvec_text</code>, <code>pvec_set_axis</code></td><td>position / rotation readers and writers</td></tr>
+<tr><td><code>put(fn, buf, name, src, n)</code></td><td>write a parameter into a ProcessEvent buffer</td></tr>
+<tr><td><code>inv_total(ship, item)</code></td><td>count of an item in the ship inventory</td></tr>
+<tr><td><code>count_bench(ship, prop)</code></td><td>number of MiningBench blocks (BuildingBlocks or Subobjects)</td></tr>
+<tr><td><code>actor_vec_call</code>, <code>rot_zero</code>, <code>dump_struct*</code>, <code>type_text</code></td><td>misc</td></tr>
+</table>
+
+<h4>mb_orders.hpp</h4>
+<table>
+<tr><th>Function</th><th>Does</th></tr>
+<tr><td><code>add_input(receiver, cmd, err)</code></td><td>calls <code>AddInputCommand</code> on the controller</td></tr>
+<tr><td><code>send_new_order / send_new_deliver_order / send_update_order / send_update_order_dock / send_delete_order</code></td><td>order command senders</td></tr>
+<tr><td><code>order_by_id</code>, <code>obj_arr</code></td><td>find an order in <code>ship.Orders</code></td></tr>
+<tr><td><code>dock_leg_start(ship, pfx, err)</code></td><td>start a dock leg via existing DeliverOrder</td></tr>
+<tr><td><code>set_autopilot(sid, on, err)</code></td><td><code>SetShipAutopilot</code></td></tr>
+<tr><td><code>resolve_cmd_dock(cfg, refuel, why)</code>, <code>dist_target_m</code></td><td>dock from config; <code>DistanceToTarget</code> in m</td></tr>
+<tr><td><code>ob_start / ob_tick / ob_plan_refuel / ob_plan_unload</code></td><td>order builder state machine (steps: skip0, delete, new order, update dock, filters...)</td></tr>
+</table>
+
+<h4>mb_warp.hpp / mb_warpreal.hpp</h4>
+<table>
+<tr><th>Function</th><th>Does</th></tr>
+<tr><td><code>warp_sector_cmd(sid, arg)</code></td><td>instant warp: arrival via <code>GetJumpArrivalLocation</code>, plausibility check, <code>ShipTeleportInput</code></td></tr>
+<tr><td><code>warp_send(sid, sys, chunk, arr, wrap, err, set_target)</code></td><td>builds and sends the teleport command</td></tr>
+<tr><td><code>arrival_of</code>, <code>jump_cost</code>, <code>sec_axes</code>, <code>sec_warp_dist</code>, <code>get_chunk</code>, <code>sys_id</code></td><td>sector/arrival/cost math. If <code>arrival_dist==0</code> uses a 400 m ring (26 214 400 raw) (BUG1 fix)</td></tr>
+<tr><td><code>piloting_input</code>, <code>pilot_console_of</code></td><td>seat command / console of a ship</td></tr>
+<tr><td><code>current_ship_id()</code></td><td>ship the player pilots: <code>PilotID == controller id</code>, fallback single <code>PilotConsoleID &gt; 0</code></td></tr>
+<tr><td><code>warp_check(dt)</code>, <code>warp_wait_tick()</code></td><td>post-warp verification / undock-first wait</td></tr>
+<tr><td><code>warp_real_cmd(sid, "&lt;id|pinned&gt;")</code></td><td>queue a real warp</td></tr>
+<tr><td><code>warp_real_tick(dt)</code>, <code>wr_start/wr_e_start/wr_e_aim/wr_e_step/wr_e_thrust/wr_next</code></td><td>state machine, run from the command poll only</td></tr>
+<tr><td><code>send_ship_throttle(sid, delta, err)</code></td><td>the ShipMovementInputCommand trick</td></tr>
+<tr><td><code>warp_cancel(sid)</code></td><td>abort, erase queue (called from <code>mine_halt</code>, <code>cancel_dock_job</code>)</td></tr>
+</table>
+
+<h4>mb_belt.hpp</h4>
+<table>
+<tr><th>Function</th><th>Does</th></tr>
+<tr><td><code>sectors_read()</code></td><td>list every SolarSystemSector with system, chunk, half extents, name, ores</td></tr>
+<tr><td><code>belt_target(ship, belt, item, tried, cur, tname, ...)</code></td><td>pick the sector for the needed ore (AUTO / none / id)</td></tr>
+<tr><td><code>belt_fuel_ok(ship, sec, why)</code></td><td>jump cost &le; <code>GetAvailableJumpFuel</code> (drive only)</td></tr>
+<tr><td><code>cur_sector_id</code>, <code>sector_of</code>, <code>ship_pos</code> (property fallback because no <code>GetChunkLocation</code> fn), <code>sec_ores</code>, <code>ore_label</code></td><td>helpers</td></tr>
+<tr><td><code>sectors_file_tick(dt)</code></td><td>writes <code>Sectors.txt</code> every 10 s</td></tr>
+</table>
+
+<h4>mb_mining.hpp <small>loop</small></h4>
+<table>
+<tr><th>Function</th><th>Does</th></tr>
+<tr><td><code>mining_tick(dt)</code></td><td>per-frame driver (from <code>cmd_tick</code>), steps every bench ship, writes status</td></tr>
+<tr><td><code>mine_step(sid, MineSt&amp;, dt)</code></td><td>the state machine</td></tr>
+<tr><td><code>mine_cmd(sid, start)</code> / <code>mine_cmd_all(start)</code></td><td>Start/Stop loop; Start resets queue position; Stop = soft stop (finish trip, fly home, park)</td></tr>
+<tr><td><code>mine_halt(sid)</code></td><td>hard stop (latches HALT), releases chunk hold, cancels warp</td></tr>
+<tr><td><code>trip_begin / trip_end / go_home / after_undock</code></td><td>dock-trip lifecycle (trip kinds: unload, refuel, ...; <code>force</code> param for button trips)</td></tr>
+<tr><td><code>belt_go(ship, sid, m, cfg, item, mark_cur)</code></td><td>pick a belt and start the real warp</td></tr>
+<tr><td><code>warp_belt_cmd(sid)</code></td><td>"Warp to belt" button / <code>warp_belt</code> command</td></tr>
+<tr><td><code>rock_in_range / rock_scan / rockscan_log / cargo_full / cargo_pct / hold_left</code></td><td>checks</td></tr>
+<tr><td><code>flee_now / player_flies</code></td><td>damage reaction</td></tr>
+<tr><td><code>mine_status_write / mine_status_x_write / mine_log_write / mlog / mset</code></td><td>UI status files</td></tr>
+<tr><td><code>mine_set_bench(bench)</code></td><td>register current bench ships (also drops stale chunk holds)</td></tr>
+</table>
+<h4>State machine <small>(MineSt)</small></h4>
+<pre>
+ MS_OFF  -- Start --> MS_CHECK --(docked? no undock needed when HOLD/no trip)--> undock
+ MS_CHECK : cargo/fuel/hull checks, nothing in range for MINE_BELT_EMPTY_S (empty_t, sum of 5 s periods) -> belt_go
+ MS_SEEK  : find rock in radius (rock_in_range), approach; "Arrived, seeking rock"; chunk_hold_update while undocked
+ MS_MINE  : face + approach + fire laser/scooper; per-row `got` counter; amount 0 = unlimited
+ MS_WARP  : real warp to belt sector (queued), then enter_seek
+ trip     : cargo full or fuel low -> go_home -> dock -> unload/refuel (jobs) -> MS_HOLD (dock hold timer)
+ MS_HOLD  : hold at dock, dock_hold_limit -> MS_DLWAIT (undock, wait 30 s, retry up to 10) -> HALT
+ flee     : hull drop -> halt + home; HALT latched by STOP ALL
+</pre>
+<p>Constants: <code>MINE_BELT_EMPTY_S</code>, <code>MINE_FLEE_GRACE_S</code>, <code>MINE_DOCK_RETRIES=10</code>, <code>MINE_DOCK_RETRY_WAIT_S=30</code>, <code>MINE_DIAG_PERIOD_S=120</code> (removed diags). Hop-bug fix: <code>empty_t</code> was reset every MS_OFF&rarr;CHECK pass (committed, b06dfdb).</p>
+
+<h3 id="cmdbus">Command bus (Lua &rarr; C++)</h3>
+<p>The Lua UI writes <code>MiningCmd.txt</code> (next to the DLL): one line <code>&lt;seq&gt;|&lt;ship_id&gt;|&lt;cmd&gt;</code>. <code>cmd_poll</code> runs a line once when <code>seq</code> is greater than the last executed seq. <b>Gotcha:</b> every writer must use the same seq scale: the UI uses <code>os.time()*1000</code>; the Dev Menu used <code>os.time()</code> and its commands were refused as old (fixed, restart the game to reseed from the file).</p>
+<table>
+<tr><th>Command</th><th>Effect</th></tr>
+<tr><td><code>mine_start / mine_stop</code> (per ship), <code>mine_start_all / mine_stop_all</code> (sid 0)</td><td>loop control</td></tr>
+<tr><td><code>stop_all</code></td><td>hard stop everything (latches HALT, erases jobs, clears warp)</td></tr>
+<tr><td><code>dock_mining</code>, <code>dock_refuel</code>, <code>dock_auto</code>, <code>undock</code></td><td>dock jobs (with <code>trip_begin(force)</code> when from UI buttons)</td></tr>
+<tr><td><code>warp_belt</code>, <code>warp_sector:&lt;id|pinned&gt;</code>, <code>warp_cur:&lt;id|pinned&gt;</code>, <code>warp_by_name:&lt;name&gt;</code></td><td>warps (cur = ship the player pilots, real warp since 6g)</td></tr>
+<tr><td><code>thr_up / thr_down / thr_zero</code></td><td>throttle tests</td></tr>
+<tr><td><code>chunkhold:release_all</code></td><td>Dev Menu "Release all chunk holds"</td></tr>
+<tr><td><code>debug_on / debug_off</code></td><td>widen the log keep-list</td></tr>
+</table>
+<p>There are also face_rock / approach_rock / laser / tractor / rock selection test commands from the Test tab.</p>
+
+<h3 id="statusfiles">Status / data files <small>(next to MiningBenchMod.dll)</small></h3>
+<table>
+<tr><th>File</th><th>Writer</th><th>Format</th></tr>
+<tr><td><code>MiningBench.ini</code></td><td>Lua UI (instant save) &amp; user</td><td>global keys + <code>[ship.&lt;id&gt;]</code> overrides, hot-reloaded</td></tr>
+<tr><td><code>MiningCmd.txt</code></td><td>Lua</td><td><code>seq|ship|cmd</code></td></tr>
+<tr><td><code>MiningStatus.txt</code></td><td>C++</td><td><code>id|name|simple(idle/mining/traveling/refueling/unloading)|state: result</code></td></tr>
+<tr><td><code>MiningStatusX.txt</code></td><td>C++ 1 s + at job start/end</td><td><code>id|run|cargo%|speed m/s|next|left items or -1|job|jobphase|resource|sys,chx,chy,chz</code></td></tr>
+<tr><td><code>MiningLog.txt</code></td><td>C++ on change</td><td><code>id|hh:mm:ss|text</code>, last 20 per ship</td></tr>
+<tr><td><code>MiningTestStatus.txt</code>, <code>MiningTestRocks.txt</code></td><td>C++</td><td>Test tab status / rock list</td></tr>
+<tr><td><code>MiningPinned.txt</code></td><td>C++</td><td>last pinned sector id, 0 = none</td></tr>
+<tr><td><code>Sectors.txt</code></td><td>C++ every 10 s</td><td><code>id|name|ores|ore ids|sys,chunk</code> (field 5 for km)</td></tr>
+<tr><td><code>docks.txt</code>, <code>items.txt</code>, <code>ships.txt</code></td><td>C++</td><td>pickers for the UI</td></tr>
+<tr><td>dock occupancy</td><td>C++ (<code>dock_occ_write</code>)</td><td>for "Dock [Unload: ship]" role tags</td></tr>
+</table>
+
+<h3 id="ini">INI keys <small>(<code>apply_kv</code>)</small></h3>
+<table>
+<tr><th>Key</th><th>Meaning</th></tr>
+<tr><td><code>enabled</code>, <code>repeat</code></td><td>gate the loop / repeat the queue</td></tr>
+<tr><td><code>resource</code>, <code>amount</code>, <code>items=ITEM_X:n,...</code></td><td>mining queue (an empty <code>items=</code> clears the queue)</td></tr>
+<tr><td><code>dock_id</code>, <code>dock_name_filter</code>, <code>refuel_dock_id</code></td><td>number = save id, text = name</td></tr>
+<tr><td><code>belt_sector</code></td><td><code>AUTO</code>, none, or sector id</td></tr>
+<tr><td><code>radius</code>, <code>mining_distance</code></td><td>distance strings (m / km)</td></tr>
+<tr><td><code>idle_seconds</code></td><td>go home after N idle seconds; also refuel stall halt (0 = off)</td></tr>
+<tr><td><code>dock_hold_limit</code></td><td>default 300 s, 0 off</td></tr>
+<tr><td><code>fuel_margin</code>, <code>fuel_amount</code></td><td>fuel min / refill amount</td></tr>
+<tr><td>ore unload toggles, warp options</td><td>per fuel/ore index, flee / warp-on-start / warp-when-no-ore</td></tr>
+</table>
+
+<h3 id="logging">Logging</h3>
+<p><code>log_line()</code> drops everything except lines containing a <b>keep-list word</b> unless debug is on. Current keep words include <code>warpreal, fuelwarp, fuelchk, rockscan, rockfallback, chunkhold, ...</code>. <b>Gotcha:</b> ROCKSCAN lines were silently dropped for a whole session because the word was not in the list. Add the word when adding a log tag. Logs go to <code>UE4SS.log</code>.</p>
+
+<!-- ============ LUA / UI ============ -->
+<h2 id="lua">Lua &amp; UI layer</h2>
+<h3 id="lua-files">Files</h3>
+<table>
+<tr><th>File</th><th>Role</th></tr>
+<tr><td><code>mods/SandboxMenu/Scripts/main.lua</code></td><td>Dev Menu (F3), Cheats tab (test buttons, "Warp current ship to pinned sector"), <code>sendMiningCmd</code> helper (writes MiningCmd.txt). Reduced from 1692 to ~706 lines after probe removal.</td></tr>
+<tr><td><code>native_mining.lua</code>, <code>native_probe.lua</code></td><td>opens the Mining window (<code>NP.openMining</code>); native_probe has dead exports to trim</td></tr>
+<tr><td><code>ue/MiningUnitUI/lua/wbp_loader.lua</code></td><td>loads <code>WBP_MiningUnit</code>, fills it from the status files, handles tabs, modals, saves INI</td></tr>
+<tr><td><code>ue/MiningUnitUI/scripts/gen_paste.py</code></td><td>generates the widget tree text the user pastes into the UE editor; <code>SPEC.md</code> holds the naming contract</td></tr>
+</table>
+<h3 id="window">The Mining Unit window</h3>
+<ul>
+<li><b>F4</b> toggles the window (Fleet Control &gt; Remote Control with ship modal); the Mining Unit block opens the same window with a fixed title; F closes.</li>
+<li>Boxes: Control (Emergency stop, Start/Stop loop), Actions (Dock/Undock/Refuel/Unload = stop that ship, then act 400 ms later), tabs <b>Ship | Items | Operation | Log</b>, Status (Idle|ETA, Next, Cargo %, Speed, ore icon).</li>
+<li>Operation tab: cards for fuel min/max, ore unload toggles with icons, <b>Warp management</b> (Sector Selector modal with ore icons + km column, AUTO default, warp fuel km rule, warp on Start / no ore left, flee on hull drop), dock time limit, "Set as default".</li>
+<li>Selects are one modal component (search + scroll, 40 rows). Part 7 added a multi-select fleet picker (CN 40: fleets as collapsible groups, tick box per ship, Done button; fleet tags deduped).</li>
+</ul>
+<h3 id="umg">UMG notes</h3>
+<ul>
+<li>UI is UMG: classes derive from <code>UDMSWidgetBase</code>, shown through the Widget Subsystem <code>ShowWindow</code>; <code>SetupWidget</code> must return true.</li>
+<li>Game window shell <code>WBP_Window_01_C</code>: <code>WBP_WindowHeader, Footer, ContentBorder, Content (named slot), WindowName, CloseWindow (multicast delegate), ShowCloseWindowButton</code>. Raw create is full-screen with title "Unspecified"; Lua cannot bind multicast delegates, so the mod ships its own close handling.</li>
+<li><code>WBP_CleanButton_Text_C</code> props: <code>Text, TextSize, OnPressed (multicast), HoveredColour, PressedColour, Selected, DefaultColour, DisabledColour</code>.</li>
+<li><b>Class load</b>: <code>AssetRegistryHelpers:GetAsset(FAssetData)</code> (LoadAsset is dead). Never call <code>KismetSystemLibrary</code> soft-path functions (UE4SS crash). Never call methods on invalid UObjects (native crash).</li>
+<li><code>Row_*</code> layout-only widgets are NOT findable by <code>GetWidgetFromName</code>: mark them Is Variable (<code>FIXED_NAMES</code> in gen_paste). A <code>SizeBox</code> paste needs <code>bOverride_WidthOverride/HeightOverride=True</code>.</li>
+<li>Read edit boxes only on the visible tab: an <code>FText GetText</code> on a hidden one crashed the game (FText guard).</li>
+</ul>
+
+<h3 id="deploy">Build &amp; deploy</h3>
+<pre>
+# C++ (needs VS2022 BuildTools + RE-UE4SS at &lt;repo&gt;\build\RE-UE4SS, not in git)
+cd &lt;repo&gt;
+.\build.ps1             # compile only (check for 'error C')
+.\build.ps1 -Install    # compile + back up (build\backups\main.&lt;ts&gt;.dll) + install into the game (game CLOSED)
+                        # note: cwd changes after -Install; full game restart needed for any DLL change
+
+# Lua: copy to  &lt;game&gt;\...\Mods\SandboxMenu\Scripts\   (Ctrl+R reloads; not mid-callback)
+
+# UMG pak (ue\MiningUnitUI)
+python scripts\gen_paste.py        -> paste\WBP_MiningUnit_tree.txt
+(user: open editor, delete Root, click empty, Ctrl+V, compile, save, close editor)
+scripts\cook.ps1 -Versioned ; scripts\pack.ps1 ; scripts\install.ps1   -> pakchunk98-MiningUnitUI_P
+</pre>
+<p>Check the game is not running with <code>tasklist</code> (MainSequence / UnrealEditor) before installing. Workflow of the repo: branch <code>refactor/clean-code</code>, never push, no attribution trailers.</p>
+
+<!-- ============ GOTCHAS ============ -->
+<h2 id="gotchas">Gotchas &amp; hard rules</h2>
+<div class="note bad">
+<ul>
+<li><b>Native crashes kill the whole game.</b> Always <code>alive()</code>-check UObjects that may be stale; actor pointers are freed by streaming (<code>actor_ok</code>).</li>
+<li>A delayed callback (<code>ExecuteWithDelay</code>) that calls <code>FindFirstOf</code> after the action ended crashed with an access violation in <code>process_simple_actions</code>. Do not <code>Ctrl+R</code> mid-callback.</li>
+<li>Looping <code>FindAllOf</code> / reflection over every rock each second freezes the game: cache + refresh every 5-10 s. <code>first_of</code> is a full UObject walk: cache the controller.</li>
+<li>Lua string paths: use forward slashes (<code>C:/...</code>); <code>"\U"</code> is an invalid escape and the whole script fails to load. No <code>lua</code>/<code>luac</code> on PATH: syntax is only checked in game (UE4SS console).</li>
+<li>Desktop logging: <code>io.open</code> a file on the Desktop and an agent can read it directly (truncate on probe press).</li>
+<li><b>Always undock before any warp or teleport.</b> Each ship runs its own AI; F4 only commands. Mods must not interfere with co-op; don't restore an old backup over the user's live save.</li>
+<li>Don't invent requirements: build what the user asked.</li>
+</ul>
+</div>
+
+<h2 id="open">Open questions</h2>
+<ul>
+<li><span class="badge u">UNKNOWN</span> Where <code>PlayerObject+0x94</code> (chunk location) is written each tick (almost certainly the sim, from the piloted ship or character); logic of BP events <code>FixedUpdate</code> and <code>SetLocalPlayerChunk</code> (Blueprint graphs in <code>BP_PlayerController_C</code>, not read).</li>
+<li><span class="badge u">UNKNOWN</span> Use of <code>FlightModel.WarpFuelConsumption</code> and <code>WarpFuelStats.FuelConsumptionRate</code>; the exact divisor of <code>GetJumpCost</code>; the meaning of Dock flag bit30 and <code>FlightModel+0x30</code>.</li>
+<li><span class="badge u">UNKNOWN</span> The central dispatcher receiver-id &rarr; object <code>ProcessInput</code> (is a PlayerObject receiver forwarded to the piloted ship?); the constructor of <code>ShipMovementInputCommand</code>.</li>
+<li><span class="badge u">UNKNOWN</span> Whether far, never-visited chunks always exist in <code>ChunkMap</code> with <code>+0xfd</code> set (true for the tested sector 1008).</li>
+<li><span class="badge i">UNTESTED</span> Low-fuel belt hop case, chunk release on dock/stop, full AUTO loop hop with 3 ships.</li>
+<li>Ideas not built: ping resources in other systems, cargo capacity probe, README refresh, trim <code>native_probe.lua</code> dead exports, <code>SPEC.md</code> line 89 text.</li>
+</ul>
+
+<h2 id="history">Timeline</h2>
+<table>
+<tr><th>Date</th><th>Milestone</th></tr>
+<tr><td>2026-10-26</td><td>Mod setup (retoc, UE4SS, FModel, UAssetGUI), Lua Sandbox menu, steering by ViewInput, laser/tractor, dock flow via DeliverOrder</td></tr>
+<tr><td>2026-10-27</td><td>Mining loop M3, player body jump attempt (abandoned), UMG UI migration, real orders refuel/unload</td></tr>
+<tr><td>2026-10-28</td><td>Mining Unit block + own actor, native window (UE 5.7.4 project), Ship/Items/Operation/Log tabs, per-ship steering, dock wait, dock picker</td></tr>
+<tr><td>2026-10-29</td><td>Warp: probes &rarr; sector list &rarr; instant teleport &rarr; Ghidra &rarr; real warp via ShipMovementInputCommand; belt selector, flee, fleet picker, rock fallback, chunk hold (far mining works)</td></tr>
+</table>
+
+</main>
+<script>
+// build sidebar from h2/h3 headings
+const nav=document.getElementById('nav'),main=document.getElementById('main');
+let grp=null;
+main.querySelectorAll('h2,h3,h4[id]').forEach(h=>{
+  if(!h.id)return;
+  if(h.tagName==='H2'){const g=document.createElement('div');g.className='grp';g.textContent=h.textContent;nav.appendChild(g);}
+  else if(h.tagName==='H3'||h.tagName==='H4'){
+    const a=document.createElement('a');a.href='#'+h.id;a.textContent=h.textContent.replace(/\s+/g,' ').trim();a.dataset.k=(a.textContent+' '+(h.nextElementSibling?h.nextElementSibling.textContent.slice(0,400):'')).toLowerCase();nav.appendChild(a);}
+});
+// h2 anchors too
+main.querySelectorAll('h2').forEach(h=>{const a=document.createElement('a');a.href='#'+h.id;a.textContent=h.textContent;a.style.fontWeight='600';a.dataset.k=h.textContent.toLowerCase();nav.insertBefore(a,[...nav.querySelectorAll('.grp')].find(g=>g.textContent===h.textContent).nextSibling);});
+document.getElementById('q').addEventListener('input',e=>{
+  const v=e.target.value.trim().toLowerCase();
+  nav.querySelectorAll('a').forEach(a=>a.classList.toggle('hide',!!v&&!a.dataset.k.includes(v)));
+  nav.querySelectorAll('.grp').forEach(g=>g.style.display=v?'none':'');
+});
+</script>
+</body>
+</html>
