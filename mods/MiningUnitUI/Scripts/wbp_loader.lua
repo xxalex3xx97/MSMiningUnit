@@ -619,7 +619,8 @@ local function shipFill()
 end
 local udSave   -- defined below
 -- Dynamic dock list: one WBP_DockRow entry (Btn_Sel + Txt_Sel + Btn_Del) per id, created by the Dyn_<name> DynamicEntryBox. list = ids table (S.rd), save = persist fn.
-local function dynDocks(name, list, save, title, docks)
+local function dynDocks(name, getList, save, title, docks)   -- getList() = current ids table (S.rd is replaced on reload: never hold it)
+  local list = getList()
   -- Python-built widgets are not Is Variable (w() cannot find them): walk Pnl_<name>Card > body Border > inner VerticalBox and pick the child named Dyn_<name>
   local box = w("Dyn_" .. name)
   if not box then
@@ -667,9 +668,9 @@ local function dynDocks(name, list, save, title, docks)
       local bs, bd = child(e, "Btn_Sel"), child(e, "Btn_Del")
       if bs then BIND.onClick(bs, function()
         local i = idx(e); if not i then return end
-        modalSelect{ title = title, options = S.docks or {}, id = list[i], onPick = function(id) list[i] = id; save() end }
+        modalSelect{ title = title, options = S.docks or {}, id = getList()[i], onPick = function(id) getList()[i] = id; save() end }
       end) end
-      if bd then BIND.onClick(bd, function() local i = idx(e); if i then table.remove(list, i); save() end end) end
+      if bd then BIND.onClick(bd, function() local i = idx(e); if i then table.remove(getList(), i); save() end end) end
     end
   end
   while #st.ents > #list do
@@ -699,7 +700,7 @@ local function udRender()
     if on and #list == 0 then warn[#warn + 1] = u.k end
   end
   setVis(w("Pnl_RDockCard"), 0)
-  dynDocks("RDock", S.rd, udSave, "Refuel dock", docks)
+  dynDocks("RDock", function() return S.rd end, udSave, "Refuel dock", docks)
   S.warn = (not S.all and #warn > 0) and ("No unload dock for: " .. table.concat(warn, ", ")) or ""
   M.setText("Txt_ShipWarn", S.warn)
   setVis(w("Txt_ShipWarn"), S.warn ~= "" and 0 or 1)
