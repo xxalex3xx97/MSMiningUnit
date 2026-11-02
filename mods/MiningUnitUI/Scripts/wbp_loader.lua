@@ -647,7 +647,7 @@ local function dynDocks(name, list, save, title, docks)
   S.dyn = S.dyn or {}
   local st = S.dyn[name]
   local bid = box:GetFullName()   -- new Lua object per lookup: compare by name (changes with each window instance)
-  if not st or st.bid ~= bid then st = { box = box, bid = bid, ents = {} }; S.dyn[name] = st end
+  if not st or st.bid ~= bid then st = { box = box, bid = bid, ents = {} }; S.dyn[name] = st; try("dyn reset", function() box:Reset(true) end) end
   -- WBP_DockRow children are Python-built (not Is Variable): Row_Root[0] = Btn_Sel > Txt_Sel, Row_Root[1] = SizeBox > Btn_Del
   local function child(e, n)
     local s2, x = pcall(function()
