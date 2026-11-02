@@ -617,6 +617,37 @@ local function shipFill()
   if not known then B[#B + 1] = { id = S.last.belt, text = S.last.belt } end
   selSet("Belt", B, S.last.belt)
 end
+local udSave   -- defined below
+-- Dynamic dock list: one WBP_DockRow entry (Btn_Sel + Txt_Sel + Btn_Del) per id, created by the Dyn_<name> DynamicEntryBox. list = ids table (S.rd), save = persist fn.
+local function dynDocks(name, list, save, title, docks)
+  local box = w("Dyn_" .. name); if not box then return end
+  S.dyn = S.dyn or {}
+  local st = S.dyn[name]
+  if not st or st.box ~= box then st = { box = box, ents = {} }; S.dyn[name] = st end
+  local function child(e, n) local s2, x = pcall(function() return e[n] end); if s2 and ok(x) then return x end end
+  local function idx(e) for i, x in ipairs(st.ents) do if x == e then return i end end end
+  while #st.ents < #list do
+    local s2, e = pcall(function() return box:BP_CreateEntry() end)
+    if not (s2 and ok(e)) then L("dynDocks " .. name .. " CreateEntry failed"); break end
+    st.ents[#st.ents + 1] = e
+    if BIND and BIND.onClick then
+      local bs, bd = child(e, "Btn_Sel"), child(e, "Btn_Del")
+      if bs then BIND.onClick(bs, function()
+        local i = idx(e); if not i then return end
+        modalSelect{ title = title, options = S.docks or {}, id = list[i], onPick = function(id) list[i] = id; save() end }
+      end) end
+      if bd then BIND.onClick(bd, function() local i = idx(e); if i then table.remove(list, i); save() end end) end
+    end
+  end
+  while #st.ents > #list do
+    local e = table.remove(st.ents); try("RemoveEntry", function() box:RemoveEntry(e) end)
+  end
+  for i, e in ipairs(st.ents) do
+    local t, cur = child(e, "Txt_Sel"), list[i]
+    for _, o in ipairs(docks) do if o.id == list[i] then cur = o.text end end
+    if t then try("dock text", function() t:SetText(FText(cur or "")) end) end
+  end
+end
 -- Ship tab dock lists. S.ud[<ini>] = unload dock ids of the ore, S.rd = refuel dock ids (this ship; All ships = first ship of the set).
 -- Ore card shown only while the global ore_<ini> flag is on (default on). Warning = ore on + empty list (not in All ships mode).
 local function udRender()
@@ -635,17 +666,13 @@ local function udRender()
     if on and #list == 0 then warn[#warn + 1] = u.k end
   end
   setVis(w("Pnl_RDockCard"), 0)
-  for n = 1, UDN do
-    setVis(w("Pnl_RDockRow_" .. n), n <= #S.rd and 0 or 1)
-    if S.rd[n] then selSet("RDock_" .. n, docks, S.rd[n]) end
-  end
-  setVis(w("Btn_RDockAdd"), #S.rd < UDN and 0 or 1)
+  dynDocks("RDock", S.rd, udSave, "Refuel dock", docks)
   S.warn = (not S.all and #warn > 0) and ("No unload dock for: " .. table.concat(warn, ", ")) or ""
   M.setText("Txt_ShipWarn", S.warn)
   setVis(w("Txt_ShipWarn"), S.warn ~= "" and 0 or 1)
 end
 -- writes every list of the window's ship(s) to INI (empty ids never written), then reloads the dock names/tags
-local function udSave()
+function udSave()
   local vals = {}
   for _, u in ipairs(UD_ORES) do vals["unload_docks_" .. u.ini] = table.concat(S.ud[u.ini], ",") end
   vals.refuel_docks = table.concat(S.rd, ",")
@@ -1243,7 +1270,7 @@ function M.close()
   S.pend, S.arm, S.estop, S.etaS, S.etaKind = nil, nil, nil, nil, nil
   S.req, S.simple = nil, nil
   S.fleet, S.holoOut = nil, nil
-  S.ud, S.rd, S.warn = nil, nil, nil
+  S.ud, S.rd, S.warn, S.dyn = nil, nil, nil, nil
   if not (S.root or S.p or S.frame) then return end
   local root, p = S.root, S.p
   S.root, S.p, S.w, S.frame = nil, nil, nil, nil
@@ -1603,12 +1630,7 @@ function M.open(ship)
           modalSelect{ title = "Unload dock", options = S.docks or {}, onPick = function(id) table.insert(S.ud[u.ini], id); udSave() end }
         end)
       end
-      for n = 1, UDN do
-        selInit("RDock_" .. n, bind, function(id) S.rd[n] = id; udSave() end, "Refuel dock")
-        bind("Btn_RDockDel_" .. n, function() table.remove(S.rd, n); udSave() end)
-      end
       bind("Btn_RDockAdd", function()
-        if #S.rd >= UDN then return end
         modalSelect{ title = "Refuel dock", options = S.docks or {}, onPick = function(id) table.insert(S.rd, id); udSave() end }
       end)
       selInit("Belt", bind, function(id) S.last.belt = id; iniSave({ belt_sector = id }); shipFill() end, "Sector Selector", function(o) return { cols = o.cols, ores = o.ores } end, loadSectors, function() return { "Sector", "ID", "Distance" } end)
