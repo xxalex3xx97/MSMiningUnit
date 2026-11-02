@@ -619,13 +619,13 @@ local function shipFill()
 end
 local udSave   -- defined below
 -- Dynamic dock list: one WBP_DockRow entry (Btn_Sel + Txt_Sel + Btn_Del) per id, created by the Dyn_<name> DynamicEntryBox. list = ids table (S.rd), save = persist fn.
-local function dynDocks(name, getList, save, title, docks)   -- getList() = current ids table (S.rd is replaced on reload: never hold it)
+local function dynDocks(name, getList, save, title, docks, cardName)   -- getList() = current ids table (S.rd is replaced on reload: never hold it)
   local list = getList()
   -- Python-built widgets are not Is Variable (w() cannot find them): walk Pnl_<name>Card > body Border > inner VerticalBox and pick the child named Dyn_<name>
   local box = w("Dyn_" .. name)
   if not box then
     local ok2, found = pcall(function()
-      local inner = w("Pnl_" .. name .. "Card"):GetContent():GetContent()
+      local inner = w(cardName or ("Pnl_" .. name .. "Card")):GetContent():GetContent()
       for i = 0, inner:GetChildrenCount() - 1 do
         local c = inner:GetChildAt(i)
         if nm(c) == "Dyn_" .. name then return c end
@@ -692,11 +692,7 @@ local function udRender()
     local on = (glob["ore_" .. u.ini] or "1") == "1"
     local list = S.ud[u.ini]
     setVis(w("Pnl_UDockCard_" .. u.k), on and 0 or 1)
-    for n = 1, UDN do
-      setVis(w("Pnl_UDockRow_" .. u.k .. "_" .. n), n <= #list and 0 or 1)
-      if list[n] then selSet("UDock_" .. u.k .. "_" .. n, docks, list[n]) end
-    end
-    setVis(w("Btn_UDockAdd_" .. u.k), #list < UDN and 0 or 1)
+    if on then dynDocks("UDock_" .. u.k, function() return S.ud and S.ud[u.ini] or {} end, udSave, "Unload dock", docks, "Pnl_UDockCard_" .. u.k) end
     if on and #list == 0 then warn[#warn + 1] = u.k end
   end
   setVis(w("Pnl_RDockCard"), 0)
@@ -1655,12 +1651,7 @@ function M.open(ship)
       bind("Sel_Remote", openMulti)
       S.last = S.last or {}
       for _, u in ipairs(UD_ORES) do
-        for n = 1, UDN do
-          selInit("UDock_" .. u.k .. "_" .. n, bind, function(id) S.ud[u.ini][n] = id; udSave() end, "Unload dock")
-          bind("Btn_UDockDel_" .. u.k .. "_" .. n, function() table.remove(S.ud[u.ini], n); udSave() end)
-        end
         bind("Btn_UDockAdd_" .. u.k, function()
-          if #S.ud[u.ini] >= UDN then return end
           modalSelect{ title = "Unload dock", options = S.docks or {}, onPick = function(id) table.insert(S.ud[u.ini], id); udSave() end }
         end)
       end
