@@ -620,15 +620,47 @@ end
 local udSave   -- defined below
 -- Dynamic dock list: one WBP_DockRow entry (Btn_Sel + Txt_Sel + Btn_Del) per id, created by the Dyn_<name> DynamicEntryBox. list = ids table (S.rd), save = persist fn.
 local function dynDocks(name, list, save, title, docks)
-  local box = w("Dyn_" .. name); if not box then return end
+  -- Python-built widgets are not Is Variable (w() cannot find them): walk Pnl_<name>Card > body Border > inner VerticalBox and pick the child named Dyn_<name>
+  local box = w("Dyn_" .. name)
+  if not box then
+    local ok2, found = pcall(function()
+      local inner = w("Pnl_" .. name .. "Card"):GetContent():GetContent()
+      for i = 0, inner:GetChildrenCount() - 1 do
+        local c = inner:GetChildAt(i)
+        if nm(c) == "Dyn_" .. name then return c end
+      end
+    end)
+    if ok2 and ok(found) then box = found
+    elseif not S.dynDiag then   -- one-time diagnostics: where the walk broke
+      S.dynDiag = true
+      L("dynDocks walk failed: ok=" .. tostring(ok2) .. " res=" .. tostring(found))
+      pcall(function()
+        local c1 = w("Pnl_" .. name .. "Card"):GetContent(); L("dyn c1=" .. nm(c1) .. " [" .. nm(c1, true) .. "]")
+        local c2 = c1:GetContent(); L("dyn c2=" .. nm(c2) .. " [" .. nm(c2, true) .. "]")
+        local n = c2:GetChildrenCount(); L("dyn children=" .. tostring(n))
+        for i = math.max(0, n - 4), n - 1 do local c = c2:GetChildAt(i); L("dyn child " .. i .. " " .. nm(c) .. " [" .. nm(c, true) .. "]") end
+      end)
+    end
+  end
+  L("dynDocks " .. name .. " box=" .. tostring(box ~= nil) .. " n=" .. #list)
+  if not box then return end
   S.dyn = S.dyn or {}
   local st = S.dyn[name]
   if not st or st.box ~= box then st = { box = box, ents = {} }; S.dyn[name] = st end
-  local function child(e, n) local s2, x = pcall(function() return e[n] end); if s2 and ok(x) then return x end end
+  -- WBP_DockRow children are Python-built (not Is Variable): Row_Root[0] = Btn_Sel > Txt_Sel, Row_Root[1] = SizeBox > Btn_Del
+  local function child(e, n)
+    local s2, x = pcall(function()
+      local root = e.WidgetTree.RootWidget
+      if n == "Btn_Sel" then return root:GetChildAt(0) end
+      if n == "Txt_Sel" then return root:GetChildAt(0):GetContent() end
+      if n == "Btn_Del" then return root:GetChildAt(1):GetContent() end
+    end)
+    if s2 and ok(x) then return x end
+  end
   local function idx(e) for i, x in ipairs(st.ents) do if x == e then return i end end end
   while #st.ents < #list do
     local s2, e = pcall(function() return box:BP_CreateEntry() end)
-    if not (s2 and ok(e)) then L("dynDocks " .. name .. " CreateEntry failed"); break end
+    if not (s2 and ok(e)) then L("dynDocks " .. name .. " CreateEntry failed: " .. tostring(e)); break end
     st.ents[#st.ents + 1] = e
     if BIND and BIND.onClick then
       local bs, bd = child(e, "Btn_Sel"), child(e, "Btn_Del")
@@ -1270,7 +1302,7 @@ function M.close()
   S.pend, S.arm, S.estop, S.etaS, S.etaKind = nil, nil, nil, nil, nil
   S.req, S.simple = nil, nil
   S.fleet, S.holoOut = nil, nil
-  S.ud, S.rd, S.warn, S.dyn = nil, nil, nil, nil
+  S.ud, S.rd, S.warn, S.dyn, S.dynDiag = nil, nil, nil, nil, nil
   if not (S.root or S.p or S.frame) then return end
   local root, p = S.root, S.p
   S.root, S.p, S.w, S.frame = nil, nil, nil, nil
