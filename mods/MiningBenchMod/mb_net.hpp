@@ -1,6 +1,6 @@
 // FILE: mods/MiningBenchMod/mb_net.hpp
 // WHAT: dock network glue: the shared tables (g_net_docks, g_net_ships, g_net_ticket) kept in step with the game once a second (net_tick),
-//       the reservation helpers used by job_start, and the status files NetDocks.txt, NetShips.txt and DockBusy.txt.
+//       the reservation helpers used by job_start, and the status files NetDocks.txt, NetShips.txt, DockBusy.txt and DockPos.txt (dock positions cache).
 // WHY separate: the rules (net_pick, net_grant_tick, net_reconcile, texts) are pure and live in mb_logic.hpp so the tests run them.
 //       This file only reads the game and writes files.
 // DEPENDS ON: mb_common.hpp (alive, g_now, get_dll_dir, write_atomic), mb_ue.hpp (find_by_id, obj_id, get_int_prop, get_obj_prop, FindAllOf),
@@ -20,6 +20,10 @@ namespace
     long g_net_ticket = 0;                // global FIFO ticket counter
     std::map<int, std::string> g_net_dock_names;   // dock id -> in-game name (refreshed in net_tick; missing = not readable)
     std::map<int, std::string> g_net_ship_names;   // ship id -> display name (refreshed in net_tick; missing = not readable)
+    std::map<int, DockPos> g_net_dockpos;          // dock id -> where the dock is (learned from a docked ship, cached in DockPos.txt)
+
+    // D2 stub: the real one (cargo, fuel, hull, dock ore of the ship) is net_req_of in mb_mining.hpp (D3). Until then every ship scores the same.
+    NetReq net_req_of(int, Purpose) { return NetReq(); }
 
     // WHAT: text cleaned for the '|' separated files and one-line logs.
     std::string net_clean(std::string s)
@@ -52,6 +56,9 @@ namespace
     void net_leave(int sid)
     {
         const auto si = g_net_ships.find(sid);
+        bool had = si != g_net_ships.end() && si->second.waits_dock != 0;
+        for (const auto& kv : g_net_docks) if (kv.second.resv == sid) had = true;
+        if (had) log_line(widen("CONTROL ship=" + std::to_string(sid) + " (" + net_ship_label(sid) + ") called off"));
         if (si != g_net_ships.end() && si->second.waits_dock != 0)
             log_line(STR("NET dock=") + std::to_wstring(si->second.waits_dock) + STR(" RELEASE by=") + std::to_wstring(sid));
         for (const auto& kv : g_net_docks)
@@ -86,6 +93,73 @@ namespace
         case P_FLEE: return "flee";
         default: return "none";
         }
+    }
+
+    // WHAT: plain word of a purpose for the Control log lines (Unload, Refuel, ...).
+    const char* net_purpose_word(Purpose p)
+    {
+        switch (p)
+        {
+        case P_UNLOAD: return "Unload";
+        case P_REFUEL: return "Refuel";
+        case P_UNDOCK_TARGET: return "Undock";
+        case P_PICK: return "Pick";
+        case P_FLEE: return "Flee";
+        default: return "Dock";
+        }
+    }
+
+    // WHAT: holding phase text for NetShips.txt (NetShip.phase: 0 none, 1 flying, 2 holding, 3 cleared).
+    const char* net_phase_text(int p)
+    {
+        switch (p)
+        {
+        case 1: return "flying";
+        case 2: return "holding";
+        case 3: return "cleared";
+        default: return "none";
+        }
+    }
+
+    // WHAT: DockPos.txt -> g_net_dockpos. Line: dock|sys|ch0|ch1|ch2|loc0|loc1|loc2. Bad lines are skipped.
+    void net_load_dockpos()
+    {
+        std::ifstream f(get_dll_dir() / "DockPos.txt");
+        std::string line;
+        while (std::getline(f, line))
+        {
+            std::vector<std::string> c;
+            size_t from = 0;
+            for (size_t bar = line.find('|'); ; bar = line.find('|', from))
+            {
+                c.push_back(line.substr(from, bar == std::string::npos ? std::string::npos : bar - from));
+                if (bar == std::string::npos) break;
+                from = bar + 1;
+            }
+            if (c.size() != 8) continue;
+            try
+            {
+                DockPos p;
+                p.known = true;
+                const int d = std::stoi(c[0]);
+                p.sys = std::stoi(c[1]);
+                for (int i = 0; i < 3; ++i) { p.ch[i] = std::stoll(c[2 + i]); p.loc[i] = std::stod(c[5 + i]); }
+                g_net_dockpos[d] = p;
+            }
+            catch (...) {}
+        }
+    }
+
+    // WHAT: dock d position from docked ship sh (sys, chunk, raw loc). A docked ship sits at its dock, so its position stands in for the dock (UNVERIFIED in game).
+    void net_learn_dockpos(int d, UObject* sh)
+    {
+        const int sys = sys_id(sh);
+        int64_t ch[3] = {0, 0, 0};
+        double loc[3] = {0, 0, 0};
+        if (sys <= 0 || !get_chunk(sh, ch) || !get_loc(sh, loc)) return;
+        DockPos& p = g_net_dockpos[d];
+        p.known = true; p.sys = sys;
+        for (int i = 0; i < 3; ++i) { p.ch[i] = ch[i]; p.loc[i] = loc[i]; }
     }
 
     const char* net_reason_text(NetReason r)
@@ -134,12 +208,15 @@ namespace
     // WHAT: NetDocks.txt, NetShips.txt and DockBusy.txt (dock|occupant: the docked or claiming ship, else the reserving ship). Each written only when changed.
     void net_write()
     {
-        std::string dk, sh, busy;
+        std::string dk, sh, busy, dp;
         for (const auto& kv : g_net_docks)
         {
             const NetDock& d = kv.second;
+            const auto pos = g_net_dockpos.find(d.id);
+            const bool line_ok = pos != g_net_dockpos.end() && pos->second.known;
             dk += std::to_string(d.id) + "|" + net_status_text(d) + "|" + std::to_string(d.occ) + "|" + net_purpose_text(d.why) + "|" +
-                  std::to_string(net_age(d.since)) + "|" + net_join(d.queue) + "|" + (d.full ? "1" : "0") + "|" + net_name(g_net_dock_names, d.id) + "\n";
+                  std::to_string(net_age(d.since)) + "|" + net_join(d.queue) + "|" + (d.full ? "1" : "0") + "|" + net_name(g_net_dock_names, d.id) + "|" +
+                  std::to_string(d.resv) + "|" + (line_ok ? "1" : "0") + "\n";
             const int who = d.occ != 0 ? d.occ : d.resv;
             if (who != 0) busy += std::to_string(d.id) + "|" + std::to_string(who) + "\n";
         }
@@ -150,14 +227,23 @@ namespace
                   std::to_string(s.blocked_by) + "|" + std::to_string(net_age(s.wait_since)) + "|" + net_reason_text(s.reason) + "|" +
                   std::to_string(static_cast<long long>(net_hold_s(s.sid))) + "|" + std::to_string(eff_cfg(s.sid).dock_hold_limit) + "|" +
                   std::to_string(net_queue_pos(s)) + "|" + net_name(g_net_ship_names, s.sid) + "|" + net_name(g_net_dock_names, s.waits_dock) + "|" +
-                  net_name(g_net_ship_names, s.blocked_by) + "\n";
+                  net_name(g_net_ship_names, s.blocked_by) + "|" + std::to_string(s.slot) + "|" + std::to_string(static_cast<long long>(s.prio)) + "|" +
+                  net_clean(s.prio_why) + "|" + net_phase_text(s.phase) + "\n";
         }
-        static std::string last_dk, last_sh, last_busy;
+        for (const auto& kv : g_net_dockpos)
+        {
+            const DockPos& p = kv.second;
+            if (!p.known) continue;
+            dp += std::to_string(kv.first) + "|" + std::to_string(p.sys) + "|" + std::to_string(p.ch[0]) + "|" + std::to_string(p.ch[1]) + "|" + std::to_string(p.ch[2]) + "|" +
+                  std::to_string(p.loc[0]) + "|" + std::to_string(p.loc[1]) + "|" + std::to_string(p.loc[2]) + "\n";
+        }
+        static std::string last_dk, last_sh, last_busy, last_dp;
         try
         {
             if (dk != last_dk) { write_atomic(get_dll_dir() / "NetDocks.txt", dk); last_dk = dk; }
             if (sh != last_sh) { write_atomic(get_dll_dir() / "NetShips.txt", sh); last_sh = sh; }
             if (busy != last_busy) { write_atomic(get_dll_dir() / "DockBusy.txt", busy); last_busy = busy; }
+            if (dp != last_dp) { write_atomic(get_dll_dir() / "DockPos.txt", dp); last_dp = dp; }
         }
         catch (...) {}
     }
@@ -166,6 +252,8 @@ namespace
     // WHY: the tables must match the game before the rules run. Each object is checked with alive() first.
     void net_tick()
     {
+        static bool dockpos_loaded = false;
+        if (!dockpos_loaded) { dockpos_loaded = true; net_load_dockpos(); }
         std::map<int, int> occupant, heading;   // occupant: dock -> ship (docked, or a dock job heading there); heading: live ship -> dock of its job (0 none)
         std::vector<UObject*> ships;
         UObjectGlobals::FindAllOf(STR("DMSPlayerShipObject"), ships);
@@ -180,7 +268,7 @@ namespace
             get_int_prop(sh, STR("DockID"), did);
             UObject* d = get_obj_prop(sh, STR("Dock"));
             if (did <= 0 && alive(d)) did = obj_id(d);
-            if (did > 0) occupant[did] = sid;
+            if (did > 0) { occupant[did] = sid; net_learn_dockpos(did, sh); }
         }
         for (const DockJob& j : g_jobs)
         {
@@ -228,7 +316,7 @@ namespace
                 {
                     for (const auto& dk : g_net_docks)
                         if (dk.second.resv == kv.first)
-                            log_line(widen("NET ship=" + std::to_string(kv.first) + " (" + sn + ") GRANT dock=" + std::to_string(dk.first) + " (" + net_dock_label(dk.first) + ")"));
+                            log_line(widen("CONTROL ship=" + std::to_string(kv.first) + " (" + sn + ") cleared for " + net_purpose_word(s.intent) + " " + net_dock_label(dk.first)));
                 }
             }
             if (s.waits_dock == 0) continue;

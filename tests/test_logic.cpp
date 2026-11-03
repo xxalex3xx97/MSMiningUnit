@@ -546,7 +546,7 @@ static void t_station()
 static void t_net_free_go()
 {
     std::map<int, NetDock> d; std::map<int, NetShip> s; long t = 0;
-    const NetVerdict v = net_pick(d, s, t, 10, P_UNLOAD, {1}, 0, 5.0);
+    const NetVerdict v = net_pick(d, s, t, 10, P_UNLOAD, NetReq(), {1}, 0, 5.0);
     CHECK(v.k == NetVerdict::GO && v.dock == 1);
     CHECK(d[1].resv == 10 && d[1].why == P_UNLOAD && d[1].since == 5.0);
     CHECK(s[10].ticket == 0 && s[10].waits_dock == 0);
@@ -556,7 +556,7 @@ static void t_net_busy_wait()
 {
     std::map<int, NetDock> d; std::map<int, NetShip> s; long t = 0;
     d[1].occ = 7;
-    const NetVerdict v = net_pick(d, s, t, 11, P_UNLOAD, {1}, 0, 6.0);
+    const NetVerdict v = net_pick(d, s, t, 11, P_UNLOAD, NetReq(), {1}, 0, 6.0);
     CHECK(v.k == NetVerdict::WAIT && v.dock == 1 && v.holder == 7 && v.reason == NR_WAIT_BUSY);
     CHECK(s[11].ticket == 1 && s[11].waits_dock == 1 && s[11].blocked_by == 7);
     CHECK(d[1].queue.size() == 1 && d[1].queue[0] == 11);
@@ -566,9 +566,9 @@ static void t_net_second_dock()
 {
     std::map<int, NetDock> d; std::map<int, NetShip> s; long t = 0;
     d[1].occ = 7;
-    const NetVerdict v = net_pick(d, s, t, 12, P_UNLOAD, {1, 2}, 0, 0);
+    const NetVerdict v = net_pick(d, s, t, 12, P_UNLOAD, NetReq(), {1, 2}, 0, 0);
     CHECK(v.k == NetVerdict::GO && v.dock == 2 && d[2].resv == 12);
-    const NetVerdict f = net_pick(d, s, t, 13, P_PICK, {1}, 2, 0);   // fixed dock 2 is busy now
+    const NetVerdict f = net_pick(d, s, t, 13, P_PICK, NetReq(), {1}, 2, 0);   // fixed dock 2 is busy now
     CHECK(f.k == NetVerdict::WAIT && f.dock == 2 && f.holder == 0 && f.reason == NR_WAIT_QUEUE);   // holder = occupant only; 12 holds a reservation
 }
 
@@ -576,18 +576,18 @@ static void t_net_fifo()
 {
     std::map<int, NetDock> d; std::map<int, NetShip> s; long t = 0;
     d[1].occ = 7;
-    net_pick(d, s, t, 11, P_UNLOAD, {1}, 0, 1);
-    net_pick(d, s, t, 12, P_UNLOAD, {1}, 0, 2);
+    net_pick(d, s, t, 11, P_UNLOAD, NetReq(), {1}, 0, 1);
+    net_pick(d, s, t, 12, P_UNLOAD, NetReq(), {1}, 0, 2);
     CHECK(s[11].ticket == 1 && s[12].ticket == 2);
     CHECK(d[1].queue.size() == 2 && d[1].queue[0] == 11);
     d[1].occ = 0;                                                    // dock freed
-    const NetVerdict nw = net_pick(d, s, t, 13, P_UNLOAD, {1}, 0, 3);  // newcomer must not jump the queue
+    const NetVerdict nw = net_pick(d, s, t, 13, P_UNLOAD, NetReq(), {1}, 0, 3);  // newcomer must not jump the queue
     CHECK(nw.k == NetVerdict::WAIT && nw.reason == NR_WAIT_QUEUE && s[13].ticket == 3);
     net_grant_tick(d, s, 4);
     CHECK(d[1].resv == 11 && s[11].granted && d[1].queue.size() == 2 && d[1].queue[0] == 12);
-    const NetVerdict w12 = net_pick(d, s, t, 12, P_UNLOAD, {1}, 0, 5);
+    const NetVerdict w12 = net_pick(d, s, t, 12, P_UNLOAD, NetReq(), {1}, 0, 5);
     CHECK(w12.k == NetVerdict::WAIT && w12.reason == NR_WAIT_QUEUE);
-    const NetVerdict g11 = net_pick(d, s, t, 11, P_UNLOAD, {1}, 0, 6);
+    const NetVerdict g11 = net_pick(d, s, t, 11, P_UNLOAD, NetReq(), {1}, 0, 6);
     CHECK(g11.k == NetVerdict::GO && d[1].resv == 11 && !s[11].granted);
     net_release_ship(d, s, 11);                                     // 11 done
     net_grant_tick(d, s, 7);
@@ -598,7 +598,7 @@ static void t_net_go_drops_other_grant()
 {
     std::map<int, NetDock> d; std::map<int, NetShip> s; long t = 0;
     d[2].resv = 10;                                                 // granted dock 2 earlier
-    const NetVerdict v = net_pick(d, s, t, 10, P_UNLOAD, {1, 2}, 0, 0);
+    const NetVerdict v = net_pick(d, s, t, 10, P_UNLOAD, NetReq(), {1, 2}, 0, 0);
     CHECK(v.k == NetVerdict::GO && v.dock == 1);
     CHECK(d[1].resv == 10 && d[2].resv == 0);
 }
@@ -607,14 +607,14 @@ static void t_net_self_occupant()
 {
     std::map<int, NetDock> d; std::map<int, NetShip> s; long t = 0;
     d[1].occ = 5;                                                   // ship 5 is docked at dock 1
-    const NetVerdict v = net_pick(d, s, t, 5, P_UNLOAD, {1}, 0, 0);
+    const NetVerdict v = net_pick(d, s, t, 5, P_UNLOAD, NetReq(), {1}, 0, 0);
     CHECK(v.k == NetVerdict::GO && v.dock == 1 && d[1].resv == 5);
     CHECK(d[1].queue.empty() && s[5].waits_dock == 0 && s[5].ticket == 0);
 
     // full dock the ship sits at: not a candidate, so it waits but never queues for its own dock
     std::map<int, NetDock> d2; std::map<int, NetShip> s2; long t2 = 0;
     d2[1].occ = 7; d2[1].full = true;
-    const NetVerdict w = net_pick(d2, s2, t2, 7, P_UNLOAD, {1}, 0, 0);
+    const NetVerdict w = net_pick(d2, s2, t2, 7, P_UNLOAD, NetReq(), {1}, 0, 0);
     CHECK(w.k == NetVerdict::WAIT && w.holder == 0 && w.holder != 7);
     CHECK(d2[1].queue.empty());
 }
@@ -646,7 +646,7 @@ static void t_net_blocked_by_never_self()
 static void t_net_not_configured()
 {
     std::map<int, NetDock> d; std::map<int, NetShip> s; long t = 0;
-    const NetVerdict v = net_pick(d, s, t, 10, P_UNLOAD, {}, 0, 0);
+    const NetVerdict v = net_pick(d, s, t, 10, P_UNLOAD, NetReq(), {}, 0, 0);
     CHECK(v.k == NetVerdict::ERR && v.reason == NR_NOT_CONFIGURED);
 }
 
@@ -654,7 +654,7 @@ static void t_net_dock_gone()
 {
     std::map<int, NetDock> d; std::map<int, NetShip> s; long t = 0;
     d[1].exists = false;
-    const NetVerdict v = net_pick(d, s, t, 10, P_UNLOAD, {1}, 0, 0);
+    const NetVerdict v = net_pick(d, s, t, 10, P_UNLOAD, NetReq(), {1}, 0, 0);
     CHECK(v.k == NetVerdict::ERR && v.reason == NR_DOCK_GONE);
 }
 
@@ -662,12 +662,12 @@ static void t_net_full()
 {
     std::map<int, NetDock> d; std::map<int, NetShip> s; long t = 0;
     d[1].full = true;
-    const NetVerdict v = net_pick(d, s, t, 10, P_UNLOAD, {1, 2}, 0, 0);
+    const NetVerdict v = net_pick(d, s, t, 10, P_UNLOAD, NetReq(), {1, 2}, 0, 0);
     CHECK(v.k == NetVerdict::GO && v.dock == 2);
 
     std::map<int, NetDock> d2; std::map<int, NetShip> s2;
     d2[1].full = true;
-    const NetVerdict w = net_pick(d2, s2, t, 10, P_UNLOAD, {1}, 0, 0);
+    const NetVerdict w = net_pick(d2, s2, t, 10, P_UNLOAD, NetReq(), {1}, 0, 0);
     CHECK(w.k == NetVerdict::WAIT && w.reason == NR_WAIT_FULL);
     CHECK(d2[1].queue.size() == 1);
     d2[1].full = false;                                             // space again
@@ -722,7 +722,7 @@ static void t_net_release()
 {
     std::map<int, NetDock> d; std::map<int, NetShip> s; long t = 0;
     d[1].occ = 7;
-    net_pick(d, s, t, 10, P_UNLOAD, {1}, 0, 0);              // waits, ticket 1
+    net_pick(d, s, t, 10, P_UNLOAD, NetReq(), {1}, 0, 0);              // waits, ticket 1
     d[2].resv = 10;
     net_release_ship(d, s, 10);
     CHECK(d[1].queue.empty() && d[2].resv == 0);
@@ -781,14 +781,12 @@ static void t_net_higher_cargo_wins()
     std::map<int, NetDock> d; std::map<int, NetShip> s; long t = 0;
     NetReq full; full.cargo_pct = 98;
     NetReq low; low.cargo_pct = 10;
-    s[20].prio = net_score(full, P_UNLOAD, 0, false);    // full ship, waited later
-    s[21].prio = net_score(low, P_UNLOAD, 0, false);     // low ship, waited first
     d[1].occ = 7;
-    CHECK(net_pick(d, s, t, 21, P_UNLOAD, {1}, 0, 1).k == NetVerdict::WAIT);
-    CHECK(net_pick(d, s, t, 20, P_UNLOAD, {1}, 0, 2).k == NetVerdict::WAIT);
+    CHECK(net_pick(d, s, t, 21, P_UNLOAD, low, {1}, 0, 1).k == NetVerdict::WAIT);   // low ship waits first (ticket 1)
+    CHECK(net_pick(d, s, t, 20, P_UNLOAD, full, {1}, 0, 2).k == NetVerdict::WAIT);  // full ship waits later (ticket 2)
     d[1].occ = 0;                                         // dock free, both queued
-    CHECK(net_pick(d, s, t, 21, P_UNLOAD, {1}, 0, 3).k == NetVerdict::WAIT);   // full ship is ahead: no GO for the low ship
-    CHECK(net_pick(d, s, t, 20, P_UNLOAD, {1}, 0, 4).k == NetVerdict::GO && d[1].resv == 20);
+    CHECK(net_pick(d, s, t, 21, P_UNLOAD, low, {1}, 0, 3).k == NetVerdict::WAIT);   // full ship is ahead: no GO for the low ship
+    CHECK(net_pick(d, s, t, 20, P_UNLOAD, full, {1}, 0, 4).k == NetVerdict::GO && d[1].resv == 20);
     net_release_ship(d, s, 20);
     net_grant_tick(d, s, 5);
     CHECK(d[1].resv == 21 && s[21].granted);              // next free dock goes to the waiting low ship
@@ -798,9 +796,10 @@ static void t_net_non_preempt()
 {
     std::map<int, NetDock> d; std::map<int, NetShip> s; long t = 0;
     d[1].occ = 7;
-    s[30].prio = net_score(NetReq(), P_UNLOAD, 600, false);   // aged waiter
-    CHECK(net_pick(d, s, t, 30, P_UNLOAD, {1}, 0, 1).k == NetVerdict::WAIT);
-    net_grant_tick(d, s, 2);
+    CHECK(net_pick(d, s, t, 30, P_UNLOAD, NetReq(), {1}, 0, 0).k == NetVerdict::WAIT);
+    CHECK(net_pick(d, s, t, 30, P_UNLOAD, NetReq(), {1}, 0, NET_AGE_S + 1).k == NetVerdict::WAIT);   // now aged: prio 9e6
+    CHECK(s[30].prio == net_score(NetReq(), P_UNLOAD, 0, true) && s[30].prio_why == "aged");
+    net_grant_tick(d, s, NET_AGE_S + 2);
     CHECK(d[1].occ == 7 && d[1].resv == 0 && !s[30].granted);   // the holder is never sent away by a grant
 }
 

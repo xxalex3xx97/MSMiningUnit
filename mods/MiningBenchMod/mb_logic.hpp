@@ -542,11 +542,29 @@ namespace
         return false;
     }
 
-    // WHAT: ship sid wants a dock for purpose. cands = dock ids in config order; fixed_dock > 0 = use only that dock (dock picker).
+    // WHAT: queue score: aged (wait >= NET_AGE_S, or aged flag) = tier 9 only (ties -> ticket FIFO); else tier 1 + cargo% * 1000 + 500 if fuel low + wait (max 599 s).
+    // WHY: fullest cargo first, then low fuel, then the longest waiting; aged ships first, so nobody starves.
+    inline double net_score(const NetReq& r, Purpose purpose, double wait_s, bool aged)
+    {
+        (void)purpose;   // every purpose is the same tier today
+        if (aged || wait_s >= NET_AGE_S) return 9.0 * 1000000.0;
+        return 1000000.0 + r.cargo_pct * 1000.0 + (r.fuel_low ? 500.0 : 0.0) + std::min(wait_s, NET_AGE_S - 1.0);
+    }
+
+    // WHAT: short reason shown for the queue priority: "aged", "cargo 98%", "fuel low", "waiting".
+    inline std::string net_prio_why(const NetReq& r, double wait_s, bool aged)
+    {
+        if (aged || wait_s >= NET_AGE_S) return "aged";
+        if (r.cargo_pct > 0) return "cargo " + std::to_string(r.cargo_pct) + "%";
+        if (r.fuel_low) return "fuel low";
+        return "waiting";
+    }
+
+    // WHAT: ship sid wants a dock for purpose. req = what the ship carries and needs (queue score). cands = dock ids in config order; fixed_dock > 0 = use only that dock (dock picker).
     // WHAT (result): GO = dock reserved for sid now; WAIT = queued (dock = the one shown, holder = who uses it); ERR = real error (NOT_CONFIGURED / DOCK_GONE).
     // WHY: free dock + no earlier waiter for it = GO. Full docks are skipped. Busy/reserved/queued = WAIT, never an error.
     inline NetVerdict net_pick(std::map<int, NetDock>& docks, std::map<int, NetShip>& ships, long& ticket, int sid, Purpose purpose,
-                               std::vector<int> cands, int fixed_dock, double now)
+                               const NetReq& req, std::vector<int> cands, int fixed_dock, double now)
     {
         NetVerdict v;
         if (fixed_dock > 0) cands = {fixed_dock};
@@ -556,6 +574,8 @@ namespace
         if (live.empty()) { v.k = NetVerdict::ERR; v.reason = NR_DOCK_GONE; return v; }
         NetShip& s = ships[sid];
         s.sid = sid; s.intent = purpose; s.wanted = live;
+        const double waited = s.ticket != 0 ? now - s.wait_since : 0;   // time already queued (the score ages with it)
+        s.req = req; s.prio = net_score(req, purpose, waited, false); s.prio_why = net_prio_why(req, waited, false);
         std::vector<int> open;
         for (int d : live) if (!docks[d].full) open.push_back(d);
         for (int d : open)
@@ -627,24 +647,6 @@ namespace
         }
         net_unqueue(docks, sid);
         ships.erase(sid);
-    }
-
-    // WHAT: queue score: aged (wait >= NET_AGE_S, or aged flag) = tier 9 only (ties -> ticket FIFO); else tier 1 + cargo% * 1000 + 500 if fuel low + wait (max 599 s).
-    // WHY: fullest cargo first, then low fuel, then the longest waiting; aged ships first, so nobody starves.
-    inline double net_score(const NetReq& r, Purpose purpose, double wait_s, bool aged)
-    {
-        (void)purpose;   // every purpose is the same tier today
-        if (aged || wait_s >= NET_AGE_S) return 9.0 * 1000000.0;
-        return 1000000.0 + r.cargo_pct * 1000.0 + (r.fuel_low ? 500.0 : 0.0) + std::min(wait_s, NET_AGE_S - 1.0);
-    }
-
-    // WHAT: short reason shown for the queue priority: "aged", "cargo 98%", "fuel low", "waiting".
-    inline std::string net_prio_why(const NetReq& r, double wait_s, bool aged)
-    {
-        if (aged || wait_s >= NET_AGE_S) return "aged";
-        if (r.cargo_pct > 0) return "cargo " + std::to_string(r.cargo_pct) + "%";
-        if (r.fuel_low) return "fuel low";
-        return "waiting";
     }
 
     // WHAT: offset (m) from the dock to holding slot k (1-based) along dir: 150 m for slot 1, +100 m per slot. dir need not be unit length.

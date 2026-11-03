@@ -181,7 +181,8 @@ namespace
             for (int i = 0; i < N_ORE; ++i) if (in_cargo[i] && !has_docks[i]) { v.reason = NR_NOT_CONFIGURED; subject = ORE_KEY[i]; break; }
             return v;
         }
-        const NetVerdict v = net_pick(g_net_docks, g_net_ships, g_net_ticket, sid, g_flee_pick.count(sid) ? P_FLEE : P_UNLOAD, cands, 0, g_now);
+        const Purpose pur = g_flee_pick.count(sid) ? P_FLEE : P_UNLOAD;
+        const NetVerdict v = net_pick(g_net_docks, g_net_ships, g_net_ticket, sid, pur, net_req_of(sid, pur), cands, 0, g_now);
         if (v.k == NetVerdict::ERR) { subject = net_dock_label(cands.front()); return v; }
         // ores unloaded at the chosen dock: cargo ores first, then (picker dock only) the other ores that list it
         std::vector<int> pool;
@@ -248,7 +249,7 @@ namespace
             cands.erase(std::remove(cands.begin(), cands.end(), cur_id), cands.end());
             if (cands.empty()) return STR("error: need a second configured dock to leave");
             // an undock never waits: when every candidate is taken, take the first one (old behaviour); it is not a hold
-            const NetVerdict v = net_pick(g_net_docks, g_net_ships, g_net_ticket, sid, P_UNDOCK_TARGET, cands, 0, g_now);
+            const NetVerdict v = net_pick(g_net_docks, g_net_ships, g_net_ticket, sid, P_UNDOCK_TARGET, net_req_of(sid, P_UNDOCK_TARGET), cands, 0, g_now);
             if (v.k == NetVerdict::ERR) return net_refusal(v, net_dock_label(cands.front()));
             if (v.k == NetVerdict::WAIT) net_drop_wait(g_net_docks, g_net_ships[sid]);
             dk = v.dock;
@@ -261,7 +262,7 @@ namespace
             const Config c = eff_cfg(sid);
             const std::vector<int> cands = (pk != g_dock_pick.end() && pk->second > 0) ? std::vector<int>{pk->second} : refuel_candidates(c, why);
             if (cands.empty()) return why == STR("no dock configured") ? why : STR("error: ") + why;
-            const NetVerdict v = net_pick(g_net_docks, g_net_ships, g_net_ticket, sid, P_REFUEL, cands, 0, g_now);
+            const NetVerdict v = net_pick(g_net_docks, g_net_ships, g_net_ticket, sid, P_REFUEL, net_req_of(sid, P_REFUEL), cands, 0, g_now);
             if (v.k == NetVerdict::ERR) return net_refusal(v, net_dock_label(cands.front()));
             if (v.k == NetVerdict::WAIT) { tlog(STR("refuel docks busy, ship ") + std::to_wstring(sid) + STR(" waits")); return STR("waiting dock"); }
             dk = v.dock;
