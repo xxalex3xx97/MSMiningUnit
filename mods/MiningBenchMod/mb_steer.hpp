@@ -29,6 +29,10 @@
 
 namespace
 {
+    // forward declarations (mb_warp.hpp is included after this file)
+    bool get_chunk(UObject* o, int64_t c[3]);
+    int sys_id(UObject* o);
+
     // ---------------- steering / undock / throttle / move jobs (spec 2026-10-27) ----------------
     // Constants below are grouped by job. Units are in each comment.
 
@@ -137,6 +141,9 @@ namespace
     std::map<int, SpeedMon> g_spds;
     SpeedMon& spd_of(int sid) { return g_spds[sid]; }
 
+    // WHAT: fixed world point for a point move (no actor): system, chunk and raw location (same units as the ship save object).
+    struct PtTarget { int sys = 0; int64_t ch[3] = {0, 0, 0}; double loc[3] = {0, 0, 0}; };
+
     // WHAT: one move job (face_rock or approach_rock). Only one runs at a time.
     //       kind = "" idle | "face_rock" | "approach_rock". sid = ship id, seq = command seq (result is reported under it).
     //       steps = Throttle steps of the ship (GetThrottleSteps). phase: 1 = aim (rotate), 2 = approach (Throttle).
@@ -158,10 +165,16 @@ namespace
         int cid = 0;                    // PilotConsoleObject id for view_send (face/approach), resolved once at job start
         double view_t = 0.0;            // time since last view offset send
         bool aligned = false;           // (0,0) already sent for the current aligned spell
+        bool ore_on = false;            // rock_act is a floating ore actor (it drifts): fly to ore_loc, re-read the actor only near it
+        double ore_loc[3] = {0, 0, 0};  // ore: world point (uu) to fly to = the sweep scan position, updated by aim_calc_ore
+        bool ore_fresh = false;         // ore_loc was read from the actor itself (not only the scan cache)
+        double ore_t = 0.0;             // ore: seconds since the last actor read (re-read about every 1 s while near)
         int thr = 0;                    // approach: Throttle step currently applied (ramped, see phase 2)
         double thr_t = 0.0;             // approach: time since the last +1 ramp step
         std::wstring rock_name;         // kind of the chosen rock (start log / status)
         UObject* rock_act = nullptr;    // rock ACTOR for face/approach (game list); alive-checked each tick, 'rock lost' when gone
+        bool pt_on = false;             // point move: target is ptg (no actor). Named pt_on: pt is the phase timer.
+        PtTarget ptg;
     };
 
     // WHAT: move jobs per ship (sid -> job). Empty kind = no job for that ship. Each ship can steer on its own.
@@ -331,6 +344,63 @@ namespace
         return true;
     }
 
+    // WHAT: rock-free relative location of a point target in the ship frame: rloc = world uu of the point (uu, for act_aim_pt).
+    // WHY: point moves (sweep return) have no actor; the chunk/raw offset maps the saved point into the current world frame.
+    bool pt_rloc(UObject* ship, const PtTarget& t, const ActFrame& f, double rloc[3])
+    {
+        int64_t c[3];
+        double l[3];
+        if (sys_id(ship) != t.sys || !get_chunk(ship, c) || !get_loc(ship, l)) return false;
+        for (int i = 0; i < 3; ++i)
+        {
+            const double dr = (double)(t.ch[i] - c[i]) * 134217728.0 + (t.loc[i] - l[i]);   // raw
+            rloc[i] = f.loc[i] + dr / g_raw_per_m * MV_UU_PER_M;
+        }
+        return true;
+    }
+
+    // WHAT: aim_calc for a point move (MoveJob.pt). Same outputs as aim_calc, radius = 0 (no rock).
+    bool aim_calc_pt(UObject* ship, const MoveJob& mv, double& err_deg, double a_body[3], double& dist_raw, double& radius)
+    {
+        ActFrame f;
+        ActAim r;
+        double rl[3];
+        if (!act_frame(ship, f) || !pt_rloc(ship, mv.ptg, f, rl) || !act_aim_pt(f, rl, r)) return false;
+        err_deg = r.err_deg;
+        std::copy(r.a_body, r.a_body + 3, a_body);
+        dist_raw = r.dist_m * g_raw_per_m;
+        radius = 0.0;
+        return true;
+    }
+
+    // WHAT: aim_calc for a floating ore actor (MoveJob.ore_on). Aims at the cached point mv.ore_loc (scan position, uu).
+    //       Within ORE_REFRESH_M of it the actor location is read (first time at once, then about every 1 s) and the point is updated.
+    //       A failed read (actor gone) returns false -> the caller ends the job as 'rock lost'.
+    // WHY: floating ore settles, so the actor is read only near it. Reading every tick for 9000 actors was the lag.
+    bool aim_calc_ore(UObject* ship, MoveJob& mv, double& err_deg, double a_body[3], double& dist_raw, double& radius)
+    {
+        constexpr double ORE_REFRESH_M = 100.0;
+        ActFrame f;
+        ActAim r;
+        if (!act_frame(ship, f)) return false;
+        const double dv[3] = {mv.ore_loc[0] - f.loc[0], mv.ore_loc[1] - f.loc[1], mv.ore_loc[2] - f.loc[2]};
+        const double dist_m = norm3(dv) / MV_UU_PER_M;
+        if (dist_m <= ORE_REFRESH_M && (!mv.ore_fresh || mv.ore_t >= 1.0))
+        {
+            double p[3] = {0, 0, 0};
+            std::wstring why;
+            if (!alive_seh(mv.rock_act) || !actor_vec_call(mv.rock_act, STR("K2_GetActorLocation"), p, why)) return false;
+            std::copy(p, p + 3, mv.ore_loc);
+            mv.ore_fresh = true; mv.ore_t = 0.0;
+        }
+        if (!act_aim_pt(f, mv.ore_loc, r)) return false;
+        err_deg = r.err_deg;
+        std::copy(r.a_body, r.a_body + 3, a_body);
+        dist_raw = r.dist_m * g_raw_per_m;
+        radius = 0.0;
+        return true;
+    }
+
     // WHAT: face/approach rotation: send the aim offset (view_send) every MV_VIEW_PERIOD_S, from the heading error and the rotation axis.
     //       Steps: 1 accumulate the time since the last send; return until MV_VIEW_PERIOD_S has passed.
     //       2 error < MV_FACE_DONE_DEG: send (0,0) once (aligned), then nothing until the error grows again.
@@ -392,8 +462,11 @@ namespace
         const int sid = mv.sid;
         // 1. rock still valid, aim numbers
         double a[3] = {0, 0, 0}, dist = 0.0, rad = 0.0, err = 0.0;
-        if (!actor_ok(mv.rock_act) || !aim_calc(ship, mv.rock_act, err, a, dist, rad)) { mv_finish(sid, STR("error: rock lost")); return; }
-        // 2. remember the heading error (job state and status; the status shows the command ship only)
+        if (mv.pt_on) { if (!aim_calc_pt(ship, mv, err, a, dist, rad)) { mv_finish(sid, STR("error: point lost")); return; } }
+        else if (mv.ore_on) { mv.ore_t += dt; if (!aim_calc_ore(ship, mv, err, a, dist, rad)) { mv_finish(sid, STR("error: rock lost")); return; } }
+        else if (!actor_ok(mv.rock_act) || !aim_calc(ship, mv.rock_act, err, a, dist, rad)) { mv_finish(sid, STR("error: rock lost")); return; }
+        // point flight: first-tick trace line
+                // 2. remember the heading error (job state and status; the status shows the command ship only)
         mv.err = err;
         if (sid == g_cmd.ship) g_last_err = err;
         // WHY no sign-flip here any more: view offsets are targets with a fixed sign (MV_VIEW_*_SIGN), the old rate-route flip is gone
@@ -456,7 +529,7 @@ namespace
             mv.log_acc = 0.0;
             tlog(STR("approach surface_m=") + std::to_wstring(surface) + STR(" md=") + std::to_wstring(md) + STR(" remaining_m=") + std::to_wstring(remaining) +
                  STR(" err=") + std::to_wstring(err) + STR(" target=") + std::to_wstring(target) + STR(" thr=") + std::to_wstring(mv.thr) +
-                 STR(" speed_m_s=") + std::to_wstring(v_ms));
+                 STR(" speed_m_s=") + std::to_wstring(v_ms) + STR(" pt=") + std::to_wstring(mv.pt_on ? 1 : 0));
         }
     }
 
@@ -495,7 +568,7 @@ namespace
     //       (GetThrottleSteps). 4 find the PilotConsoleObject and cache its id. 5 pick the rock (rock_sel, else nearest of INI resource).
     //       6 approach_rock needs mining_distance set. 7 record the start quaternion, set phase 1 (aim), log the start.
     // WHY: all preconditions are checked here before the first write, so a failed start changes nothing on the ship.
-    std::wstring move_start(int sid, const std::string& cmd, int seq)
+    std::wstring move_start(int sid, const std::string& cmd, int seq, UObject* target = nullptr, const PtTarget* pt = nullptr)
     {
         // 1. one move job at a time, and no dock job for the same ship
         if (mv_active(sid)) return STR("error: move job already running");
@@ -519,11 +592,28 @@ namespace
         if (m.steps < 1) return STR("error: Throttle steps unreadable");
         // 5. rock
         std::wstring why;
-        UObject* rock = pick_rock(sid, ship, why, pick_rule);   // rock_sel > nearest rock actor of the INI item (game distance)
-        if (!alive(rock)) return STR("error: ") + (why.empty() ? STR("no rock") : why);
-        m.rock_act = rock;
-        m.rock_id = rock_id_of(rock);
-        m.rock_name = rock_kind(rock);
+        if (pt)
+        {
+            m.pt_on = true;
+            m.ptg = *pt;
+            m.rock_id = 0;
+            m.rock_name = STR("point");
+        }
+        else if (alive(target))
+        {
+            m.rock_act = target;
+            m.ore_on = true;
+            m.rock_id = 0;
+            m.rock_name = STR("floating ore");
+        }
+        else
+        {
+            UObject* rock = pick_rock(sid, ship, why, pick_rule);   // rock_sel > nearest rock actor of the INI item (game distance)
+            if (!alive(rock)) return STR("error: ") + (why.empty() ? STR("no rock") : why);
+            m.rock_act = rock;
+            m.rock_id = rock_id_of(rock);
+            m.rock_name = rock_kind(rock);
+        }
         // 6. approach needs the stop distance
         if (cmd == "approach_rock" && parse_distance(eff_cfg(sid).mining_distance) < 0.0) return STR("error: mining_distance unset");
         // 7. start: quaternion for the rate sample, phase 1 (aim)

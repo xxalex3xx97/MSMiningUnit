@@ -29,7 +29,14 @@ namespace
 
     // WHAT: full rock pass period (s): ScannableHUDMarkers re-read, ore/id read for new actors, nearest rock per ore kind.
     // WHY: per-rock game calls are expensive; FindAllOf / reflection per rock per second froze the game (perf lesson).
-    constexpr double ROCK_PASS_S = 10.0;
+    constexpr double ROCK_PASS_S = 30.0;
+
+    // WHAT: mining loop rock check period (s). Also the lifetime of a cached nearest-rock pick (nearest_item_actor).
+    // WHY: defined here (this header is included before mb_mining.hpp); value unchanged.
+    constexpr double MINE_ROCK_CHECK_S = 5.0;   // rock scan period (s): the scan walks every rock of the ore, keep it rare
+
+    // WHAT: a cmd_tick / rock_list_refresh run slower than this (ms) is logged with its name, ms and rock count.
+    constexpr double TIMING_LOG_MS = 5.0;
 
     // WHAT: Unreal units per metre (100 uu = 1 m). fact: verified earlier from weapon actors.
     constexpr double MV_UU_PER_M = 100.0;
@@ -127,6 +134,11 @@ namespace
 
     // WHAT: rock actors from the last list refresh. Dead entries fail alive() and callers skip them.
     std::vector<UObject*> g_rock_actors;
+
+    // WHAT: rock actor -> K2_GetActorLocation (uu). Read on first aim (rocks do not move); dropped when the rock leaves the list or is destroyed.
+    // WHY: act_aim ran one ProcessEvent per rock per check.
+    struct RockLoc { double p[3] = {0, 0, 0}; };
+    std::map<UObject*, RockLoc> g_rock_loc;
 
     // WHAT: actor -> ore item (GetScanItem). nullptr = unreadable. Read once per actor and kept until the actor leaves the list.
     std::map<UObject*, UObject*> g_rock_item;
@@ -244,7 +256,7 @@ namespace
         {
             UObject* a = const_cast<UObject*>(static_cast<const UObject*>(d));
             g_fb_set.erase(a); g_actor_set.erase(a);
-            g_rock_item.erase(a);
+            g_rock_item.erase(a); g_rock_loc.erase(a);
             if (auto it = g_rock_id.find(a); it != g_rock_id.end()) { if (it->second > 0) g_rock_by_id.erase(it->second); g_rock_id.erase(it); }
         }
     }
@@ -274,8 +286,7 @@ namespace
     }
 
     // WHAT: adds the FindAllOf(BP_GenericResourceAsteroid_C) actors to the refresh being built while a fallback request is recent.
-    //       FindAllOf runs at most every ROCK_FALLBACK_S_MS; between passes the last pass's live actors are reused. Logs one
-    //       "ROCKFALLBACK found=<n> with_ore=<m>" per pass (found = live actors, with_ore = those whose ore item was read).
+    //       FindAllOf runs at most every ROCK_FALLBACK_S_MS; between passes the last pass's live actors are reused.
     // WHY: an AI ship far from the player sees its belt rocks in the world but not in the player's HUD list.
     void rock_fallback_merge(std::vector<UObject*>& list, std::map<UObject*, UObject*>& items, std::map<UObject*, int>& ids, std::map<int, UObject*>& by_id)
     {
@@ -295,16 +306,32 @@ namespace
         }
         for (UObject* a : g_fb_list) if (alive_seh(a) && !items.count(a)) rock_add(a, list, items, ids, by_id);
         if (!ran) return;
-        int with_ore = 0;
-        for (UObject* a : g_fb_list) { auto it = items.find(a); if (it != items.end() && it->second) ++with_ore; }
-        log_line(STR("ROCKFALLBACK found=") + std::to_wstring(g_fb_list.size()) + STR(" with_ore=") + std::to_wstring(with_ore));
     }
 
     // WHAT: full refresh of the rock list (steps 1-5 below). Runs from rock_list_ensure() when rock_list_due() is true.
     // WHY: one place reads the V-scan list, caches ore and id per actor, rebuilds the save-object radius map, and drops
     //      actors that left the list. Run every ROCK_PASS_S, not every tick (perf).
+    // WHAT: ms since t0 (QueryPerformanceCounter). timing_log writes one "TIMING" line when a call took longer than TIMING_LOG_MS.
+    // WHY: finds the slow calls in cmd_tick and the rock refresh without logging every tick.
+    double perf_ms_since(const LARGE_INTEGER& t0)
+    {
+        LARGE_INTEGER now, hz;
+        QueryPerformanceCounter(&now);
+        QueryPerformanceFrequency(&hz);
+        return static_cast<double>(now.QuadPart - t0.QuadPart) * 1000.0 / static_cast<double>(hz.QuadPart);
+    }
+    void timing_log(const TCHAR* name, double ms, size_t rocks)
+    {
+        if (ms <= TIMING_LOG_MS) return;
+        wchar_t b[32];
+        swprintf(b, 32, L"%.1f", ms);
+        log_line(STR("TIMING ") + std::wstring(name) + STR(" ms=") + b + STR(" rocks=") + std::to_wstring(rocks));
+    }
+
     void rock_list_refresh()
     {
+        LARGE_INTEGER t0;
+        QueryPerformanceCounter(&t0);
         // 1. stamp the refresh time (rock_list_due() reads it)
         g_rock_list_ms = GetTickCount64();
         rock_drain_dead();
@@ -331,6 +358,7 @@ namespace
         g_rock_item.swap(items);
         g_rock_id.swap(ids);
         g_rock_by_id.swap(by_id);
+        for (auto it = g_rock_loc.begin(); it != g_rock_loc.end();) { if (!g_rock_item.count(it->first)) it = g_rock_loc.erase(it); else ++it; }
         // 5. save objects for radius: g_save_by_id keeps only the ids of the listed rocks. The full FindAllOf over every
         //    SmallResourceAsteroidObject (tens of thousands) runs only when a listed rock has no live entry (it was the CPU spike every pass).
         static std::set<int> save_miss;   // ids a walk could not find: not searched again until the set is cleared below
@@ -351,6 +379,7 @@ namespace
             for (UObject* o : saves) if (alive(o)) { const int sid_ = obj_id(o); if (want.count(sid_)) g_save_by_id[sid_] = o; }
             for (int w : want) if (!g_save_by_id.count(w)) save_miss.insert(w);
         }
+        timing_log(STR("rock_list_refresh"), perf_ms_since(t0), g_rock_actors.size());
     }
 
     // WHAT: true when the rock list must be refreshed: empty, or older than ROCK_PASS_S. No game calls inside.
@@ -396,12 +425,11 @@ namespace
     // WHY: one struct for picking, steering and status, so every caller uses the same aim math.
     struct ActAim { double dist_m = 0.0, err_deg = 0.0, a_body[3] = {0, 0, 0}, rloc[3] = {0, 0, 0}; };
 
-    // WHAT: fill r with the aim numbers of rock actor 'rock' against frame f. false when the rock is not live or the vector is unreadable.
-    // WHY: the rock location is read only after actor_ok(), so a freed actor is never touched.
-    bool act_aim(const ActFrame& f, UObject* rock, ActAim& r)
+    // WHAT: aim numbers of a fixed point rloc (uu, world) against frame f. false when the vector is degenerate (point at the ship).
+    // WHY: split from act_aim so point targets (sweep return spot, no actor) use the same aim math.
+    bool act_aim_pt(const ActFrame& f, const double rloc[3], ActAim& r)
     {
-        std::wstring why;
-        if (!actor_ok(rock) || !actor_vec_call(rock, STR("K2_GetActorLocation"), r.rloc, why)) return false;
+        std::copy(rloc, rloc + 3, r.rloc);
         double d[3] = {r.rloc[0] - f.loc[0], r.rloc[1] - f.loc[1], r.rloc[2] - f.loc[2]};
         const double n = norm3(d);
         if (n < 1e-9) return false;
@@ -416,19 +444,56 @@ namespace
         return true;
     }
 
+    // WHAT: fill r with the aim numbers of rock actor 'rock' against frame f. false when the rock is not live or the vector is unreadable.
+    // WHY: the rock location is read only after actor_ok(), so a freed actor is never touched.
+    bool act_aim(const ActFrame& f, UObject* rock, ActAim& r)
+    {
+        if (!actor_ok(rock)) return false;
+        auto lc = g_rock_loc.find(rock);
+        if (lc == g_rock_loc.end())
+        {
+            std::wstring why;
+            RockLoc l;
+            if (!actor_vec_call(rock, STR("K2_GetActorLocation"), l.p, why)) return false;
+            lc = g_rock_loc.emplace(rock, l).first;
+        }
+        return act_aim_pt(f, lc->second.p, r);
+    }
+
     // WHAT: nearest rock actor whose ore == item, by game distance. out = its aim numbers. nullptr when none.
     // WHY: filters by ore first (cheap map lookup), so only rocks of that ore have their location read.
-    UObject* nearest_item_actor(const ActFrame& f, UObject* item, ActAim& out)
+    // WHAT: last nearest-rock pick per (ship id, ore item). Reused for MINE_ROCK_CHECK_S while the origin is the same, the picked actor
+    //       is still in the list and alive. ms = 0 = never picked.
+    // WHY: rock_in_range asked for the same pick several times per check. The origin must match: pick_rock uses the moving ship,
+    //      rock_in_range the fixed mining anchor, so a pick from another origin is never returned.
+    struct PickCache { ULONGLONG ms = 0; UObject* actor = nullptr; double origin[3] = {0, 0, 0}; ActAim aim; };
+    std::map<std::pair<int, UObject*>, PickCache> g_pick_cache;
+
+    // WHAT: nearest rock actor whose ore == item, by game distance. out = its aim numbers. nullptr when none. Result cached per (sid, item).
+    // WHY: filters by ore first (cheap map lookup), so only rocks of that ore have their location read.
+    UObject* nearest_item_actor(int sid, const ActFrame& f, UObject* item, ActAim& out)
     {
+        const ULONGLONG now = GetTickCount64();
+        PickCache& pc = g_pick_cache[std::make_pair(sid, item)];
+        if (pc.ms != 0 && now - pc.ms < static_cast<ULONGLONG>(MINE_ROCK_CHECK_S * 1000.0) && std::equal(f.loc, f.loc + 3, pc.origin) &&
+            (!pc.actor || actor_ok(pc.actor)))
+        {
+            if (pc.actor) out = pc.aim;
+            return pc.actor;
+        }
         UObject* best = nullptr;
+        ActAim best_aim;
         for (UObject* a : g_rock_actors)
         {
             auto it = g_rock_item.find(a);
             if (it == g_rock_item.end() || it->second != item) continue;
             ActAim r;
             if (!act_aim(f, a, r)) continue;
-            if (!best || r.dist_m < out.dist_m) { best = a; out = r; }
+            if (!best || r.dist_m < best_aim.dist_m) { best = a; best_aim = r; }
         }
+        pc.ms = now; pc.actor = best; pc.aim = best_aim;
+        std::copy(f.loc, f.loc + 3, pc.origin);
+        if (best) out = best_aim;
         return best;
     }
 
@@ -450,7 +515,7 @@ namespace
         ActFrame f;
         if (!act_frame(ship, f)) { why = STR("ship actor unreadable"); return nullptr; }
         ActAim r;
-        return nearest_item_actor(f, item, r);
+        return nearest_item_actor(sid, f, item, r);
     }
 
 }

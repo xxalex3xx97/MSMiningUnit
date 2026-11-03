@@ -28,6 +28,7 @@ namespace
     //         No instance -> error. 6 stop_all: lasers and scooper off, group input off,
     //       dock job and move job of this ship cancelled (rotation aim zeroed), autopilot off, zero_all.
     //         Mining loop (step 0, step 1b): mine_start_all / mine_stop_all (sid 0, all bench ships), mine_start / mine_stop (one ship): mb_mining.hpp mine_cmd.
+    //         Collect ore action (collect_ore): sweep_cmd (mb_mining.hpp), MS_SWEEP.
     //         8 anything else -> unknown error.
     // WHY: one place lists every Test tab command. The multi-step commands return "waiting" and finish later through their job.
     std::wstring run_cmd(int seq, int sid, const std::string& cmd)
@@ -49,6 +50,7 @@ namespace
             g_dock_pick[sid] = dk;
             MineSt& bm = g_mine[sid];
             bm.run = false; bm.leave = true; bm.fin = false; bm.btn = true;
+            bm.unl_prev = -1; bm.unl_undock = false;
             trip_begin(bship, sid, bm, STR("button"), "");
             return STR("ok");
         }
@@ -63,6 +65,7 @@ namespace
             {
                 MineSt& bm = g_mine[sid];
                 bm.run = false; bm.leave = true; bm.fin = false; bm.btn = true;
+                bm.unl_prev = -1; bm.unl_undock = false;
                 trip_begin(bship, sid, bm, STR("button"), cmd == "dock_auto" ? "" : cmd);
                 return STR("ok");
             }
@@ -93,6 +96,9 @@ namespace
         if (cmd == "stop_all")
         {
             mine_halt(sid);
+            net_leave_slot(sid);             // queue place and dock reservation go (mb_net.hpp)
+            g_unl_ores.erase(sid);
+            g_dock_pick.erase(sid);     // a Dock picker choice is for the next job only
             UObject* ship = find_by_id(STR("DMSPlayerShipObject"), sid);
             if (!alive(ship)) return STR("error: ship not found");
             int f1 = 0, f2 = 0;
@@ -123,6 +129,7 @@ namespace
             return ap ? std::wstring(STR("ok")) : STR("error: ") + err;
         }
         // 7. Operation tab "Warp to belt": the ship's belt sector (refused while the loop runs)
+        if (cmd == "collect_ore") return sweep_cmd(sid);   // collect ore action: MS_SWEEP (mb_mining.hpp)
         if (cmd == "warp_belt") return warp_belt_cmd(sid);
         // 8. dev commands (Dev Menu / Test tab only): mb_devcmd.hpp
         bool dev_handled = false;
@@ -176,6 +183,8 @@ namespace
     // WHY: work is spread over different periods so no single tick does everything (perf lessons: heavy reads caused freezes).
     void cmd_tick(double dt)
     {
+        LARGE_INTEGER t0;
+        QueryPerformanceCounter(&t0);
         // 1.
         rock_drain_dead();   // deleted actors queued by the engine listener are removed every tick, also while no ship asks for rocks
         ++g_actor_frame;   // invalidates the actor_ok() set: it is rebuilt at most once per engine tick
@@ -200,5 +209,6 @@ namespace
             mining_tick(step);
             station_destroy_tick(step);
         }
+        timing_log(STR("cmd_tick"), perf_ms_since(t0), g_rock_actors.size());
     }
 }

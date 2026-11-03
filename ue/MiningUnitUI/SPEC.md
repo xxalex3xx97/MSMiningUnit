@@ -32,7 +32,8 @@ WBP_MiningUnit (UserWidget)
    │     │     ├─ Btn_Dock    Button  Is Variable  └─ Txt_Dock    TextBlock Is Variable "Dock"
    │     │     ├─ Btn_Undock  Button  Is Variable  └─ Txt_Undock  TextBlock Is Variable "Undock"
    │     │     ├─ Btn_Refuel  Button  Is Variable  └─ Txt_Refuel  TextBlock Is Variable "Refuel"
-   │     │     └─ Btn_Unload  Button  Is Variable  └─ Txt_Unload  TextBlock Is Variable "Unload"
+   │     │     ├─ Btn_Unload  Button  Is Variable  └─ Txt_Unload  TextBlock Is Variable "Unload"
+   │     │     └─ Btn_Collect Button  Is Variable  └─ Txt_Collect TextBlock Is Variable "Collect ore"
    │     ├─ CENTER (header title = Txt_Title, min width 260)
    │     │  ├─ Txt_Title    TextBlock      Is Variable    "Mining Unit" (Lua sets "Mining Unit - <ship>")
    │     │  ├─ Btn_Close     Button         Is Variable    small gold X square at header right, hover/pressed tint  └─ Txt_Close TextBlock "X"
@@ -40,13 +41,15 @@ WBP_MiningUnit (UserWidget)
    │     │  │  ├─ Btn_TabShip       Button  Is Variable   └─ Txt_TabShip      TextBlock "Ship" (active/gold first)
    │     │  │  ├─ Btn_TabItems      Button  Is Variable   └─ Txt_TabItems     TextBlock "Items"
    │     │  │  ├─ Btn_TabOperation  Button  Is Variable   └─ Txt_TabOperation TextBlock "Operation"
-   │     │  │  └─ Btn_TabLog        Button  Is Variable   └─ Txt_TabLog       TextBlock "Log"
+   │     │  │  ├─ Btn_TabLog        Button  Is Variable   └─ Txt_TabLog       TextBlock "Log"
+   │     │  │  └─ Btn_TabDocks      Button  Is Variable   └─ Txt_TabDocks     TextBlock "Docks"
    │     │  ├─ Pnl_AllWarn  Border  Is Variable  starts Collapsed  > Row_AllWarnBody > Txt_AllWarn: gold/red banner, visible only in All ships mode.
-   │     │  ├─ PageSwitcher  WidgetSwitcher Is Variable   (page index 0..3 = Ship, Items, Operation, Log)
+   │     │  ├─ PageSwitcher  WidgetSwitcher Is Variable   (page index 0..4 = Ship, Items, Operation, Log, Docks)
    │     │     ├─ Page_Ship       VerticalBox  Is Variable
    │     │     ├─ Page_Items      VerticalBox  Is Variable
    │     │     ├─ Page_Operation  VerticalBox  Is Variable
-   │     │     └─ Pnl_PageLog     VerticalBox  Is Variable  (index 3)
+   │     │     ├─ Pnl_PageLog     VerticalBox  Is Variable  (index 3)
+   │     │     └─ Pnl_PageDocks   VerticalBox  Is Variable  (index 4)
    │     └─ RIGHT "Status" (placeholders only; Lua feeds later)
    │        ├─ row 1: Txt_StatusAction  TextBlock  Is Variable  "Idle" (Mining/Docking/Refueling/Unloading/Idle), left
    │        │         Txt_Eta           TextBlock  Is Variable  "ETA: --" right-aligned, same row (Lua shows only while unloading/refueling, else Collapsed)
@@ -78,8 +81,8 @@ Page_Items (key: items):
 - Btn_ItemAdd Button "Add resource" / Txt_ItemAdd, wide, below the list (appends a row)
 - The list scrolls with the page. Rows are a fixed pool of 20: Lua never creates widgets.
 
-Page_Operation (keys: radius, mining_distance, max_radius, idle_seconds, wait_seconds, dock_hold_limit, enabled, repeat, fuel_<k>_threshold, fuel_<k>_amount, 7 ore unload toggles):
-Save: per-ship keys (radius, mining_distance, idle_seconds, dock_hold_limit, enabled, repeat) -> [ship.<id>]; global-only keys (max_radius, wait_seconds, fuel_<k>_on/_threshold/_amount, ore_<k>) -> top level (C++ ignores them per ship). Text boxes saved on change, checkboxes polled. Applied at next loop start. Invalid input shows "error: ..." in Txt_Status and is not saved.
+Page_Operation (keys: radius, mining_distance, max_radius, idle_seconds, wait_seconds, dock_hold_limit, enabled, repeat, fuel_<k>_threshold, fuel_<k>_amount):
+Save: per-ship keys (radius, mining_distance, idle_seconds, dock_hold_limit, enabled, repeat) -> [ship.<id>]; global-only keys (max_radius, wait_seconds, fuel_<k>_on/_threshold/_amount) -> top level (C++ ignores them per ship). Text boxes saved on change, checkboxes polled. Applied at next loop start. Invalid input shows "error: ..." in Txt_Status and is not saved.
 Layout (names below unchanged; only Row_*/Lbl_* layout widgets are added, none are variables): bordered cards (Row_CardOutline<K> > Row_CardBody<K> > Row_CardInner<K> = gold title Lbl_Hdr<K> + 2px gold Row_CardLine<K> + rows). Row_OpTop = two columns: left card Mining (Radius, Mining distance, Max radius), right cards Timing (Idle, Wait, Dock time limit) and Run (Enabled, Repeat). Then full-width card Fuel (3 rows: icon | checkbox | "min" box | "max" box), full-width card Unload ores (4 columns x 2 rows, icon + checkbox per cell), Btn_ApplyGlobal bottom right. Columns 60/40 (fill 1.2 / 0.8). The Mining card stretches to the height of the Timing+Run column (no gap). Number boxes are fixed width 80. Display labels Lbl_Fuel<K>Threshold / Lbl_Fuel<K>Amount read "min" / "max" (widget names and Lua keys fuel_<k>_threshold/_amount unchanged).
 - Txt_OpRadiusLabel "Radius" / Edt_Radius
 - Txt_OpMiningDistLabel "Mining distance" / Edt_MiningDistance
@@ -90,12 +93,14 @@ Layout (names below unchanged; only Row_*/Lbl_* layout widgets are added, none a
 - Txt_OpDockLimitLabel "Dock time limit (s)" / Edt_DockHoldLimit (max seconds at the dock for unload/refuel before undock + error stop; 0 = no limit; per ship)
 - Chk_Enabled "Enabled", Chk_Repeat "Repeat"
 - Per fuel (Deuterium, Hydrogen, Warp): Chk_Fuel<K>On, Edt_Fuel<K>Threshold, Edt_Fuel<K>Amount (K = Deuterium|Hydrogen|Warp)
-- Per ore (Cobalt, Graphite, Iridium, Nickel, Silica, Titanium, Water Ice): Chk_Unload<K> (7 toggles, K = ore name without space, e.g. WaterIce)
+- Unload ores card removed (collapsed in the WBP): an ore is unloaded when its Ship-tab unload dock list is not empty. Chk_Unload<K> (K = ore name without space, e.g. WaterIce) stay in the tree as hidden variables; Lua no longer reads them.
 - Per fuel icon: Img_Fuel<K> Image Hidden 24x24, Is Variable (Lua sets brush from Item.Icon; Deuterium=ITEM_EnrichedFuel, Hydrogen=ITEM_HydrogenFuel, Warp=ITEM_WarpFuel).
 - Per ore icon: Img_Unload<K> Image Hidden 24x24, Is Variable (K = Cobalt|Graphite|Iridium|Nickel|Silica|Titanium|WaterIce; ids ITEM_CobaltOre, ITEM_Graphite, ITEM_IridiumOre, ITEM_NickelOre, ITEM_Silica, ITEM_TitaniumOre, ITEM_WaterIce).
 - Btn_ApplyGlobal "Set as default" (old plain Apply button removed; every value saves instantly).
 
 Pnl_PageLog (Log tab, index 3): Txt_LogHint TextBlock Is Variable "No log yet" (Lua shows only when empty) + ScrollBox Row_LogScroll Is Variable holding Txt_Log_<l> (l = 1..60) TextBlock Is Variable (size 14, AutoWrapText, pad 6/2/12/2, Collapsed; Lua sets "hh:mm:ss text", ship-name prefix in All mode, newest first, shows used lines). Pool LOG_N=60 in gen_paste = LN in wbp_loader.lua.
+
+Pnl_PageDocks (Docks tab, index 4): Txt_DocksHdr TextBlock Is Variable (size 14, gold, one header line "Dock | Status | Used by | Purpose | Since | Waiting") + ScrollBox Row_DocksScroll Is Variable (empty in the paste). Rows are Python-built: Dyn_Docks DynamicEntryBox (VERTICAL, spacing 2) of WBP_NetDockRow, added by scripts\add_docks_tab.py (row widgets are a separate WBP, not listed here). Lua fills the rows from NetDocks.txt / NetShips.txt, only docks in a bench ship's unload/refuel lists, only while this tab is open.
 
 Status box mining line (single ship only; Lua hides in All mode): Row_StatusMine HorizontalBox Is Variable ( under Txt_NextState) = Txt_StatusMineLbl TextBlock Is Variable "Mining" + Img_StatusOre Image Is Variable (24x24, Hidden; Lua sets brush with the same ore icon helper as Img_Unload<K>) + Txt_StatusMine TextBlock Is Variable "-" (ore display name, "-" when none).
 

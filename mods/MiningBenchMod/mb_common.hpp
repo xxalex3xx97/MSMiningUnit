@@ -125,19 +125,19 @@ namespace
         return s;
     }
 
-    // WHAT: writes the text with a [MiningBenchMod] prefix to the UE4SS log (UE4SS.log in the ue4ss folder).
-    // WHY: the user checks UE4SS.log for these lines, and every feature logs through here.
     // WHAT: Test-tab "Debug log" switch (cmd debug_on/debug_off). Runtime only: off after every start.
     // WHY: per-second watch/scan lines flooded UE4SS.log; by default only warnings and errors are written.
     inline bool g_debug = false;
 
+    // WHAT: writes the text with a [MiningBenchMod] prefix to the UE4SS log (UE4SS.log in the ue4ss folder).
+    // WHY: the user checks UE4SS.log for these lines, and every feature logs through here.
     void log_line(const std::wstring& s)
     {
         if (!g_debug)
         {
             std::wstring l = s;
             for (auto& c : l) c = static_cast<wchar_t>(std::towlower(c));
-            static const wchar_t* keep[] = { L"error", L"fail", L"warn", L"exception", L"halt", L"stopped", L"loaded", L"mining loop", L"going to", L"dock retry", L"mine weapons", L"warpsector", L"sector ", L"fuelchk", L"fuelwarp", L"jumpcost", L"warpcur", L"warpreal", L"rockscan", L"rockfallback", L"chunkhold", L"devstation" };
+            static const wchar_t* keep[] = { L"error", L"fail", L"warn", L"exception", L"halt", L"stopped", L"loaded", L"mining loop", L"going to", L"dock retry", L"mine weapons", L"warpsector", L"sector ", L"fuelchk", L"fuelwarp", L"jumpcost", L"warpcur", L"warpreal", L"chunkhold", L"devstation", L"sweep" };
             bool hit = false;
             for (auto k : keep) if (l.find(k) != std::wstring::npos) { hit = true; break; }
             if (!hit) return;

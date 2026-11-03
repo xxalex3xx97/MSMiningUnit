@@ -9,15 +9,13 @@ local function ok(o) if o == nil or type(o) ~= "userdata" then return false end 
 local function rd(o, p) local s, v = pcall(function() return o[p] end) if s then return v end return nil end
 local function inVp(o) local s, v = pcall(function() return o:IsInViewport() end) return s and v == true end
 local function try(tag, f, ...) local s, r = pcall(f, ...) if not s then L("FAIL " .. tag .. ": " .. tostring(r)) end return s end
-local USE_SLOT_SETTERS = false
 local function nm(o, cls) if not ok(o) then return "invalid" end local s, r = pcall(function() if cls then return o:GetClass():GetFName():ToString() end return o:GetFName():ToString() end) return s and tostring(r) or "?" end
-local function v2(v) if type(v) ~= "userdata" then return tostring(v) end return tostring(rd(v, "X")) .. "x" .. tostring(rd(v, "Y")) end
 
 local LIB = "/Script/UMG.Default__WidgetBlueprintLibrary"
 local LIB_LAYOUT = "/Script/UMG.Default__WidgetLayoutLibrary"
 local WBP_CLS = "/Game/MiningUnitUI/WBP_MiningUnit.WBP_MiningUnit_C"  -- StaticFindObject takes the class path
 local Z = 49                                           -- below dev menu 50
-local TABS = { "Btn_TabShip", "Btn_TabItems", "Btn_TabOperation", "Btn_TabLog" }  -- PageSwitcher index 0..3
+local TABS = { "Btn_TabShip", "Btn_TabItems", "Btn_TabOperation", "Btn_TabLog", "Btn_TabDocks" }  -- PageSwitcher index 0..4
 -- linear colors = gen_paste.py lin(): #D49A00 gold (active), #1E1E1E .95 (off), #1A1A1A text on active, white off
 local TAB_ON = { R = 0.658375, G = 0.323143, B = 0.0, A = 1.0 }
 local TAB_OFF = { R = 0.012983, G = 0.012983, B = 0.012983, A = 0.95 }
@@ -25,7 +23,7 @@ local TXT_ON = { R = 0.010330, G = 0.010330, B = 0.010330, A = 1.0 }
 local TXT_OFF = { R = 1.0, G = 1.0, B = 1.0, A = 1.0 }
 local EST_RED_TXT = { R = 1.0, G = 0.25, B = 0.2, A = 1.0 }   -- Txt_StatusAction tint on an ERROR status
 local UDN = 20 -- max docks per unload-ore list and per refuel list (= gen_paste UDOCK_N)
--- ore key k = widget part (Pnl_UDockCard_<k>, modal key UDock_<k>_<n>); ini = INI key part (unload_docks_<ini>, ore_<ini>)
+-- ore key k = widget part (Pnl_UDockCard_<k>, modal key UDock_<k>_<n>); ini = INI key part (unload_docks_<ini>)
 local UD_ORES = { { k = "Cobalt", ini = "cobalt" }, { k = "Graphite", ini = "graphite" }, { k = "Iridium", ini = "iridium" },
   { k = "Nickel", ini = "nickel" }, { k = "Silica", ini = "silica" }, { k = "Titanium", ini = "titanium" }, { k = "WaterIce", ini = "waterice" } }
 -- every name Lua touches; missing ones are logged after CreateWidget
@@ -34,8 +32,9 @@ local NAMES = { "Panel", "PageSwitcher", "Page_Ship", "Page_Items", "Page_Operat
   "Pnl_ModalHeadG", "Pnl_ModalHeadP", "Txt_ModalTitleG", "Btn_ModalCloseG", "Row_ModalCardScroll", "Row_ModalScroll",
   "Btn_TabShip", "Btn_TabItems", "Btn_TabOperation", "Btn_LoopStart", "Btn_LoopStop",
   "Txt_StatusAction", "PB_Cargo", "Txt_CargoPct", "Txt_Speed", "Txt_NextState", "Txt_Status",
-  "Txt_Eta", "Btn_EmergencyStop", "Txt_EmergencyStop", "Btn_Dock", "Btn_Undock", "Btn_Refuel", "Btn_Unload", "Btn_RemoteAll", "Pnl_AllWarn", "Txt_AllWarn",
-  "Txt_TabLog", "Pnl_PageLog", "Txt_LogHint", "Row_LogScroll", "Row_StatusMine", "Txt_StatusMine", "Img_StatusOre", "Pnl_LogAll", "Row_LogAllScroll" }
+  "Txt_Eta", "Btn_EmergencyStop", "Txt_EmergencyStop", "Btn_Dock", "Btn_Undock", "Btn_Refuel", "Btn_Unload", "Btn_Collect", "Txt_Collect", "Btn_RemoteAll", "Pnl_AllWarn", "Txt_AllWarn",
+  "Txt_TabLog", "Pnl_PageLog", "Txt_LogHint", "Row_LogScroll", "Row_StatusMine", "Txt_StatusMine", "Img_StatusOre", "Pnl_LogAll", "Row_LogAllScroll",
+  "Btn_TabDocks", "Txt_TabDocks", "Pnl_PageDocks", "Txt_DocksHdr", "Row_DocksScroll" }
 -- Mining line of every card (Card/Fleet): label + ore icon + ore name; log card pool (Pnl_LogCard_<f>, LOGCARD_ROWS lines each)
 for i = 1, 20 do
   for _, P in ipairs({ "Card", "Fleet" }) do
@@ -102,41 +101,58 @@ local function viewport(p)
   return vw / sc, vh / sc
 end
 
--- widget by name: GetWidgetFromName first, then the is-variable UProperty on the instance
+-- widget by name: GetWidgetFromName, then the is-variable UProperty, then (WALK_NAMES only) FindWidget / one bounded index walk per window.
+-- WHY: python-built widgets are not Is Variable, so the first two miss them. Never a walk per lookup (that froze the game).
+local deepFind -- defined with the dynamic list helpers below
+-- the real root of the window's own tree (not a named widget: GetWidgetFromName("Root") is not reliable for the paste tree)
+local function rootW()
+  if not ok(S.w) then return nil end
+  local s, r = pcall(function() return S.w.WidgetTree.RootWidget end)
+  return (s and ok(r)) and r or nil
+end
+-- Only these python-built names (add_docks_tab.py, add_btn_collect.py) ever use the tree lookup. Every other missing name returns nil at once.
+local WALK_NAMES = { Btn_TabDocks = true, Txt_TabDocks = true, Pnl_PageDocks = true, Txt_DocksHdr = true, Row_DocksScroll = true,
+  Dyn_Docks = true, Btn_Collect = true, Txt_Collect = true }
+local WALK_NODES = 1500   -- hard cap of one index walk
+-- ONE bounded walk per window open (S.wc = name -> widget for WALK_NAMES). Stops early when all are found. Logs time + nodes.
+local function buildIndex()
+  local t0 = os.clock()
+  S.wc, S.wbuilt = {}, true
+  local root = rootW()
+  if not root then L("WBP index: no root"); return end
+  local nWant, found, nodes, maxd = 0, 0, 0, 0
+  for _ in pairs(WALK_NAMES) do nWant = nWant + 1 end
+  local function rec(o, d)
+    if d > maxd then maxd = d end
+    if found == nWant or nodes >= WALK_NODES or d > 48 then return end
+    nodes = nodes + 1
+    local nmv = nm(o)
+    if WALK_NAMES[nmv] and S.wc[nmv] == nil then S.wc[nmv] = o; found = found + 1 end
+    local s, c = pcall(function() return o:GetChildrenCount() end)
+    if s and type(c) == "number" and c > 0 then
+      for i = 0, c - 1 do
+        local s2, ch = pcall(function() return o:GetChildAt(i) end)
+        if s2 and ok(ch) then rec(ch, d + 1) end
+      end
+    else
+      local s3, ct = pcall(function() return o:GetContent() end)
+      if s3 and ok(ct) then rec(ct, d + 1) end
+    end
+  end
+  rec(root, 0)
+  L(string.format("WBP index walk ms=%.1f nodes=%d maxdepth=%d found=%d/%d", (os.clock() - t0) * 1000, nodes, maxd, found, nWant))
+end
 local function w(name)
   if not ok(S.w) then return nil end
   local s, x = pcall(function() return S.w:GetWidgetFromName(FName(name)) end)
   if s and ok(x) then return x end
   local s2, y = pcall(function() return S.w[name] end)
   if s2 and ok(y) then return y end
-  return nil
-end
-
--- walk the real widget tree from RootWidget (GetChildrenCount/GetChildAt are UFUNCTIONs on panels)
-local function walk(o, depth, out)
-  if depth > 6 or #out >= 60 then return end
-  out[#out + 1] = string.rep(" ", depth) .. nm(o) .. " [" .. nm(o, true) .. "]"
-  local s, c = pcall(function() return o:GetChildrenCount() end)
-  if s and type(c) == "number" then
-    for i = 0, c - 1 do
-      local s2, ch = pcall(function() return o:GetChildAt(i) end)
-      if s2 and ok(ch) then walk(ch, depth + 1, out) end
-    end
-  end
-end
-
-local function dumpTree()
-  L("instance " .. nm(S.w) .. " [" .. nm(S.w, true) .. "] class=" .. nm(S.w, true))
-  local tree = rd(S.w, "WidgetTree")
-  L("WidgetTree valid=" .. tostring(ok(tree)))
-  if not ok(tree) then return end
-  local root = rd(tree, "RootWidget")
-  L("RootWidget valid=" .. tostring(ok(root)))
-  if not ok(root) then return end
-  local out = {}
-  walk(root, 0, out)
-  L("tree (" .. #out .. " shown):")
-  for _, line in ipairs(out) do L(line) end
+  if not WALK_NAMES[name] then return nil end
+  local s3, f = pcall(function() return S.w.WidgetTree:FindWidget(FName(name)) end)   -- O(1) by name when exposed
+  if s3 and ok(f) then return f end
+  if not S.wbuilt then buildIndex() end
+  return S.wc[name]
 end
 
 -- SetText(FText) on the real TextBlock; fallback .Text property; log widget class if both fail
@@ -152,11 +168,14 @@ end
 
 -- Button label: the pak still says "Warp to belt"; set the button's text child (TextBlock) at runtime instead of a pak rebuild
 function M.setBtnText(name, s)
+  -- WHY: same unchanged-write guard as M.setText (S.tc = last text per name)
+  S.tc = S.tc or {}
+  if S.tc[name] == s then return end
   local b = w(name); if not ok(b) then return end
   local s1, c = pcall(function() return b:GetChildAt(0) end)
   if not (s1 and ok(c)) then L("setBtnText " .. name .. " no child"); return end
   if not nm(c, true):find("TextBlock") then L("setBtnText " .. name .. " child is " .. nm(c, true)); return end
-  try("setBtnText " .. name, function() c:SetText(FText(s)) end)
+  if try("setBtnText " .. name, function() c:SetText(FText(s)) end) then S.tc[name] = s end
 end
 
 local function setPercent(name, v)
@@ -171,12 +190,10 @@ M.DATA = SRC and (SRC .. "../../MiningBenchMod/dlls/") or "ue4ss/Mods/MiningBenc
 -- UMG linear = (sRGB channel / 255) ^ 2.2
 local function lin(c) return (c / 255) ^ 2.2 end
 local function rgb(r, g, b) return { R = lin(r), G = lin(g), B = lin(b), A = 1.0 } end
-local BTN_GREEN = rgb(0x42, 0xDA, 0x41)  -- Start button when loop running
-local BTN_RED = rgb(0x9C, 0x22, 0x22)    -- Stop button when loop stopped
 local BTN_NORMAL = rgb(0x4A, 0x4A, 0x4A)
 local BTN_AMBER = rgb(0xE6, 0x9A, 0x00)
 local WARN_YEL = rgb(0xF2, 0xD2, 0x1E)     -- Txt_ShipWarn + Txt_StatusAction tint when a loaded ore has no unload dock
-local ACTION = { mining = "Mining", traveling = "Docking", refueling = "Refueling", unloading = "Unloading", idle = "Idle", waiting = "Waiting for dock", error = "ERROR" }
+local ACTION = { mining = "Mining", traveling = "Docking", refueling = "Refueling", unloading = "Unloading", collecting = "Collecting ore", idle = "Idle", waiting = "Waiting for dock", error = "ERROR" }
 
 local function rdlines(path)
   local fh = io.open(path, "r")
@@ -633,9 +650,9 @@ end
 -- ===== generic dynamic list: a DynamicEntryBox of a Python-built row WBP. Python widgets are not Is Variable, so boxes and entry children are found by walking
 -- from a variable anchor / the entry root (deepFind). spec: key, anchor (variable widget above the box), box (name), n (row count), bind(e, find, idx) once per new entry,
 -- paint(e, find, i) for every row on every call. Entries live in S.dyn[key].ents[i] = { w = entry, find = fn(name) }.
-local function deepFind(node, name, depth)
+function deepFind(node, name, depth)   -- assigns the forward-declared local above
   depth = depth or 0
-  if depth > 12 or not ok(node) then return nil end
+  if depth > 16 or not ok(node) then return nil end
   if nm(node) == name then return node end
   local okc, cnt = pcall(function() return node:GetChildrenCount() end)
   if okc and type(cnt) == "number" then
@@ -700,21 +717,18 @@ function dynDocks(name, getList, save, title, docks, cardName)
     end }
 end
 -- Ship tab dock lists. S.ud[<ini>] = unload dock ids of the ore, S.rd = refuel dock ids (this ship; All ships = first ship of the set).
--- Ore card shown only while the global ore_<ini> flag is on (default on). Warning = ore on + empty list (not in All ships mode).
+-- Every ore has a dock card. An ore unloads when its list is not empty. Warning = no ore has a dock (not in All ships mode).
 local function udRender()
   if not S.ud then return end
-  local glob = iniGet(rdlines(INI) or {}, nil)
-  local docks, warn = S.docks or {}, {}
+  local docks, nodock = S.docks or {}, 0
   for _, u in ipairs(UD_ORES) do
-    local on = (glob["ore_" .. u.ini] or "1") == "1"
-    local list = S.ud[u.ini]
-    setVis(w("Pnl_UDockCard_" .. u.k), on and 0 or 1)
-    if on then dynDocks("UDock_" .. u.k, function() return S.ud and S.ud[u.ini] or {} end, udSave, "Unload dock", docks, "Pnl_UDockCard_" .. u.k) end
-    if on and #list == 0 then warn[#warn + 1] = u.k end
+    setVis(w("Pnl_UDockCard_" .. u.k), 0)
+    dynDocks("UDock_" .. u.k, function() return S.ud and S.ud[u.ini] or {} end, udSave, "Unload dock", docks, "Pnl_UDockCard_" .. u.k)
+    if #S.ud[u.ini] == 0 then nodock = nodock + 1 end
   end
   setVis(w("Pnl_RDockCard"), 0)
   dynDocks("RDock", function() return S.rd end, udSave, "Refuel dock", docks)
-  S.warn = (not S.all and #warn > 0) and ("No unload dock for: " .. table.concat(warn, ", ")) or ""
+  S.warn = (not S.all and nodock == #UD_ORES) and "No unload dock set for any ore" or ""
   M.setText("Txt_ShipWarn", S.warn)
   setVis(w("Txt_ShipWarn"), S.warn ~= "" and 0 or 1)
 end
@@ -909,10 +923,6 @@ for _, f in ipairs({ { "Deuterium", "deuterium", "0" }, { "Hydrogen", "hydrogen"
   OPS[#OPS + 1] = { w = "Edt_Fuel" .. f[1] .. "Threshold", k = "fuel_" .. f[2] .. "_threshold", sc = "global", kind = "int", def = "300", msg = f[1] .. " threshold must be an integer >= 0" }
   OPS[#OPS + 1] = { w = "Edt_Fuel" .. f[1] .. "Amount", k = "fuel_" .. f[2] .. "_amount", sc = "global", kind = "int", def = "300", msg = f[1] .. " amount must be an integer >= 0" }
 end
-for _, o in ipairs({ { "Cobalt", "cobalt" }, { "Graphite", "graphite" }, { "Iridium", "iridium" }, { "Nickel", "nickel" },
-                     { "Silica", "silica" }, { "Titanium", "titanium" }, { "WaterIce", "waterice" } }) do
-  OPS[#OPS + 1] = { w = "Chk_Unload" .. o[1], k = "ore_" .. o[2], sc = "global", kind = "chk", def = "1" }
-end
 -- Operation item icons (Image widgets; brush from bundled Img_ItemSrc_<id> texture, game Item.Icon only as fallback; hidden when no icon)
 local OPICONS = { Img_FuelDeuterium = "ITEM_EnrichedFuel", Img_FuelHydrogen = "ITEM_HydrogenFuel", Img_FuelWarp = "ITEM_WarpFuel",
   Img_UnloadCobalt = "ITEM_CobaltOre", Img_UnloadGraphite = "ITEM_Graphite", Img_UnloadIridium = "ITEM_IridiumOre",
@@ -990,7 +1000,6 @@ local function opsTick()
         local v = (e.kind == "chk") and t or opVal(e, t)
         if v then
           opSave(e, v)
-          if e.k:find("^ore_") then udRender() end   -- ore on/off shows or hides its dock card + warning
           if S.op.err == e.w then S.op.err = nil; M.setText("Txt_Status", "") end
         else
           S.op.err = e.w; M.setText("Txt_Status", "error: " .. e.msg)
@@ -1120,15 +1129,16 @@ end
 --   Dock   = dock_auto: C++ auto_rule picks refuel dock if an enabled fuel is below its threshold, else mining dock (same rule as the loop).
 --   Undock = undock: leave the current dock for a second configured dock (refuel dock first).
 --   Refuel = dock_refuel: dock at the refuel dock and fill the enabled fuel items.
---   Unload = dock_mining: dock at the mining dock and unload the enabled ore (job_start: not refuel -> ob_plan_unload).
+--   Unload = dock_mining: dock at the mining dock and unload every ore that has an unload dock (job_start: not refuel -> ob_plan_unload).
 -- These are overrides: stop_all for this ship first (halts the loop), then the action 400 ms later (user decision).
 local ACT_BTNS = {
   Btn_Dock = { cmd = "dock_auto", label = "dock" },
   Btn_Undock = { cmd = "undock", label = "undock" },
   Btn_Refuel = { cmd = "dock_refuel", label = "refuel" },
   Btn_Unload = { cmd = "dock_mining", label = "unload" },
+  Btn_Collect = { cmd = "collect_ore", label = "collect ore" },
 }
-local ACT_ORDER = { "Btn_Dock", "Btn_Undock", "Btn_Refuel", "Btn_Unload" }
+local ACT_ORDER = { "Btn_Dock", "Btn_Undock", "Btn_Refuel", "Btn_Unload", "Btn_Collect" }
 -- MiningStatusX 'job' value -> button to keep amber + status text (job none/absent/unknown = no entry)
 local JOB = {
   dock = { btn = "Btn_Dock", txt = "Docking" },
@@ -1217,6 +1227,75 @@ local function logPaint()
   setVis(w("Txt_LogHint"), #rows == 0 and 0 or 1)
 end
 
+-- ===== Docks tab: NetDocks.txt / NetShips.txt (C++, every second). Rows = docks in a bench ship's unload/refuel lists (dockTags), by name.
+-- Rows are a dynList of WBP_NetDockRow (Dyn_Docks, added by add_docks_tab.py). Repaints only on text change, only while the tab is open (M.lastTab 5).
+local DOCK_COL = { FREE = rgb(0x42, 0xDA, 0x41), RESERVED = rgb(0xF2, 0xD2, 0x1E), WORKING = rgb(0xF2, 0xD2, 0x1E),
+  PARKED = rgb(0xE6, 0x9A, 0x00), FULL = rgb(0xE0, 0x40, 0x40), GONE = rgb(0x80, 0x80, 0x80) }
+local DOCK_PURP = { unload = "Unload", refuel = "Refuel", flee = "Flee", pick = "Pick", undock = "Undock", dock = "Dock" }
+-- NetShips.txt by ship id: name (col 11), slot (14), prio (15), phase (17: none|flying|holding|cleared)
+local function netShips()
+  local out = {}
+  for _, l in ipairs(rdcached(M.DATA .. "NetShips.txt") or {}) do
+    local p = split(l)
+    local sid = trim(p[1] or "")
+    if sid ~= "" then
+      out[sid] = { name = trim(p[11] or ""), slot = tonumber(trim(p[14] or "")) or 0, prio = tonumber(trim(p[15] or "")) or 0, phase = trim(p[17] or "") }
+    end
+  end
+  return out
+end
+local function docksLoad()
+  local tags, ships = dockTags(), netShips()
+  local names = {}
+  for _, o in ipairs(benchShips()) do names[o.id] = o.text end
+  for sid, s in pairs(ships) do if s.name ~= "" then names[sid] = s.name end end
+  local function nameOf(id) return names[id] or id end
+  local rows = {}
+  for _, l in ipairs(rdcached(M.DATA .. "NetDocks.txt") or {}) do
+    local p = split(l)
+    local id = trim(p[1] or "")
+    if id ~= "" and tags[id] then
+      local raw, occ, cleared = trim(p[2] or ""), trim(p[3] or ""), trim(p[9] or "")
+      local name = trim(p[8] or "")
+      local status = raw
+      if cleared ~= "" and cleared ~= "0" and (raw == "FREE" or raw == "RESERVED") then status = "Cleared: " .. nameOf(cleared) end
+      local q = {}
+      for qid in (p[6] or ""):gmatch("[^,]+") do
+        qid = trim(qid)
+        local s = ships[qid] or { prio = 0, slot = 0, phase = "" }
+        local t = nameOf(qid) .. " " .. s.prio .. "%"
+        if s.slot > 0 then t = t .. " slot " .. s.slot end
+        if s.phase == "flying" or s.phase == "holding" then t = t .. " (" .. s.phase .. ")" end
+        q[#q + 1] = t
+      end
+      local since = math.floor(tonumber(trim(p[5] or "")) or 0)
+      rows[#rows + 1] = { label = name ~= "" and name or ("Dock " .. id), status = status, color = DOCK_COL[raw] or DOCK_COL.GONE,
+        used = (occ ~= "" and occ ~= "0") and nameOf(occ) or "-", purp = DOCK_PURP[trim(p[4] or "")] or "-",
+        since = string.format("%d:%02d", math.floor(since / 60), since % 60), queue = #q > 0 and table.concat(q, ", ") or "-" }
+    end
+  end
+  table.sort(rows, function(a, b) return a.label:lower() < b.label:lower() end)
+  return rows
+end
+local function docksPaint()
+  if M.lastTab ~= 5 then return end   -- Docks = TABS index 5
+  local rows = docksLoad()
+  local key = {}
+  for i, r in ipairs(rows) do key[i] = table.concat({ r.label, r.status, r.used, r.purp, r.since, r.queue }, "|") end
+  key = table.concat(key, "\n")
+  if key == S.docksKey then return end
+  S.docksKey = key
+  dynList{ key = "Docks", anchor = "Row_DocksScroll", box = "Dyn_Docks", n = #rows, paint = function(_, find, i)
+    local r = rows[i]
+    local function put(name, s) local t = find(name); if t then try("docks " .. name, function() t:SetText(FText(s)) end) end end
+    put("Txt_DName", r.label); put("Txt_DStatus", r.status); put("Txt_DUsed", r.used)
+    put("Txt_DPurpose", r.purp); put("Txt_DSince", r.since); put("Txt_DQueue", r.queue)
+    local dot, st = find("Img_DDot"), find("Txt_DStatus")
+    if dot then try("docks dot", function() dot:SetColorAndOpacity(r.color) end) end
+    if st then try("docks status colour", function() st:SetColorAndOpacity({ SpecifiedColor = r.color }) end) end
+  end }
+end
+
 local fleetPaint  -- defined after shipRowRender (needs shipRows)
 local function refresh()
   if S.sid and S.last and os.clock() - (S.docksAt or 0) > 5 then   -- dock renames in game show up without reopening the window
@@ -1259,6 +1338,10 @@ local function refresh()
   if S.req then act = "Requested " .. S.req.label .. "..." end
   if S.pend then act = (S.pend.k == "start") and "Requested start..." or "Requested stop..." end
   if S.estop and S.tick < S.estop then act = "Emergency stop requested" else S.estop = nil end
+  local ns = (not S.all and S.sid) and netShips()[tostring(S.sid)] or nil   -- dock queue: flying to / holding at the holding spot
+  if ns and (ns.phase == "flying" or ns.phase == "holding") then
+    act = (act ~= "" and (act .. " - ") or "") .. (ns.phase == "flying" and "Flying to holding position" or ("Holding at slot " .. ns.slot))
+  end
   M.setText("Txt_StatusAction", act)
   local sa = w("Txt_StatusAction")
   local tint = TXT_OFF   -- error (red) beats the missing-unload-dock warning (yellow)
@@ -1281,11 +1364,18 @@ local function refresh()
   local run = st.run
   if S.all then run = allRun end
   setRun(run, S.pend and S.pend.k or nil)
-  paintAct(job and job.btn or (S.req and S.req.n) or nil)
+  paintAct(job and job.btn or (S.req and S.req.n) or ((not S.all) and st.simple == "collecting" and "Btn_Collect") or nil)
+  -- Collect button text: floating ore count from MiningOre.txt ("count|unix", written by the mod when the shared scan refreshes)
+  do
+    local ol = rdcached(M.DATA .. "MiningOre.txt")
+    local on = ol and ol[1] and tonumber(ol[1]:match("^(%d+)")) or 0
+    M.setBtnText("Btn_Collect", on > 0 and ("Collect " .. on .. " ores") or "Collect ore")
+  end
   S.simple = st.simple
   try("itemsTick", itemsTick)
   try("opsTick", opsTick)
   try("logPaint", logPaint)
+  try("docksPaint", docksPaint)
   updateEta(S.all and {} or st)
 end
 
@@ -1331,7 +1421,7 @@ function M.close()
   S.pend, S.arm, S.estop, S.etaS, S.etaKind = nil, nil, nil, nil, nil
   S.req, S.simple = nil, nil
   S.fleet, S.holoOut, S.tc = nil, nil, nil
-  S.ud, S.rd, S.warn, S.dyn, S.dynDiag, S.dynWarn = nil, nil, nil, nil, nil, nil
+  S.ud, S.rd, S.warn, S.dyn, S.dynWarn = nil, nil, nil, nil, nil
   if not (S.root or S.p or S.frame) then return end
   local root, p = S.root, S.p
   S.root, S.p, S.w, S.frame = nil, nil, nil, nil
@@ -1364,6 +1454,7 @@ function M.setTab(i)
   if i == 1 then try("shipLoad", shipLoad) end
   if i == 2 then try("itemsLoad", itemsLoad) end
   if i == 3 then try("opsLoad", opsLoad) end
+  if i == 5 then S.docksKey = nil; try("docksPaint", docksPaint) end
   L("tab " .. i)
 end
 
@@ -1618,6 +1709,8 @@ function M.open(ship)
     S.root, S.w, S.p, S.ship = wbp, wbp, p, ship
     S.mode, S.t0 = mode, os.clock()
     S.logKey = nil   -- new widgets: repaint the Log tab on the first tick
+    S.docksKey = nil
+    S.wc, S.wbuilt = nil, nil   -- new window: the python-built index is walked once again (lazily)
     -- ship list = bench ships; sid = block's ship if listed, else last picked (F4), else first; empty list = nil
     local list = benchShips()
     local function inList(id) for _, o in ipairs(list) do if o.id == id then return true end end return false end

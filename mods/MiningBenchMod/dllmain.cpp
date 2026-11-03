@@ -20,6 +20,7 @@
 #include "mb_cmdstate.hpp"
 #include "mb_rocks.hpp"
 #include "mb_steer.hpp"
+#include "mb_net.hpp"
 #include "mb_dockjob.hpp"
 #include "mb_pin.hpp"
 #include "mb_warp.hpp"
