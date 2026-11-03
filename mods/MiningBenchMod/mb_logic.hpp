@@ -439,6 +439,16 @@ namespace
         return now > 0 && (prev < 0 || now < prev);
     }
 
+    // WHAT: unload candidates for a dock trip: ORE indices that are in cargo AND have an unload dock list (ore order).
+    // WHY: a trip only picks a dock for an ore it carries. An ore not in cargo must never pick the dock: the ship docks, unloads nothing, the cargo check fails.
+    std::vector<int> unload_cand(const std::vector<bool>& in_cargo, const std::vector<bool>& has_docks)
+    {
+        std::vector<int> out;
+        for (size_t i = 0; i < in_cargo.size() && i < has_docks.size(); ++i)
+            if (in_cargo[i] && has_docks[i]) out.push_back(static_cast<int>(i));
+        return out;
+    }
+
     // WHAT: refuel stalled: items not all delivered, t >= wait_s, and the fuel cargo has not grown for idle_s (idle_s 0 = off).
     bool refuel_stalled(bool done, int idle_s, double t, int wait_s, double hold_idle)
     {

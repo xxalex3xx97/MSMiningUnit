@@ -153,31 +153,37 @@ namespace
         return false;
     }
 
-    // WHAT: unload dock for a dock_mining trip. fixed > 0 = the Dock picker's dock; else the first free dock in list order of the ores that have an unload dock
-    //       (ores with cargo first, ore order inside each group). ores = ores whose list holds the chosen dock (ORE indices).
-    //       Returns 0 with busy=false when no ore has a dock; busy=true when the dock is taken or every listed dock is busy.
-    // WHY: one trip unloads at one dock (ob_plan_unload takes one dock); the other ores wait in cargo for the next trip.
+    // WHAT: unload dock for a dock_mining trip. fixed > 0 = the Dock picker's dock; else the first free dock in list order of the ores IN CARGO that have
+    //       an unload dock (unload_cand). ores = the ores unloaded at the chosen dock (ORE indices).
+    //       Returns 0 with busy=false when no ore has a dock list, or none in cargo has one (caller: "no unload dock set"); busy=true when the dock is taken or every cargo ore's docks are busy.
+    // WHY: one trip unloads at one dock (ob_plan_unload takes one dock). An ore not in cargo must not pick the dock: the ship docks, unloads nothing, the cargo check fails.
+    //      The Dock picker path is as before: cargo ores first, then the other ores that list the dock.
     int unload_pick(int sid, UObject* ship, const Config& c, int fixed, std::vector<int>& ores, bool& busy)
     {
         ores.clear();
         busy = false;
-        std::vector<int> cand;   // ores with a dock list: cargo first
-        for (int pass = 0; pass < 2; ++pass)
-            for (int i = 0; i < N_ORE; ++i)
-            {
-                if (c.ore_docks[i].empty()) continue;
-                std::wstring w;
-                UObject* it = item_c(ORE_ITEM[i], w);
-                const bool has = alive(it) && inv_total(ship, it) > 0;
-                if (has == (pass == 0)) cand.push_back(i);
-            }
-        if (cand.empty()) return 0;
+        std::vector<bool> in_cargo(N_ORE, false), has_docks(N_ORE, false);
+        for (int i = 0; i < N_ORE; ++i)
+        {
+            has_docks[i] = !c.ore_docks[i].empty();
+            if (!has_docks[i]) continue;
+            std::wstring w;
+            UObject* it = item_c(ORE_ITEM[i], w);
+            in_cargo[i] = alive(it) && inv_total(ship, it) > 0;
+        }
+        if (std::find(has_docks.begin(), has_docks.end(), true) == has_docks.end()) return 0;   // no ore has an unload dock
+        const std::vector<int> cand = unload_cand(in_cargo, has_docks);
         int dk = fixed;
         if (dk <= 0)
+        {
+            if (cand.empty()) return 0;   // no ore in cargo has a dock list
             for (int i : cand) { for (int d : c.ore_docks[i]) if (!dock_busy(d, sid)) { dk = d; break; } if (dk > 0) break; }
-        if (dk <= 0) { busy = true; return 0; }
+            if (dk <= 0) { busy = true; return 0; }   // every cargo ore's docks are busy: caller waits
+        }
         if (dock_busy(dk, sid)) { busy = true; return dk; }
-        for (int i : cand)
+        std::vector<int> pool = cand;
+        if (fixed > 0) for (int i = 0; i < N_ORE; ++i) if (has_docks[i] && !in_cargo[i]) pool.push_back(i);
+        for (int i : pool)
             if (std::find(c.ore_docks[i].begin(), c.ore_docks[i].end(), dk) != c.ore_docks[i].end()) ores.push_back(i);
         return dk;
     }

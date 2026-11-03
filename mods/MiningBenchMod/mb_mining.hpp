@@ -60,6 +60,7 @@ namespace
         bool fin = false;                      // queue finished (repeat off): unload, then stop
         bool noore = false;   // no sector has the ore: go home, then idle (HALT, not an error)
         int fails = 0, unl_chk = 0, rock = 0;
+        int64_t unl_have = -1;                 // resource ore in cargo when the current trip started (-1 unknown): the unload guard counts only trips that did not shrink it
         bool run = false;                      // Start loop pressed (runtime only: a game restart means stopped)
         double hold_idle = 0.0;                // refuel stall: seconds with no fuel gained at dock
         int64_t hold_last = -1;                // refuel stall: fuel cargo total at the last check
@@ -439,6 +440,9 @@ namespace
         cancel_dock_job(ship, sid);
         std::wstring w;
         m.trip = force.empty() ? auto_rule(sid, ship, w) : force;
+        std::wstring wi;
+        UObject* it0 = item_c(eff_cfg(sid).resource, wi);
+        m.unl_have = alive(it0) ? inv_total(ship, it0) : -1;
         g_job_res.erase(sid);
         const std::wstring r = job_start(sid, m.trip, -1);
         m.t = 0.0; m.seek_started = false; m.no_rock = false;
@@ -656,6 +660,16 @@ namespace
         mset(sid, m, STR("checking"));
         return;
     }
+    // WHAT: "cargo still full after unload" guard. true = fire (caller HALTs). A shrink of the resource ore since the trip began resets the count.
+    //       Counts only when the last dock job ended ok; never while waiting for a dock (dwait, or the job result is "waiting dock").
+    // WHY: a trip that found its dock busy, or unloaded nothing because the dock did not take the ore, is not a failed unload to count.
+    bool unl_guard_fire(UObject* ship, int sid, MineSt& m, UObject* item)
+    {
+        const int64_t now = alive(item) ? inv_total(ship, item) : -1;
+        if (m.unl_have >= 0 && now >= 0 && now < m.unl_have) { m.unl_chk = 0; return false; }
+        if (m.dwait || !ok_res(g_job_res[sid])) return false;
+        return m.unl_chk++ >= 1;
+    }
     // WHAT: MS_CHECK: fuel/queue/cargo decisions, belt target, rock-in-range test, then undock job.
     void st_check(UObject* ship, int sid, MineSt& m, double dt, const Config& c)
     {
@@ -669,7 +683,7 @@ namespace
         if (cargo_full(ship, item) || m.cargo_pct >= 100)   // pct 100 = every non-fuel slot used (a partial stack can still take 1: HasSpaceForItems says yes)
         {
             // loop guard: a second unload from CHECK without mining in between means the cargo is not in the unload list
-            if (m.unl_chk++ >= 1) { m.st = MS_HALT; mset(sid, m, STR("cargo still full after unload (does the ore have an unload dock?)")); return; }
+            if (unl_guard_fire(ship, sid, m, item)) { m.st = MS_HALT; mset(sid, m, STR("cargo still full after unload (does the ore have an unload dock?)")); return; }
             trip_begin(ship, sid, m, STR("cargo ready to unload"));
             return;
         }
@@ -1047,7 +1061,7 @@ namespace
             const bool full = (alive(item) && cargo_full(ship, item)) || m.cargo_pct >= 100;
             if (full)
             {
-                if (m.unl_chk++ >= 1)
+                if (unl_guard_fire(ship, sid, m, item))
                 {
                     m.sweep = false; m.st = MS_HALT; m.err = true;
                     mset(sid, m, STR("ERROR: cargo still full after unload (does the ore have an unload dock?)"), STR("ERROR: cargo still full after unload (does the ore have an unload dock?)"));

@@ -466,6 +466,21 @@ static void t_unload_chain_more()
     CHECK(!unload_chain_more(-1, 0));
 }
 
+static void t_unload_cand()
+{
+    // ore 0 cargo+docks, 1 cargo+docks, 2 cargo no docks, 3 docks only, 5 cargo+docks, 6 none
+    const std::vector<bool> cargo = {true, true, true, false, false, true, false};
+    const std::vector<bool> docks = {true, true, false, true, false, true, false};
+    const std::vector<int> got = unload_cand(cargo, docks);
+    CHECK(got.size() == 3 && got[0] == 0 && got[1] == 1 && got[2] == 5);
+    // silica (5) in cargo, waterice (4) has docks but is not in cargo: waterice is never a candidate
+    const std::vector<bool> in1 = {false, false, false, false, false, true, false};
+    const std::vector<bool> dk1 = {false, false, false, false, true, true, false};
+    const std::vector<int> got1 = unload_cand(in1, dk1);
+    CHECK(got1.size() == 1 && got1[0] == 5);
+    CHECK(unload_cand(std::vector<bool>(7, false), docks).empty());
+}
+
 static void t_refuel_stalled()
 {
     CHECK(!refuel_stalled(true, 60, 10.0, 10, 60.0));   // all delivered
@@ -544,7 +559,7 @@ int main()
         {"belt", t_belt}, {"csq", t_csq}, {"sector_contains", t_sector_contains}, {"warp_fuel", t_warp_fuel},
         {"cargo_pct", t_cargo_pct}, {"fuel_low", t_fuel_low}, {"got_delta", t_got_delta}, {"row_done", t_row_done},
         {"item_next", t_item_next}, {"collect_verdict", t_collect_verdict}, {"sweep", t_sweep}, {"ore_scan_due", t_ore_scan_due}, {"dock_backoff", t_dock_backoff}, {"hull_dropped", t_hull_dropped},
-        {"dock_limit_giveup", t_dock_limit_giveup}, {"unload_chain_more", t_unload_chain_more}, {"refuel_stalled", t_refuel_stalled}, {"mine_radius", t_mine_radius},
+        {"dock_limit_giveup", t_dock_limit_giveup}, {"unload_chain_more", t_unload_chain_more}, {"unload_cand", t_unload_cand}, {"refuel_stalled", t_refuel_stalled}, {"mine_radius", t_mine_radius},
         {"station", t_station},
     };
     for (const Case& c : cases)
