@@ -1581,7 +1581,21 @@ namespace
         }
         static std::string last;   // unchanged: no file write
         if (s != last) { try { write_atomic(get_dll_dir() / "MiningStatusX.txt", s); last = s; } catch (...) {} }
-        dock_occ_write();
+    }
+
+    // WHAT: mb_net.hpp hooks. Seconds docked in the current hold (MS_HOLD clock). 0 when not holding.
+    double net_hold_s(int sid)
+    {
+        const MineSt& m = g_mine[sid];
+        return m.st == MS_HOLD ? m.t : 0.0;
+    }
+
+    // WHAT: mb_net.hpp hook. The ship counts as working when it has a dock job or its loop runs (not off/halted). Else it is parked.
+    bool net_holder_working(int sid)
+    {
+        if (job_running(sid)) return true;
+        const MineSt& m = g_mine[sid];
+        return m.run && m.st != MS_OFF && m.st != MS_HALT;
     }
 
     // WHAT: MiningLog.txt, one line per Log tab entry: "<ship id>|<hh:mm:ss>|<text>", ships in bench order, oldest first. Written only when changed.
@@ -1751,6 +1765,7 @@ namespace
             const double el = g_mine_status_acc;
             g_mine_status_acc = 0.0;
             mine_sample(el);
+            net_tick();
             mine_status_write();
             mine_status_x_write();
             mine_log_write();

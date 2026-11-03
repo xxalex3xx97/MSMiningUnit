@@ -548,6 +548,7 @@ namespace
             if (nd.occ != 0 || (nd.resv != 0 && nd.resv != sid)) continue;
             if (nd.resv != sid && net_queue_blocks(nd, ships, s)) continue;
             nd.resv = sid; nd.why = purpose; nd.since = now;
+            for (auto& kv : docks) if (kv.first != d && kv.second.resv == sid) { kv.second.resv = 0; kv.second.why = P_NONE; kv.second.since = 0; }   // a grant on another dock is given up
             net_drop_wait(docks, s);
             s.granted = false;
             v.k = NetVerdict::GO; v.dock = d;

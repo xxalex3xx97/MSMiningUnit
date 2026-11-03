@@ -594,6 +594,15 @@ static void t_net_fifo()
     CHECK(d[1].resv == 12 && s[12].granted);
 }
 
+static void t_net_go_drops_other_grant()
+{
+    std::map<int, NetDock> d; std::map<int, NetShip> s; long t = 0;
+    d[2].resv = 10;                                                 // granted dock 2 earlier
+    const NetVerdict v = net_pick(d, s, t, 10, P_UNLOAD, {1, 2}, 0, 0);
+    CHECK(v.k == NetVerdict::GO && v.dock == 1);
+    CHECK(d[1].resv == 10 && d[2].resv == 0);
+}
+
 static void t_net_not_configured()
 {
     std::map<int, NetDock> d; std::map<int, NetShip> s; long t = 0;
@@ -706,7 +715,7 @@ int main()
         {"dock_limit_giveup", t_dock_limit_giveup}, {"unload_chain_more", t_unload_chain_more}, {"unload_cand", t_unload_cand}, {"refuel_stalled", t_refuel_stalled}, {"mine_radius", t_mine_radius},
         {"station", t_station},
         {"net_free_go", t_net_free_go}, {"net_busy_wait", t_net_busy_wait}, {"net_second_dock", t_net_second_dock},
-        {"net_fifo", t_net_fifo}, {"net_not_configured", t_net_not_configured}, {"net_dock_gone", t_net_dock_gone},
+        {"net_fifo", t_net_fifo}, {"net_go_drops_other_grant", t_net_go_drops_other_grant}, {"net_not_configured", t_net_not_configured}, {"net_dock_gone", t_net_dock_gone},
         {"net_full", t_net_full}, {"net_bad_holder", t_net_bad_holder}, {"unload_stalled", t_unload_stalled},
         {"net_reconcile", t_net_reconcile}, {"net_release", t_net_release}, {"net_text", t_net_text},
     };
