@@ -1003,9 +1003,14 @@ namespace
                 const SwOre& o = m.sw_list[i];
                 const double dv[3] = {o.p[0] - f.loc[0], o.p[1] - f.loc[1], o.p[2] - f.loc[2]};
                 d[i] = norm3(dv);
-                done[i] = o.done || !alive_seh(o.a);
+                done[i] = o.done;   // alive_seh only on the chosen entry below (per-entry checks on 9000 actors every pick = lag)
             }
-            const int i = sweep_nearest(d, done);
+            int i = sweep_nearest(d, done);
+            while (i >= 0 && !alive_seh(m.sw_list[(size_t)i].a))   // picked entry is gone: mark it, take the next nearest
+            {
+                m.sw_list[(size_t)i].done = true; done[(size_t)i] = 1;
+                i = sweep_nearest(d, done);
+            }
             if (i < 0)
             {
                 if (m.sw_rescans < SWEEP_RESCANS)
@@ -1028,7 +1033,13 @@ namespace
             }
             m.sw_ore = m.sw_list[(size_t)i].a;
             const std::wstring r = move_start(sid, "approach_rock", -1, m.sw_ore, nullptr);
-            if (r == STR("waiting")) sw_phase(ship, sid, m, SW_APPROACH);
+            if (r == STR("waiting"))
+            {
+                MoveJob& mv = g_mvs[sid];   // fly to the cached scan point; aim_calc_ore re-reads the ore when near it
+                std::copy(m.sw_list[(size_t)i].p, m.sw_list[(size_t)i].p + 3, mv.ore_loc);
+                mv.ore_fresh = false; mv.ore_t = 0.0;
+                sw_phase(ship, sid, m, SW_APPROACH);
+            }
             else m.sw_list[(size_t)i].done = true;
             return;
         }

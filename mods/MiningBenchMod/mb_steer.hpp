@@ -165,7 +165,10 @@ namespace
         int cid = 0;                    // PilotConsoleObject id for view_send (face/approach), resolved once at job start
         double view_t = 0.0;            // time since last view offset send
         bool aligned = false;           // (0,0) already sent for the current aligned spell
-        bool ore_on = false;            // rock_act is a floating ore actor (moves): aim from a fresh location each tick, alive_seh check
+        bool ore_on = false;            // rock_act is a floating ore actor (it drifts): fly to ore_loc, re-read the actor only near it
+        double ore_loc[3] = {0, 0, 0};  // ore: world point (uu) to fly to = the sweep scan position, updated by aim_calc_ore
+        bool ore_fresh = false;         // ore_loc was read from the actor itself (not only the scan cache)
+        double ore_t = 0.0;             // ore: seconds since the last actor read (re-read about every 1 s while near)
         int thr = 0;                    // approach: Throttle step currently applied (ramped, see phase 2)
         double thr_t = 0.0;             // approach: time since the last +1 ramp step
         std::wstring rock_name;         // kind of the chosen rock (start log / status)
@@ -370,14 +373,27 @@ namespace
         return true;
     }
 
-    // WHAT: aim_calc for a floating ore actor (MoveJob.ore_on). Ore drifts, so its location is read fresh each call (no g_rock_loc cache).
-    bool aim_calc_ore(UObject* ship, UObject* ore, double& err_deg, double a_body[3], double& dist_raw, double& radius)
+    // WHAT: aim_calc for a floating ore actor (MoveJob.ore_on). Aims at the cached point mv.ore_loc (scan position, uu).
+    //       Within ORE_REFRESH_M of it the actor location is read (first time at once, then about every 1 s) and the point is updated.
+    //       A failed read (actor gone) returns false -> the caller ends the job as 'rock lost'.
+    // WHY: floating ore settles, so the actor is read only near it. Reading every tick for 9000 actors was the lag.
+    bool aim_calc_ore(UObject* ship, MoveJob& mv, double& err_deg, double a_body[3], double& dist_raw, double& radius)
     {
+        constexpr double ORE_REFRESH_M = 100.0;
         ActFrame f;
         ActAim r;
-        double p[3] = {0, 0, 0};
-        std::wstring why;
-        if (!alive_seh(ore) || !act_frame(ship, f) || !actor_vec_call(ore, STR("K2_GetActorLocation"), p, why) || !act_aim_pt(f, p, r)) return false;
+        if (!act_frame(ship, f)) return false;
+        const double dv[3] = {mv.ore_loc[0] - f.loc[0], mv.ore_loc[1] - f.loc[1], mv.ore_loc[2] - f.loc[2]};
+        const double dist_m = norm3(dv) / MV_UU_PER_M;
+        if (dist_m <= ORE_REFRESH_M && (!mv.ore_fresh || mv.ore_t >= 1.0))
+        {
+            double p[3] = {0, 0, 0};
+            std::wstring why;
+            if (!alive_seh(mv.rock_act) || !actor_vec_call(mv.rock_act, STR("K2_GetActorLocation"), p, why)) return false;
+            std::copy(p, p + 3, mv.ore_loc);
+            mv.ore_fresh = true; mv.ore_t = 0.0;
+        }
+        if (!act_aim_pt(f, mv.ore_loc, r)) return false;
         err_deg = r.err_deg;
         std::copy(r.a_body, r.a_body + 3, a_body);
         dist_raw = r.dist_m * g_raw_per_m;
@@ -447,7 +463,7 @@ namespace
         // 1. rock still valid, aim numbers
         double a[3] = {0, 0, 0}, dist = 0.0, rad = 0.0, err = 0.0;
         if (mv.pt_on) { if (!aim_calc_pt(ship, mv, err, a, dist, rad)) { mv_finish(sid, STR("error: point lost")); return; } }
-        else if (mv.ore_on) { if (!alive_seh(mv.rock_act) || !aim_calc_ore(ship, mv.rock_act, err, a, dist, rad)) { mv_finish(sid, STR("error: rock lost")); return; } }
+        else if (mv.ore_on) { mv.ore_t += dt; if (!aim_calc_ore(ship, mv, err, a, dist, rad)) { mv_finish(sid, STR("error: rock lost")); return; } }
         else if (!actor_ok(mv.rock_act) || !aim_calc(ship, mv.rock_act, err, a, dist, rad)) { mv_finish(sid, STR("error: rock lost")); return; }
         // point flight: first-tick trace line
         if (mv.pt_on && mv.phase == 1 && mv.t < 0.5) tlog(STR("PTAIM dist_m=") + std::to_wstring(dist / g_raw_per_m) + STR(" err=") + std::to_wstring(err));
