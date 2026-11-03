@@ -76,6 +76,9 @@ namespace
         bool dwait = false, err = false;       // dwait: waiting for a dock (queued in the dock network) / err: stopped by an error (red ERROR)
         double dwait_t = 0.0;                  // seconds since the last safety retry (60 s)
         double dwait_shown = -1.0;             // dwait: the second the wait text was last written (-1 = write now)
+        int hold_ph = 0;                       // dwait sub-phase: 0 none, 1 flying/warping to the holding slot, 2 holding there
+        bool hold_warp = false;                // hold_ph 1: a warp (true) or a point flight (false)
+        double hold_t = 0.0;                   // hold_ph 1: seconds since the flight/warp to the slot started
         int dl_n = 0;                          // dock time limit: undock/wait/redock rounds used (reset on normal finish, STOP ALL, Start)
         double dl_wait_t = 0.0;                // MS_DLWAIT: seconds waited after the undock
         bool btn = false;                      // trip started by a Dock/Unload/Refuel button: m.leave is set on purpose, must not abort the dock wait
@@ -414,12 +417,32 @@ namespace
         g_item_idx[sid] = item_next(g_item_idx[sid], n, wrapped);
     }
 
+    // WHAT: ship sid gives up its holding slot: a flight to it is cancelled (hold_ph 1, ship alive), the slot is freed on every dock, phase and hold reset.
+    // WHY: the dock reservation is not touched here (a grant keeps it); net_leave_slot adds the queue/reservation part.
+    void slot_clear(int sid)
+    {
+        const auto mi = g_mine.find(sid);
+        UObject* ship = find_by_id(STR("DMSPlayerShipObject"), sid);
+        if (mi != g_mine.end() && mi->second.hold_ph == 1 && alive(ship)) mv_cancel(sid);
+        if (mi != g_mine.end()) { mi->second.hold_ph = 0; mi->second.hold_t = 0.0; mi->second.hold_warp = false; }
+        for (auto& kv : g_net_docks) net_slot_free(kv.second, sid);
+        const auto si = g_net_ships.find(sid);
+        if (si != g_net_ships.end()) { si->second.slot = 0; si->second.phase = 0; }
+    }
+
+    // WHAT: ship sid leaves the dock network for good (stop, halt, new trip, ship gone): holding slot cleared (slot_clear), then net_leave.
+    void net_leave_slot(int sid)
+    {
+        slot_clear(sid);
+        net_leave(sid);
+    }
+
     // WHAT: cancel this ship's running dock/undock job (same steps as stop_all: erase job, order/filter state, autopilot off).
     // WHY: a new dock trip or undock must not fail with "dock job already running for this ship".
     void cancel_dock_job(UObject* ship, int sid)
     {
         warp_cancel(sid);   // a warp waiting for this undock / aiming is cancelled too (a charging one finishes)
-        net_leave(sid);     // a new dock pick follows: the old queue place and reservation go
+        net_leave_slot(sid);     // a new dock pick follows: the old queue place and reservation go
         g_unl_ores.erase(sid);
         bool any = false;
         for (size_t i = 0; i < g_jobs.size();)
@@ -508,12 +531,39 @@ namespace
         mset(sid, m, STR("Dock full, undocking to try the next dock"), STR("Dock full, next dock"));
     }
 
+    // WHAT: cargo sum of ores that have an unload dock (names = those ores); nodock = ores in cargo with no dock list.
+    int64_t unload_pending(UObject* ship, const Config& c, std::wstring& names, std::wstring& nodock)
+    {
+        int64_t sum = 0;
+        for (int i = 0; i < N_ORE; ++i)
+        {
+            std::wstring w;
+            UObject* it = item_c(ORE_ITEM[i], w);
+            const int64_t have = alive(it) ? inv_total(ship, it) : 0;
+            if (have <= 0) continue;
+            if (c.ore_docks[i].empty()) nodock += widen(ORE_KEY[i]) + STR(" ");
+            else { sum += have; names += widen(ORE_KEY[i]) + STR(" "); }
+        }
+        return sum;
+    }
+
     // start a dock trip chosen by the auto rule. Failure -> HALT with the reason.
     void trip_begin(UObject* ship, int sid, MineSt& m, const std::wstring& why, const std::string& force = "")
     {
         cancel_dock_job(ship, sid);
         std::wstring w;
         m.trip = force.empty() ? auto_rule(sid, ship, w) : force;
+        {
+            // a refuel with ore of a dock in cargo unloads first (Control rule); the refuel follows from CHECK with empty cargo
+            std::wstring nm, nd;
+            const bool ore = unload_pending(ship, eff_cfg(sid), nm, nd) > 0;
+            if (m.trip == "dock_refuel" && net_unload_first(ore, P_REFUEL))
+            {
+                m.trip = "dock_mining";
+                mlog(sid, STR("Control: ") + widen(net_ship_label(sid)) + STR(" must unload first, then refuel"));
+                log_line(STR("CONTROL ship=") + std::to_wstring(sid) + STR(" must unload first, then refuel"));
+            }
+        }
         std::wstring wi;
         UObject* it0 = item_c(eff_cfg(sid).resource, wi);
         m.unl_have = alive(it0) ? inv_total(ship, it0) : -1;
@@ -582,22 +632,6 @@ namespace
         return false;
     }
 
-    // WHAT: cargo sum of ores that have an unload dock (names = those ores); nodock = ores in cargo with no dock list.
-    int64_t unload_pending(UObject* ship, const Config& c, std::wstring& names, std::wstring& nodock)
-    {
-        int64_t sum = 0;
-        for (int i = 0; i < N_ORE; ++i)
-        {
-            std::wstring w;
-            UObject* it = item_c(ORE_ITEM[i], w);
-            const int64_t have = alive(it) ? inv_total(ship, it) : 0;
-            if (have <= 0) continue;
-            if (c.ore_docks[i].empty()) nodock += widen(ORE_KEY[i]) + STR(" ");
-            else { sum += have; names += widen(ORE_KEY[i]) + STR(" "); }
-        }
-        return sum;
-    }
-
     // trip finished at the dock: autopilot off, then continue / stop. Orders are left in place (next build clears them, undock reuses a DeliverOrder).
     void trip_end(UObject* ship, int sid, MineSt& m, const Config& c)
     {
@@ -605,7 +639,7 @@ namespace
         set_autopilot(sid, false, err);
         zero_all(ship);
         // hull hit: fled to dock, the trip is over for good
-        if (m.flee) { m.flee = false; m.fin = false; m.err = true; m.st = MS_HALT; mset(sid, m, STR("ERROR: hull damaged, fled to dock, stopped"), STR("ERROR: ship was attacked, fled to dock, stopped")); return; }
+        if (m.flee) { m.flee = false; m.fin = false; m.err = true; m.st = MS_HALT; mset(sid, m, STR("ERROR: hull damaged, fled, holding near dock, stopped"), STR("ERROR: ship was attacked, fled, holding near dock, stopped")); return; }
         // unload chain: another dock trip while docked ores are still in cargo and it shrank; an ore with no dock left = HALT
         if (!is_refuel(m) && !g_dock_pick.count(sid))
         {
@@ -1262,7 +1296,7 @@ namespace
         // dock busy: no job runs; the ship waits in the dock queue (mb_net.hpp). The grant starts the job; a 60 s poll is the safety net.
         if (m.dwait)
         {
-            if (m.leave && !m.btn) { net_leave(sid); m.dwait = false; m.st = MS_HALT; mset(sid, m, STR("stopped while waiting for dock")); return; }
+            if (m.leave && !m.btn) { net_leave_slot(sid); m.dwait = false; m.st = MS_HALT; mset(sid, m, STR("stopped while waiting for dock")); return; }
             m.dwait_t += dt;
             const auto gi = g_net_ships.find(sid);
             const bool granted = gi != g_net_ships.end() && gi->second.granted;
@@ -1273,6 +1307,17 @@ namespace
                 return;
             }
             m.dwait_t = 0.0; m.dwait_shown = -1.0;
+            // granted: the ship leaves its holding spot (flight cancelled, stopped) and the reserved dock job starts
+            std::wstring cleared_dock;
+            if (granted)
+            {
+                for (const auto& kv : g_net_docks) if (kv.second.resv == sid) cleared_dock = widen(net_dock_label(kv.first));
+                mv_cancel(sid);
+                zero_all(ship);
+                slot_clear(sid);
+                const auto gs = g_net_ships.find(sid);
+                if (gs != g_net_ships.end()) gs->second.phase = 3;   // cleared: the job is starting
+            }
             g_job_res.erase(sid);
             const std::wstring r = job_start(sid, m.trip, -1);
             if (r == STR("waiting dock")) { dock_wait_text(sid, m); return; }
@@ -1282,7 +1327,9 @@ namespace
             if (net_real_error(r)) { g_flee_pick.erase(sid); m.st = MS_HALT; m.err = true; mset(sid, m, STR("ERROR: ") + r.substr(7), STR("ERROR: ") + r.substr(7)); return; }
             if (r != STR("waiting")) { g_flee_pick.erase(sid); m.st = MS_HALT; mset(sid, m, STR("dock trip failed: ") + r); return; }
             g_flee_pick.erase(sid);
-            mset(sid, m, STR("dock free, going to dock"), STR("Dock free, going"));
+            if (cleared_dock.empty()) for (const auto& kv : g_net_docks) if (kv.second.resv == sid) cleared_dock = widen(net_dock_label(kv.first));
+            const std::wstring what = is_refuel(m) ? STR("Refuel") : STR("Unload");
+            mset(sid, m, STR("Cleared for ") + what + STR(" ") + cleared_dock, STR("Control: ") + widen(net_ship_label(sid)) + STR(" cleared for ") + what + STR(" ") + cleared_dock);
             return;
         }
         for (const DockJob& j : g_jobs) if (j.sid == sid) return;
@@ -1430,7 +1477,7 @@ namespace
     {
         if (!g_compat.ok(F_MINING) && m.run) { m.st = MS_HALT; m.run = false; m.result = STR("COMPAT: mining disabled"); return; }
         UObject* ship = find_by_id(STR("DMSPlayerShipObject"), sid);
-        if (!alive(ship)) { chunk_hold_release(sid); net_leave(sid); m.st = MS_OFF; mset(sid, m, STR("ship not found")); return; }
+        if (!alive(ship)) { chunk_hold_release(sid); net_leave_slot(sid); m.st = MS_OFF; mset(sid, m, STR("ship not found")); return; }
         const Config c = eff_cfg(sid);
         const bool on = m.run && g_cfg.enabled == 1 && c.enabled == 1;
         m.t += dt;
@@ -1696,6 +1743,24 @@ namespace
         return m.st != MS_OFF && m.st != MS_HALT;
     }
 
+    // WHAT: queue score input of ship sid (mb_net.hpp declares it): cargo fill %, fuel low (auto rule says refuel), hull hit (flee), ore for a dock in cargo.
+    // WHY: net_pick ranks waiting ships by these (fullest cargo first, then low fuel, then waiting time). purpose is not used yet.
+    NetReq net_req_of(int sid, Purpose purpose)
+    {
+        (void)purpose;
+        NetReq r;
+        const auto mi = g_mine.find(sid);
+        if (mi != g_mine.end()) { r.cargo_pct = std::max(0, mi->second.cargo_pct); r.hull_crit = mi->second.flee; }
+        UObject* ship = find_by_id(STR("DMSPlayerShipObject"), sid);
+        if (alive(ship))
+        {
+            std::wstring w, nm, nd;
+            r.fuel_low = auto_rule(sid, ship, w) == "dock_refuel";
+            r.has_dock_ore = unload_pending(ship, eff_cfg(sid), nm, nd) > 0;
+        }
+        return r;
+    }
+
     // WHAT: MiningLog.txt, one line per Log tab entry: "<ship id>|<hh:mm:ss>|<text>", ships in bench order, oldest first. Written only when changed.
     void mine_log_write()
     {
@@ -1733,7 +1798,7 @@ namespace
     {
         warp_cancel(sid);   // before the early return: ships without a MineSt too
         chunk_hold_release(sid);
-        net_leave(sid);     // leaves the dock queue (STOP ALL on a waiter)
+        net_leave_slot(sid);     // leaves the dock queue (STOP ALL on a waiter)
         g_flee_pick.erase(sid);
         auto it = g_mine.find(sid);
         if (it == g_mine.end()) return;
@@ -1756,7 +1821,7 @@ namespace
         MineSt& m = g_mine[sid];
         if (start)   // stopping is always allowed
         {
-            net_leave(sid);   // a new loop starts with no old queue place
+            net_leave_slot(sid);   // a new loop starts with no old queue place
             if (!g_compat.done) return STR("error: COMPAT self-test pending, try again in a few seconds");
             if (!g_compat.ok(F_MINING))
             {

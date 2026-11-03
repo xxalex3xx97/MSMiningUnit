@@ -576,6 +576,19 @@ namespace
         s.sid = sid; s.intent = purpose; s.wanted = live;
         const double waited = s.ticket != 0 ? now - s.wait_since : 0;   // time already queued (the score ages with it)
         s.req = req; s.prio = net_score(req, purpose, waited, false); s.prio_why = net_prio_why(req, waited, false);
+        // a fleeing ship takes no dock slot: never queued, never granted. It waits near the dock (holding slot) unless it already sits at one.
+        bool at_dock = false;
+        for (int d : live) at_dock = at_dock || docks[d].occ == sid;
+        if (purpose == P_FLEE && !at_dock)
+        {
+            net_unqueue(docks, sid);
+            for (auto& kv : docks) if (kv.second.resv == sid) { kv.second.resv = 0; kv.second.why = P_NONE; kv.second.since = 0; }
+            if (s.wait_since == 0) s.wait_since = now;
+            s.granted = false; s.ticket = 0;
+            s.waits_dock = live.front(); s.blocked_by = docks[live.front()].occ; s.reason = NR_WAIT_QUEUE;
+            v.k = NetVerdict::WAIT; v.dock = live.front(); v.holder = s.blocked_by; v.reason = NR_WAIT_QUEUE;
+            return v;
+        }
         std::vector<int> open;
         for (int d : live) if (!docks[d].full) open.push_back(d);
         for (int d : open)

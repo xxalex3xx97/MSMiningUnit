@@ -22,8 +22,7 @@ namespace
     std::map<int, std::string> g_net_ship_names;   // ship id -> display name (refreshed in net_tick; missing = not readable)
     std::map<int, DockPos> g_net_dockpos;          // dock id -> where the dock is (learned from a docked ship, cached in DockPos.txt)
 
-    // D2 stub: the real one (cargo, fuel, hull, dock ore of the ship) is net_req_of in mb_mining.hpp (D3). Until then every ship scores the same.
-    NetReq net_req_of(int, Purpose) { return NetReq(); }
+    NetReq net_req_of(int sid, Purpose purpose);   // mb_mining.hpp: cargo, fuel, hull and dock ore of ship sid (queue score input)
 
     // WHAT: text cleaned for the '|' separated files and one-line logs.
     std::string net_clean(std::string s)

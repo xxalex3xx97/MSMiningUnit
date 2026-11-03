@@ -803,6 +803,19 @@ static void t_net_non_preempt()
     CHECK(d[1].occ == 7 && d[1].resv == 0 && !s[30].granted);   // the holder is never sent away by a grant
 }
 
+static void t_net_flee_no_slot()
+{
+    std::map<int, NetDock> d; std::map<int, NetShip> s; long t = 0;
+    const NetVerdict v = net_pick(d, s, t, 40, P_FLEE, NetReq(), {1}, 0, 0);   // dock 1 is free, but a flee takes no slot
+    CHECK(v.k == NetVerdict::WAIT && v.dock == 1 && d[1].resv == 0 && d[1].queue.empty());
+    CHECK(s[40].waits_dock == 1 && s[40].ticket == 0);
+    net_grant_tick(d, s, 1);
+    CHECK(d[1].resv == 0 && !s[40].granted);                                  // never granted
+    std::map<int, NetDock> d2; std::map<int, NetShip> s2;
+    d2[1].occ = 41;                                                           // a flee ship already docked here keeps its dock
+    CHECK(net_pick(d2, s2, t, 41, P_FLEE, NetReq(), {1}, 0, 0).k == NetVerdict::GO && d2[1].resv == 41);
+}
+
 static void t_net_slots()
 {
     NetDock nd;
@@ -903,7 +916,7 @@ int main()
         {"net_log_gate", t_net_log_gate}, {"net_self_occupant", t_net_self_occupant}, {"net_queue_never_occupant", t_net_queue_never_occupant}, {"net_blocked_by_never_self", t_net_blocked_by_never_self},
         {"net_reconcile", t_net_reconcile}, {"net_release", t_net_release}, {"net_text", t_net_text},
         {"net_score_order", t_net_score_order}, {"net_higher_cargo_wins", t_net_higher_cargo_wins}, {"net_non_preempt", t_net_non_preempt},
-        {"net_slots", t_net_slots}, {"net_slot_pos", t_net_slot_pos}, {"net_line_spacing", t_net_line_spacing},
+        {"net_flee_no_slot", t_net_flee_no_slot}, {"net_slots", t_net_slots}, {"net_slot_pos", t_net_slot_pos}, {"net_line_spacing", t_net_line_spacing},
         {"net_clear_expired", t_net_clear_expired}, {"net_unload_first", t_net_unload_first},
     };
     for (const Case& c : cases)
