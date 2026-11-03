@@ -359,7 +359,7 @@ ship tick: if JumpAnimProgress &gt; 0: JumpAnimProgress++; UpdateJumpChargeProgr
 <li><span class="badge v">VERIFIED</span> The player's dock flow: <code>SetShipAutopilot(ship, true)</code> + <code>SkipToOrder(ship, 0)</code> on the existing <b>DeliverOrder</b>. An order created with <code>NewShipOrderInput</code> alone does not move the ship.</li>
 <li><code>DeliverOrder</code>: <code>Dock, DockID, WaitConditions[]</code>; tick <code>FUN_144298b60</code> uses <code>FlyTowards</code> (dock approach), docks on arrival via <code>FUN_14428c350</code>. <code>WaitOrder</code> / <code>WaitForTimeOrder</code> never fly.</li>
 <li>Mod job layer (<code>mb_dockjob.hpp</code>): one job per ship: <code>dock_mining</code> (unload), <code>dock_refuel</code>, <code>dock_auto</code>, <code>undock</code>. Stages 3: clear orders, build the refuel/unload list via <code>ob_*</code> (<code>mb_orders.hpp</code>) and filters via <code>pf_*</code> (<code>mb_filters.hpp</code>). Undock uses the old "reuse path" with a leave-dock watch (<code>undock_tick</code>).</li>
-<li><b>Busy docks</b>: occupancy is derived (<code>dock_busy</code>: another ship has that DockID/Dock or a job targets it). Status "Waiting for dock", retry backoff 2, 5, 10, 20, 40, 60 s forever. Occupancy exported to the UI (<code>dock_occ_write</code>).</li>
+<li><b>Busy docks</b>: occupancy is derived (<code>dock_busy</code>: another ship has that DockID/Dock or a job targets it). Status "Waiting for dock", a job still blocked by a busy dock after 30 s ends with "waiting dock". Occupancy exported to the UI (<code>dock_occ_write</code>).</li>
 <li><b>Dock time limit</b> (<code>dock_hold_limit</code>, default 300 s, 0 = off): on hit, <code>MS_DLWAIT</code> retry: undock + 30 s wait + redo the same trip kind, up to <code>MINE_DOCK_RETRIES=10</code>; the 11th hit halts non-error ("Dock time limit reached 10 times, undocked, idle").</li>
 <li>Dock names: <code>DisplayName</code> TextProperty (game-made docks have an empty <code>Name</code>). <code>dock_id</code> can be a number or a name.</li>
 <li>Game windows: <code>WBP_ShipAutopilot_C</code> opens natively via <code>ShowWidget(...)</code>.</li>
@@ -416,7 +416,7 @@ ship tick: if JumpAnimProgress &gt; 0: JumpAnimProgress++; UpdateJumpChargeProgr
 
 <!-- ============ MOD ============ -->
 <h2 id="mod">MiningBenchMod (C++ UE4SS mod)</h2>
-<p>Header-only split, one responsibility per file, each starting with a banner (WHAT / WHY / DEPENDS ON / USED BY / GAME FACTS). No game SDK headers: every field and function is found by reflection name. Include order (dependency order): <code>mb_version, mb_common, mb_config, mb_ue, mb_math, mb_docks, mb_diag, mb_ships, mb_weapons, mb_orders, mb_filters, mb_cmdstate, mb_rocks, mb_steer, mb_dockjob, mb_pin, mb_warp, mb_warpreal, mb_belt, mb_mining, mb_chunkhold, mb_testcmd</code>; <code>dllmain.cpp</code> is only the entry point and the tick glue.</p>
+<p>Header-only split, one responsibility per file, each starting with a banner (WHAT / WHY / DEPENDS ON / USED BY / GAME FACTS). No game SDK headers: every field and function is found by reflection name. Include order (dependency order): <code>mb_version, mb_common, mb_config, mb_ue, mb_math, mb_docks, mb_ships, mb_weapons, mb_orders, mb_filters, mb_cmdstate, mb_rocks, mb_steer, mb_net, mb_dockjob, mb_pin, mb_warp, mb_warpreal, mb_belt, mb_mining, mb_chunkhold, mb_testcmd</code>; <code>dllmain.cpp</code> is only the entry point and the tick glue.</p>
 
 <h3 id="files">Source map</h3>
 <table>
@@ -426,7 +426,7 @@ ship tick: if JumpAnimProgress &gt; 0: JumpAnimProgress++; UpdateJumpChargeProgr
 <tr><td><code>mb_ue.hpp</code></td><td>586</td><td>reflection plumbing: property get/set, PNum/PVector/Quat readers, ProcessEvent calls, struct dumps, inventory totals</td></tr>
 <tr><td><code>mb_math.hpp</code></td><td>75</td><td>quaternion/vector helpers, no UE calls</td></tr>
 <tr><td><code>mb_docks.hpp</code></td><td>222</td><td>dock + item lookup, <code>docks.txt</code>/<code>items.txt</code>, MiningBeacon finder</td></tr>
-<tr><td><code>mb_diag.hpp</code></td><td>615</td><td>diagnostics, class dumps, manual-run recorder</td></tr>
+<tr><td><code>mb_net.hpp</code></td><td>348</td><td>dock network: one queue per dock, reservations, holding slots, <code>NetDocks.txt</code> / <code>NetShips.txt</code></td></tr>
 <tr><td><code>mb_ships.hpp</code></td><td>196</td><td>bench-ship scan, <code>ships.txt</code>, one-shot cleanup of old orders/beacons</td></tr>
 <tr><td><code>mb_weapons.hpp</code></td><td>125</td><td>weapon lookup and firing</td></tr>
 <tr><td><code>mb_orders.hpp</code></td><td>411</td><td>AddInputCommand wrapper, order creation, <code>OrderBuild</code> step machine <code>ob_*</code></td></tr>
@@ -507,7 +507,7 @@ ship tick: if JumpAnimProgress &gt; 0: JumpAnimProgress++; UpdateJumpChargeProgr
 <tr><td><code>trip_begin / trip_end / go_home / after_undock</code></td><td>dock-trip lifecycle (trip kinds: unload, refuel, ...; <code>force</code> param for button trips)</td></tr>
 <tr><td><code>belt_go(ship, sid, m, cfg, item, mark_cur)</code></td><td>pick a belt and start the real warp</td></tr>
 <tr><td><code>warp_belt_cmd(sid)</code></td><td>"Warp to belt" button / <code>warp_belt</code> command</td></tr>
-<tr><td><code>rock_in_range / rock_scan / rockscan_log / cargo_full / cargo_pct / hold_left</code></td><td>checks</td></tr>
+<tr><td><code>rock_in_range / cargo_full / cargo_pct / hold_left</code></td><td>checks</td></tr>
 <tr><td><code>flee_now / player_flies</code></td><td>damage reaction</td></tr>
 <tr><td><code>mine_status_write / mine_status_x_write / mine_log_write / mlog / mset</code></td><td>UI status files</td></tr>
 <tr><td><code>mine_set_bench(bench)</code></td><td>register current bench ships (also drops stale chunk holds)</td></tr>
@@ -547,7 +547,9 @@ ship tick: if JumpAnimProgress &gt; 0: JumpAnimProgress++; UpdateJumpChargeProgr
 <tr><td><code>MiningStatus.txt</code></td><td>C++</td><td><code>id|name|simple(idle/mining/traveling/refueling/unloading)|state: result</code></td></tr>
 <tr><td><code>MiningStatusX.txt</code></td><td>C++ 1 s + at job start/end</td><td><code>id|run|cargo%|speed m/s|next|left items or -1|job|jobphase|resource|sys,chx,chy,chz</code></td></tr>
 <tr><td><code>MiningLog.txt</code></td><td>C++ on change</td><td><code>id|hh:mm:ss|text</code>, last 20 per ship</td></tr>
-<tr><td><code>MiningTestStatus.txt</code>, <code>MiningTestRocks.txt</code></td><td>C++</td><td>Test tab status / rock list</td></tr>
+<tr><td><code>NetDocks.txt</code></td><td>C++ every 1 s</td><td>dock network: <code>id|raw status|occupant|purpose|since s|queue|...|name|cleared</code>, one row per dock</td></tr>
+<tr><td><code>NetShips.txt</code></td><td>C++ every 1 s</td><td>ships in the dock network: name, holding slot, priority, phase (none|flying|holding|cleared)</td></tr>
+<tr><td><code>MiningOre.txt</code></td><td>C++ on change</td><td><code>count|unix seconds</code> of floating ore (Collect ore button label)</td></tr>
 <tr><td><code>MiningPinned.txt</code></td><td>C++</td><td>last pinned sector id, 0 = none</td></tr>
 <tr><td><code>Sectors.txt</code></td><td>C++ every 10 s</td><td><code>id|name|ores|ore ids|sys,chunk</code> (field 5 for km)</td></tr>
 <tr><td><code>docks.txt</code>, <code>items.txt</code>, <code>ships.txt</code></td><td>C++</td><td>pickers for the UI</td></tr>
@@ -565,11 +567,11 @@ ship tick: if JumpAnimProgress &gt; 0: JumpAnimProgress++; UpdateJumpChargeProgr
 <tr><td><code>idle_seconds</code></td><td>go home after N idle seconds; also refuel stall halt (0 = off)</td></tr>
 <tr><td><code>dock_hold_limit</code></td><td>default 300 s, 0 off</td></tr>
 <tr><td><code>fuel_margin</code>, <code>fuel_amount</code></td><td>fuel min / refill amount</td></tr>
-<tr><td>ore unload toggles, warp options</td><td>per fuel/ore index, flee / warp-on-start / warp-when-no-ore</td></tr>
+<tr><td>warp options</td><td>flee / warp-on-start / warp-when-no-ore</td></tr>
 </table>
 
 <h3 id="logging">Logging</h3>
-<p><code>log_line()</code> drops everything except lines containing a <b>keep-list word</b> unless debug is on. Current keep words include <code>warpreal, fuelwarp, fuelchk, rockscan, rockfallback, chunkhold, ...</code>. <b>Gotcha:</b> ROCKSCAN lines were silently dropped for a whole session because the word was not in the list. Add the word when adding a log tag. Logs go to <code>UE4SS.log</code>.</p>
+<p><code>log_line()</code> drops everything except lines containing a <b>keep-list word</b> unless debug is on. Current keep words include <code>warpreal, fuelwarp, fuelchk, sweep, chunkhold, ...</code>. <b>Gotcha:</b> a log line without a keep word is silently dropped unless the Debug log switch is on. Add the word when adding a log tag. Logs go to <code>UE4SS.log</code>.</p>
 
 <!-- ============ LUA / UI ============ -->
 <h2 id="lua">Lua &amp; UI layer</h2>
@@ -585,7 +587,7 @@ ship tick: if JumpAnimProgress &gt; 0: JumpAnimProgress++; UpdateJumpChargeProgr
 <ul>
 <li><b>F4</b> toggles the window (Fleet Control &gt; Remote Control with ship modal); the Mining Unit block opens the same window with a fixed title; F closes.</li>
 <li>Boxes: Control (Emergency stop, Start/Stop loop), Actions (Dock/Undock/Refuel/Unload = stop that ship, then act 400 ms later), tabs <b>Ship | Items | Operation | Log</b>, Status (Idle|ETA, Next, Cargo %, Speed, ore icon).</li>
-<li>Operation tab: cards for fuel min/max, ore unload toggles with icons, <b>Warp management</b> (Sector Selector modal with ore icons + km column, AUTO default, warp fuel km rule, warp on Start / no ore left, flee on hull drop), dock time limit, "Set as default".</li>
+<li>Operation tab: cards for fuel min/max, Unload ores card (an ore unloads when it has an unload dock), Collect ore button (floating ore count from MiningOre.txt), <b>Warp management</b> (Sector Selector modal with ore icons + km column, AUTO default, warp fuel km rule, warp on Start / no ore left, flee on hull drop), dock time limit, "Set as default". Docks tab (index 4): dock network rows from NetDocks.txt / NetShips.txt.</li>
 <li>Selects are one modal component (search + scroll, 40 rows). Part 7 added a multi-select fleet picker (CN 40: fleets as collapsible groups, tick box per ship, Done button; fleet tags deduped).</li>
 </ul>
 <h3 id="umg">UMG notes</h3>

@@ -19,7 +19,7 @@ MIT, see `LICENSE`. It covers our own code only.
 
 ## What it does
 
-A Mining Unit window (F4) automates mining for the bench ships: mine rocks, dock, refuel, unload, and warp to a belt, with per-ship settings saved in `MiningBench.ini`. Ships act only through the game's normal input commands (`AddInputCommand`), the same path the player's controls use. The mod writes no simulation state of its own. It is designed to be co-op safe for that reason, but it has been tested in single-player only. It is made for single-player.
+A Mining Unit window (F4) automates mining for the bench ships: mine rocks, collect floating ore, dock, refuel, unload, and warp to a belt, with per-ship settings saved in `MiningBench.ini`. Ships act only through the game's normal input commands (`AddInputCommand`), the same path the player's controls use. The mod writes no simulation state of its own. It is designed to be co-op safe for that reason, but it has been tested in single-player only. It is made for single-player.
 
 ## Install
 
@@ -72,6 +72,7 @@ Build and asset scripts read these environment variables. Unset = the built-in f
 | `mods/MiningBenchMod/` | the mining C++ mod (release): `dllmain.cpp` entry point, `mb_*.hpp` header-only split (each file starts with a WHAT / WHY / DEPENDS ON / USED BY banner) |
 | `mods/MiningBenchMod/mb_logic.hpp` | pure logic (config/INI parse, rule maths), no game or Windows calls; unit tested |
 | `mods/MiningBenchMod/mb_mining.hpp` | mining loop state machine per ship (`mine_step` and `st_*` states), status and log output |
+| `mods/MiningBenchMod/mb_net.hpp` | dock network: one queue per dock, reservations, holding slots (Docks tab data) |
 | `mods/MiningUnitUI/` | Mining Unit window (release Lua): `Scripts/main.lua` (F4 / ESC / F keys), `Scripts/wbp_loader.lua` (widget loader, data) |
 | `mods/MSDevMenu/` | Dev Menu (dev only, separate mod, NOT in the release zip): F3 window, cheats, test buttons, probes |
 | `ue/MiningUnitUI/` | Unreal project for the window and the mining building block (art, paste trees, cook scripts) |
@@ -81,7 +82,7 @@ Build and asset scripts read these environment variables. Unset = the built-in f
 | `build.ps1` | compile the DLL (`-Install` copies it into the game; game must be closed) |
 | `docs/` | `ASSETS.md` (art origin and license), `DevReference.html` (developer reference, not in the zip) |
 
-Include order (dependency order, `dllmain.cpp`): `mb_version, mb_common, mb_pattern, mb_compat, mb_config, mb_ue, mb_math, mb_docks, mb_ships, mb_weapons, mb_orders, mb_filters, mb_cmdstate, mb_rocks, mb_steer, mb_dockjob, mb_pin, mb_warp, mb_warpreal, mb_belt, mb_mining, mb_natives, mb_chunkhold, mb_devcmd, mb_testcmd, mb_compat_run`.
+Include order (dependency order, `dllmain.cpp`): `mb_version, mb_common, mb_pattern, mb_compat, mb_config, mb_ue, mb_mscore, mb_math, mb_docks, mb_ships, mb_weapons, mb_orders, mb_filters, mb_cmdstate, mb_rocks, mb_steer, mb_net, mb_dockjob, mb_pin, mb_warp, mb_warpreal, mb_belt, mb_mining, mb_natives, mb_chunkhold, mb_devcmd, mb_testcmd, mb_compat_run`.
 
 ## Build and test
 Needs VS2022 BuildTools and a RE-UE4SS checkout at `<repo>\build\RE-UE4SS` (not in git).
