@@ -351,6 +351,15 @@ namespace
         return false;
     }
 
+    constexpr double WARP_SETTLE_MIN_S = 2.0, WARP_SETTLE_MAX_S = 30.0, WARP_ARRIVE_M = 1000.0;
+    // WHAT: far-trip warp settled (dock job stage 4): at least WARP_SETTLE_MIN_S, then the ship reads within WARP_ARRIVE_M of the dock (dock_dist_m >= 0) or WARP_SETTLE_MAX_S has passed.
+    // WHY: the dock order is issued only after the warp has landed (no order runs during the teleport).
+    inline bool warp_settle_done(double t, double dock_dist_m)
+    {
+        if (t < WARP_SETTLE_MIN_S) return false;
+        return (dock_dist_m >= 0.0 && dock_dist_m <= WARP_ARRIVE_M) || t >= WARP_SETTLE_MAX_S;
+    }
+
     // WHAT: cargo fill % from slot counts: other / (isz - fuel) * 100, clamped 0..100. 0 when no non-fuel slot is used, -1 when the cargo has no free slot base.
     int cargo_pct_calc(int isz, int fuel_s, int other_s)
     {

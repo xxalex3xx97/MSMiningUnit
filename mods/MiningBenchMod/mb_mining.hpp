@@ -1433,6 +1433,22 @@ namespace
         return true;
     }
 
+    // WHAT: ship to dock distance in m (chunk + local position vs the dock's cached position). -1 when the dock position or the ship position is unknown, or another system.
+    // WHY: the far trip warp settle (jobs_tick stage 4) waits until the ship reads near the dock.
+    double trip_dock_dist_m(UObject* ship, int dock)
+    {
+        const auto pi = g_net_dockpos.find(dock);
+        if (pi == g_net_dockpos.end() || !pi->second.known) return -1.0;
+        const DockPos& dp = pi->second;
+        int64_t ch[3] = {0, 0, 0};
+        double loc[3] = {0, 0, 0};
+        if (!(sys_id(ship) == dp.sys && get_chunk(ship, ch) && get_loc(ship, loc))) return -1.0;
+        double a[3], dk[3];
+        dock_abs_m(ch, loc, a);
+        dock_abs_m(dp.ch, dp.loc, dk);
+        return std::sqrt((a[0] - dk[0]) * (a[0] - dk[0]) + (a[1] - dk[1]) * (a[1] - dk[1]) + (a[2] - dk[2]) * (a[2] - dk[2]));
+    }
+
     // WHAT: MS_TRIP: dock trip (job result).
     void st_trip(UObject* ship, int sid, MineSt& m, double dt, const Config& c)
     {

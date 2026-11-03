@@ -28,6 +28,7 @@ namespace
 {
     void mine_status_x_write();   // mb_mining.hpp (same anonymous namespace)
     bool trip_warp_try(UObject* ship, int sid, int dock);   // mb_mining.hpp: warp a far dock trip (true = teleport sent)
+    double trip_dock_dist_m(UObject* ship, int dock);       // mb_mining.hpp: ship to dock distance in m (-1 = unknown)
     void chunk_hold_target_clear(int sid);                  // mb_chunkhold.hpp: back to the ship's own chunk
 
     // WHAT: undock state text for the status file (undock_state=): "n/a", "docked", "undocking t=..", "free", "error".
@@ -246,6 +247,74 @@ namespace
         return r;
     }
 
+    // WHAT: the order part of a dock job start (job_start_run step 5b-7, also run by jobs_tick stage 4 after a far trip warp).
+    //       4 order list readable; 5 job base = order count now (growth = new order), start log line.
+    //       5b dock_mining / dock_refuel: clear the orders and build the refuel or unload list (stage 3 waits for it).
+    //       6 reuse the ship's existing DeliverOrder (point it at the dock, stage 1). 7 otherwise a new DeliverOrder (stage 0).
+    //       undock: step 6 or 7 too (it leaves the dock by a dock order to another dock).
+    // WHAT: returns "" when started (j.stage set; the caller stores j), else the error text.
+    // WHY: the far trip warp runs before this, so no dock order is active during the teleport. One unit, so both paths share it.
+    std::wstring dock_order_issue(DockJob& j, UObject* ship)
+    {
+        const int sid = j.sid, dk = j.dock;
+        const std::string cmd = j.cmd;
+        TArray<int32_t>* ids = int_array(ship, STR("OrderIDs"));
+        if (!ids) return STR("error: OrderIDs unreadable");
+        j.base = ids->Num();
+        tlog(STR("start ") + widen(cmd) + STR(" ship=") + std::to_wstring(sid) + STR(" dock=") + std::to_wstring(dk) +
+             STR(" base_orders=") + std::to_wstring(j.base));
+        if (cmd != "undock")
+        {
+            const Config c = eff_cfg(sid);
+            const bool refuel = cmd == "dock_refuel";
+            std::vector<OBStep> st;
+            if (refuel)
+            {
+                std::vector<std::pair<std::string, int>> fuels;
+                for (int i = 0; i < N_FUEL; ++i) if (c.fuel[i].on) fuels.push_back({FUEL_ITEM[i], c.fuel[i].amount});
+                if (fuels.empty()) return STR("error: no fuel enabled");
+                std::wstring ferr;
+                if (!pf_start(sid, fuels, ferr)) return STR("error: ") + ferr;
+                st = ob_plan_refuel(dk, fuels, c.wait_seconds);
+            }
+            else
+            {
+                g_unl_ores[sid] = j.unl;
+                std::vector<std::string> ores;
+                for (int i : j.unl) ores.push_back(ORE_ITEM[i]);
+                st = ob_plan_unload(dk, ores, c.wait_seconds);
+            }
+            ob_start(sid, st);
+            j.stage = 3;
+            return STR("");
+        }
+        // 6. reuse the ship's existing DeliverOrder (player flow: SetShipAutopilot + SkipToOrder on the existing order)
+        FProperty* op = ship->GetPropertyByNameInChain(STR("Orders"));
+        auto* orders = (op && CastField<FArrayProperty>(op)) ? ship->GetValuePtrByPropertyNameInChain<TArray<UObject*>>(STR("Orders")) : nullptr;
+        int reuse_idx = -1;
+        for (int32_t i = 0; orders && i < orders->Num(); ++i)
+        {
+            UObject* o = (*orders)[i];
+            if (alive(o) && std::wstring(o->GetClassPrivate()->GetName()).find(STR("DeliverOrder")) != std::wstring::npos) { reuse_idx = i; break; }
+        }
+        if (reuse_idx >= 0)
+        {
+            j.new_order = obj_id((*orders)[reuse_idx]);
+            j.new_index = reuse_idx;
+            j.stage = 1;
+            std::wstring err;
+            if (!send_update_order_dock(j.new_order, dk, err)) return STR("error: ") + err;
+            tlog(STR("reuse order id=") + std::to_wstring(j.new_order) + STR(" index=") + std::to_wstring(j.new_index) + STR(" DockID=") + std::to_wstring(dk));
+            if (sid == g_cmd.ship) g_cmd.order_id = j.new_order;
+            return STR("");
+        }
+        // 7. no DeliverOrder yet: create one (stage 0 waits for it to appear in OrderIDs)
+        std::wstring err;
+        if (!send_new_deliver_order(sid, err)) return STR("error: ") + err;
+        j.stage = 0;
+        return STR("");
+    }
+
     // WHAT: start a dock_mining, dock_refuel or undock job for ship sid. Returns "waiting" when started, else the error text.
     //       dock_auto picks dock_refuel or dock_mining with auto_rule.
     //       Steps: 1 refuse if a dock job already runs for this ship. 2 find the ship. 3 pick the target dock:
@@ -315,67 +384,19 @@ namespace
             dk = v.dock;
             if (unl.empty()) return STR("error: no ore lists this dock");
         }
-        // 4. order list readable
-        TArray<int32_t>* ids = int_array(ship, STR("OrderIDs"));
-        if (!ids) return STR("error: OrderIDs unreadable");
-        // 5. job record: base = order count now (growth = new order), start position (undock clear check)
-        const int base = ids->Num();
-        tlog(STR("start ") + widen(cmd) + STR(" ship=") + std::to_wstring(sid) + STR(" dock=") + std::to_wstring(dk) +
-             STR(" base_orders=") + std::to_wstring(base));
+        // 5. job record: start position (undock clear check)
         DockJob j;
-        j.sid = sid; j.dock = dk; j.seq = seq; j.cmd = cmd; j.kind = cmd0; j.base = base;
+        j.sid = sid; j.dock = dk; j.seq = seq; j.cmd = cmd; j.kind = cmd0; j.unl = unl;
         get_loc(ship, j.p0);
-        // 5b. dock_mining / dock_refuel: clear the orders and build the refuel or unload list (stage 3 waits for it)
+        // 5a. far dock trip (not undock): the warp comes first, the ship is undocked here. The dock order is issued after the settle (jobs_tick stage 4)
         if (cmd != "undock")
         {
-            const Config c = eff_cfg(sid);
-            const bool refuel = cmd == "dock_refuel";
-            std::vector<OBStep> st;
-            if (refuel)
-            {
-                std::vector<std::pair<std::string, int>> fuels;
-                for (int i = 0; i < N_FUEL; ++i) if (c.fuel[i].on) fuels.push_back({FUEL_ITEM[i], c.fuel[i].amount});
-                if (fuels.empty()) return STR("error: no fuel enabled");
-                std::wstring ferr;
-                if (!pf_start(sid, fuels, ferr)) return STR("error: ") + ferr;
-                st = ob_plan_refuel(dk, fuels, c.wait_seconds);
-            }
-            else
-            {
-                g_unl_ores[sid] = unl;
-                std::vector<std::string> ores;
-                for (int i : unl) ores.push_back(ORE_ITEM[i]);
-                st = ob_plan_unload(dk, ores, c.wait_seconds);
-            }
-            ob_start(sid, st);
-            j.stage = 3;
-            g_jobs.push_back(j);
-            return STR("waiting");
+            j.tw_done = true;
+            if (trip_warp_try(ship, sid, dk)) { j.stage = 4; g_jobs.push_back(j); return STR("waiting"); }
         }
-        // 6. reuse the ship's existing DeliverOrder (player flow: SetShipAutopilot + SkipToOrder on the existing order)
-        FProperty* op = ship->GetPropertyByNameInChain(STR("Orders"));
-        auto* orders = (op && CastField<FArrayProperty>(op)) ? ship->GetValuePtrByPropertyNameInChain<TArray<UObject*>>(STR("Orders")) : nullptr;
-        int reuse_idx = -1;
-        for (int32_t i = 0; orders && i < orders->Num(); ++i)
-        {
-            UObject* o = (*orders)[i];
-            if (alive(o) && std::wstring(o->GetClassPrivate()->GetName()).find(STR("DeliverOrder")) != std::wstring::npos) { reuse_idx = i; break; }
-        }
-        if (reuse_idx >= 0)
-        {
-            j.new_order = obj_id((*orders)[reuse_idx]);
-            j.new_index = reuse_idx;
-            j.stage = 1;
-            std::wstring err;
-            if (!send_update_order_dock(j.new_order, dk, err)) return STR("error: ") + err;
-            tlog(STR("reuse order id=") + std::to_wstring(j.new_order) + STR(" index=") + std::to_wstring(j.new_index) + STR(" DockID=") + std::to_wstring(dk));
-            if (sid == g_cmd.ship) g_cmd.order_id = j.new_order;
-            g_jobs.push_back(j);
-            return STR("waiting");
-        }
-        // 7. no DeliverOrder yet: create one (stage 0 waits for it to appear in OrderIDs)
-        std::wstring err;
-        if (!send_new_deliver_order(sid, err)) return STR("error: ") + err;
+        // 5b. the order part (steps 4-7 in dock_order_issue)
+        const std::wstring oe = dock_order_issue(j, ship);
+        if (!oe.empty()) return oe;
         g_jobs.push_back(j);
         return STR("waiting");
     }
@@ -498,6 +519,18 @@ namespace
                 ++i;
                 continue;
             }
+            // 3b. stage 4: far trip warp sent (trip_warp_try). Wait until the ship reads near the dock (warp_settle_done), then issue the dock order (dock_order_issue)
+            if (j.stage == 4)
+            {
+                if (!warp_settle_done(j.t, trip_dock_dist_m(ship, j.dock))) { ++i; continue; }
+                tlog(STR("warp settled after ") + std::to_wstring(j.t) + STR(" s, dock order issued"));
+                j.t = 0.0;
+                j.log_acc = 0.0;
+                const std::wstring oe = dock_order_issue(j, ship);
+                if (!oe.empty()) { job_finish(i, oe); continue; }
+                ++i;
+                continue;
+            }
             // stage 2: SkipToOrder MV_SKIP_WAIT_S after start (+ one fallback), then watch (dock_mining: until docked; undock: see undock_tick)
             // 4. the SkipToOrder that starts the leg
             if (j.skip_wait >= 0.0 && j.t >= j.skip_wait)
@@ -528,7 +561,6 @@ namespace
             const bool okd = get_int_prop(ship, STR("DockID"), dk);
             UObject* dock_obj = get_obj_prop(ship, STR("Dock"));
             const bool at_target = (okd && dk == j.dock) || (alive(dock_obj) && obj_id(dock_obj) == j.dock);
-            if (!j.tw_done && j.stage == 2 && j.skip_wait < 0.0 && !at_target) { j.tw_done = true; trip_warp_try(ship, j.sid, j.dock); }
             { int64_t draw = 0; if (pnum_prop(ship, STR("DistanceToTarget"), draw) && trip_progress(j.prog_best, static_cast<double>(draw) / g_raw_per_m)) j.prog_t = j.t; }
             if (j.log_acc >= CMD_WATCH_LOG_S)
             {

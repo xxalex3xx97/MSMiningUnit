@@ -914,6 +914,16 @@ static void t_trip_progress()
     CHECK(!trip_warp_wanted(5000.0, 5));
 }
 
+static void t_warp_settle()
+{
+    CHECK(!warp_settle_done(1.0, 100.0));          // under the 2 s minimum: wait even when arrived
+    CHECK(warp_settle_done(2.0, 300.0));           // arrived at the dock
+    CHECK(!warp_settle_done(5.0, 1500.0));         // still far
+    CHECK(!warp_settle_done(5.0, -1.0));           // position unknown: wait
+    CHECK(warp_settle_done(30.0, -1.0));           // cap: go on after 30 s
+    CHECK(warp_settle_done(5.0, 1000.0));          // exactly the arrival distance counts
+}
+
 // ---------- runner ----------
 
 struct Case { const char* name; void (*fn)(); };
@@ -927,7 +937,7 @@ int main()
         {"ok_res", t_ok_res},
         {"apply_kv_empty_keeps_old", t_apply_kv_empty_keeps_old}, {"apply_kv_dock_per_ship", t_apply_kv_dock_per_ship},
         {"apply_kv_items_empty_clears", t_apply_kv_items_empty_clears}, {"dock_lists", t_dock_lists}, {"eff_cfg_items_row", t_eff_cfg_items_row},
-        {"eff_cfg_does_not_touch_global", t_eff_cfg_does_not_touch_global}, {"trip_progress", t_trip_progress},
+        {"eff_cfg_does_not_touch_global", t_eff_cfg_does_not_touch_global}, {"trip_progress", t_trip_progress}, {"warp_settle", t_warp_settle},
         {"parse_cmd_line", t_parse_cmd_line}, {"cmd_seq_is_new", t_cmd_seq_is_new},
         {"belt", t_belt}, {"csq", t_csq}, {"sector_contains", t_sector_contains}, {"warp_fuel", t_warp_fuel},
         {"cargo_pct", t_cargo_pct}, {"fuel_low", t_fuel_low}, {"got_delta", t_got_delta}, {"row_done", t_row_done},
