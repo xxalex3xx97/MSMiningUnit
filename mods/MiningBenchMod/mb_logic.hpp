@@ -416,13 +416,6 @@ namespace
         return wrapped ? 0 : i;
     }
 
-    // WHAT: dock busy retry wait in seconds for retry n (0-based): 2, 5, 10, 20, 40, then 60 for every later retry.
-    double dock_backoff_s(int n)
-    {
-        static const double BO[] = {2, 5, 10, 20, 40, 60};
-        return BO[std::min(n, 5)];
-    }
-
     // WHAT: hull dropped below the baseline. baseline < 0 = no baseline yet, never a drop.
     bool hull_dropped(int32_t baseline, int32_t h)
     {
@@ -483,9 +476,8 @@ namespace
     }
 
     // ---------- dock network: pure tables and rules (mb_net.hpp keeps the tables filled from the game) ----------
-    // WHAT: dock states for the status file, a ship's wait reason, why a ship is at a dock, and the holder state of a dock user.
+    // WHAT: a ship's wait reason, why a ship is at a dock, and the holder state of a dock user.
     // WHY: one shared queue per dock, FIFO by global ticket; no game objects here so the tests can run it.
-    enum DockStatus { DS_FREE, DS_RESERVED, DS_WORKING, DS_PARKED, DS_FULL, DS_GONE };
     enum NetReason { NR_OK, NR_WAIT_BUSY, NR_WAIT_QUEUE, NR_WAIT_PARKED, NR_WAIT_FULL, NR_WAIT_UNMANAGED, NR_NOT_CONFIGURED, NR_DOCK_GONE, NR_NOTHING_TO_UNLOAD };
     enum Purpose { P_NONE, P_UNLOAD, P_REFUEL, P_UNDOCK_TARGET, P_PICK, P_FLEE };
     enum HolderState { HS_WORKING, HS_PARKED, HS_IDLE };
@@ -498,7 +490,7 @@ namespace
     constexpr double NET_SLOT_MIN_GAP_M = 50.0;  // two slot points closer than this clash (m)
 
     // what a waiting ship needs: cargo fill, fuel state, hull state, ore for this dock in cargo, distance to the dock (-1 unknown)
-    struct NetReq { int cargo_pct = 0; bool fuel_low = false; bool hull_crit = false; bool has_dock_ore = false; double dist_m = -1; };
+    struct NetReq { int cargo_pct = 0; bool fuel_low = false; bool has_dock_ore = false; double dist_m = -1; };
     // dock position learned from a docked ship (mb_net.hpp fills it): system, chunk, local loc (raw units), line direction
     struct DockPos { bool known = false; int sys = 0; int64_t ch[3] = {0, 0, 0}; double loc[3] = {0, 0, 0}; double dir[3] = {1, 0, 0}; bool dir_known = false; };
     // slot_sid[k-1] = ship in holding slot k (0 free). line_slots = slot_sid.size(). Dock reservation = resv (no separate cleared field).
