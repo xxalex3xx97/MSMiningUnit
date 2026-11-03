@@ -103,8 +103,8 @@ local function viewport(p)
   return vw / sc, vh / sc
 end
 
--- widget by name: GetWidgetFromName first, then the is-variable UProperty on the instance, then a tree walk from Root
--- WHY: python-built widgets (add_docks_tab.py, add_btn_collect.py) are not Is Variable, so the first two miss them. Walk result cached per window (S.wc, reset on open).
+-- widget by name: GetWidgetFromName, then the is-variable UProperty, then (WALK_NAMES only) FindWidget / one bounded index walk per window.
+-- WHY: python-built widgets are not Is Variable, so the first two miss them. Never a walk per lookup (that froze the game).
 local deepFind -- defined with the dynamic list helpers below
 -- the real root of the window's own tree (not a named widget: GetWidgetFromName("Root") is not reliable for the paste tree)
 local function rootW()
@@ -112,16 +112,27 @@ local function rootW()
   local s, r = pcall(function() return S.w.WidgetTree.RootWidget end)
   return (s and ok(r)) and r or nil
 end
--- DIAG (once per window open, from w()): names + classes of Dock/Tab/Page/Switch widgets with depth, max depth reached
-local function diagDump(root)
-  local lines, maxd, n = {}, 0, 0
+-- Only these python-built names (add_docks_tab.py, add_btn_collect.py) ever use the tree lookup. Every other missing name returns nil at once.
+local WALK_NAMES = { Btn_TabDocks = true, Txt_TabDocks = true, Pnl_PageDocks = true, Txt_DocksHdr = true, Row_DocksScroll = true,
+  Dyn_Docks = true, Btn_Collect = true, Txt_Collect = true }
+local WALK_NODES = 1500   -- hard cap of one index walk
+-- ONE bounded walk per window open (S.wc = name -> widget for WALK_NAMES). Stops early when all are found. Logs time + nodes;
+-- when a name is missing, also logs the Dock/Tab/Page widget names (max 40 lines) once.
+local function buildIndex()
+  local t0 = os.clock()
+  S.wc, S.wbuilt = {}, true
+  local root = rootW()
+  if not root then L("WBP index: no root"); return end
+  local nWant, found, nodes, maxd, diag = 0, 0, 0, 0, {}
+  for _ in pairs(WALK_NAMES) do nWant = nWant + 1 end
   local function rec(o, d)
     if d > maxd then maxd = d end
-    if d > 48 or n > 3000 then return end
-    n = n + 1
+    if found == nWant or nodes >= WALK_NODES or d > 48 then return end
+    nodes = nodes + 1
     local nmv = nm(o)
-    if nmv:find("Dock") or nmv:find("Tab") or nmv:find("Page") or nmv:find("Switch") or nmv == "Root" then
-      if #lines < 80 then lines[#lines + 1] = string.rep(" ", d) .. nmv .. " [" .. nm(o, true) .. "]" end
+    if WALK_NAMES[nmv] and S.wc[nmv] == nil then S.wc[nmv] = o; found = found + 1 end
+    if #diag < 40 and (nmv:find("Dock") or nmv:find("Tab") or nmv:find("Page")) then
+      diag[#diag + 1] = string.rep(" ", d) .. nmv .. " [" .. nm(o, true) .. "]"
     end
     local s, c = pcall(function() return o:GetChildrenCount() end)
     if s and type(c) == "number" and c > 0 then
@@ -135,8 +146,10 @@ local function diagDump(root)
     end
   end
   rec(root, 0)
-  L("DIAG widget tree: nodes=" .. n .. " maxdepth=" .. maxd .. " matching=" .. #lines)
-  for _, l in ipairs(lines) do L("DIAG " .. l) end
+  L(string.format("WBP index walk ms=%.1f nodes=%d maxdepth=%d found=%d/%d", (os.clock() - t0) * 1000, nodes, maxd, found, nWant))
+  if found < nWant then
+    for _, l in ipairs(diag) do L("DIAG " .. l) end
+  end
 end
 local function w(name)
   if not ok(S.w) then return nil end
@@ -144,18 +157,11 @@ local function w(name)
   if s and ok(x) then return x end
   local s2, y = pcall(function() return S.w[name] end)
   if s2 and ok(y) then return y end
-  S.wc = S.wc or {}
-  local c = S.wc[name]
-  if c == nil then
-    local root = rootW()
-    c = (root and deepFind(root, name)) or false
-    S.wc[name] = c
-    if not c and root and not S.diagged and (name == "Row_DocksScroll" or name == "Btn_TabDocks") then
-      S.diagged = true
-      diagDump(root)
-    end
-  end
-  return c or nil
+  if not WALK_NAMES[name] then return nil end
+  local s3, f = pcall(function() return S.w.WidgetTree:FindWidget(FName(name)) end)   -- O(1) by name when exposed
+  if s3 and ok(f) then return f end
+  if not S.wbuilt then buildIndex() end
+  return S.wc[name]
 end
 
 -- walk the real widget tree from RootWidget (GetChildrenCount/GetChildAt are UFUNCTIONs on panels)
@@ -684,7 +690,7 @@ end
 -- paint(e, find, i) for every row on every call. Entries live in S.dyn[key].ents[i] = { w = entry, find = fn(name) }.
 function deepFind(node, name, depth)   -- assigns the forward-declared local above
   depth = depth or 0
-  if depth > 48 or not ok(node) then return nil end
+  if depth > 16 or not ok(node) then return nil end
   if nm(node) == name then return node end
   local okc, cnt = pcall(function() return node:GetChildrenCount() end)
   if okc and type(cnt) == "number" then
@@ -1742,7 +1748,7 @@ function M.open(ship)
     S.mode, S.t0 = mode, os.clock()
     S.logKey = nil   -- new widgets: repaint the Log tab on the first tick
     S.docksKey = nil
-    S.wc, S.diagged = nil, nil   -- new window: walk-found widgets are looked up again; DIAG dump allowed once more
+    S.wc, S.wbuilt = nil, nil   -- new window: the python-built index is walked once again (lazily)
     -- ship list = bench ships; sid = block's ship if listed, else last picked (F4), else first; empty list = nil
     local list = benchShips()
     local function inList(id) for _, o in ipairs(list) do if o.id == id then return true end end return false end
