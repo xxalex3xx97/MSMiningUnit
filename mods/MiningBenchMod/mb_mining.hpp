@@ -480,10 +480,20 @@ namespace
             if (!docked) chunk_hold_update(sid, ship);
             if (!chunk_hold_settling(sid)) m.empty_t += MINE_ROCK_CHECK_S;
             // belt, ship not docked: no rock in range for MINE_BELT_EMPTY_S and none of the ore at all (unlimited) -> next sector (same as SEEK)
+            // WHY: the HUD list is the PLAYER's scan list and can miss whole ores (silica rocks seen on the HUD were not in it); a docked ship or belt off never asked for the world scan.
+            rock_fallback_request();
             if (!belt_off(c.belt) && !docked)
             {
-                rock_fallback_request();
                 if (m.empty_t >= MINE_BELT_EMPTY_S && !rock_in_range(m.anchor, item, mine_radius_m(c)) && belt_go(ship, sid, m, c, item, true) != 0) return;
+            }
+            {   // WHY: "nothing in range" gave no reason; one ROCKSCAN line per check shows list size, rocks with this ore and the nearest distances (m from the ship)
+                const RockScan rs = rock_scan(ship, item);
+                log_line(STR("ROCKSCAN nothing-in-range ship=") + std::to_wstring(sid) + STR(" listed=") + std::to_wstring(g_rock_actors.size()) + STR(" live=") + std::to_wstring(rs.total) + STR(" with_ore=") + std::to_wstring(rs.with_ore) + STR(" nearest_any_m=") + std::to_wstring(static_cast<long long>(rs.nearest_any)) + STR(" nearest_ore_m=") + std::to_wstring(static_cast<long long>(rs.nearest_ore)) + STR(" radius_m=") + std::to_wstring(static_cast<long long>(mine_radius_m(c))) + STR(" want=") + (alive(item) ? item->GetName() : std::wstring(STR("?"))));
+                std::map<std::wstring, int> hist;   // ore item name -> rock count over the listed rocks
+                for (UObject* a : g_rock_actors) { auto it = g_rock_item.find(a); hist[it != g_rock_item.end() && alive(it->second) ? it->second->GetName() : std::wstring(STR("<none>"))]++; }
+                std::wstring h;
+                for (const auto& kv : hist) h += kv.first + STR("=") + std::to_wstring(kv.second) + STR(" ");
+                log_line(STR("ROCKSCAN items ship=") + std::to_wstring(sid) + STR(" ") + h);
             }
             m.st = MS_OFF; m.chk_t = 0.0; mset(sid, m, STR("nothing in range")); return;   // Update 15: do not undock
         }
@@ -540,7 +550,7 @@ namespace
             if (!rock)
             {
                 mset(sid, m, STR("nothing in range"));
-                if (!belt_off(c.belt)) rock_fallback_request();   // belt seek: the next rock_in_range may use the FindAllOf fallback
+                rock_fallback_request();   // any seek (belt on or off): the HUD list can miss ores; belt seek: the next rock_in_range may use the FindAllOf fallback
                 // belt: no rock in range for MINE_BELT_EMPTY_S and no rock of the ore at all (unlimited search) -> warp to the next sector
                 if (!belt_off(c.belt) && m.rng_t >= MINE_BELT_EMPTY_S && !rock_in_range(m.anchor, item, mine_radius_m(c)) && belt_go(ship, sid, m, c, item, true) != 0) return;
             }

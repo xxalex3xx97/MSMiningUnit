@@ -55,21 +55,41 @@ namespace
     // are loaded in its sector. A belt seek with no rock in range requests the fallback; rock_list_refresh then adds the actors of
     // class BP_GenericResourceAsteroid_C from FindAllOf (not in the HUD list). FindAllOf runs at most every ROCK_FALLBACK_S_MS.
     constexpr ULONGLONG ROCK_FALLBACK_WANT_MS = 6000;   // a request lasts this long (seek re-requests on each rock check)
-    constexpr ULONGLONG ROCK_FALLBACK_S_MS = 5000;      // FindAllOf pass period (ms)
+    constexpr ULONGLONG ROCK_FALLBACK_S_MS = 60000;     // FindAllOf refresh period (ms); destroyed rocks leave the shared list at once via the delete listener, so a pass only finds NEW rocks
+    constexpr ULONGLONG ROCK_FALLBACK_REQ_MS = 10000;   // a miner that found nothing may trigger an extra pass, at most this often (ms)
+    bool g_fb_req = false;                              // a miner found nothing since the last pass
     ULONGLONG g_rock_fallback = 0;                      // GetTickCount64 of the last request (0 = never)
     ULONGLONG g_rock_fb_pass_ms = 0;                    // GetTickCount64 of the last FindAllOf pass (0 = never)
     std::vector<UObject*> g_fb_list;                    // fallback actors of the last pass
     std::unordered_set<UObject*> g_fb_set;              // same actors, for actor_ok
 
+    // WHAT: engine delete notifications. A freed UObject is queued here (any thread) and removed from every shared rock container on the next drain (game thread).
+    // WHY: the rock lists are shared by all ships; instead of re-scanning to find out which rocks died, the engine tells us the moment one is destroyed.
+    std::mutex g_dead_mx;
+    std::unordered_set<const void*> g_dead;
+    struct RockDeleteListener : FUObjectDeleteListener
+    {
+        void NotifyUObjectDeleted(const UObjectBase* o, int32_t) override { std::lock_guard<std::mutex> l(g_dead_mx); g_dead.insert(o); }
+        void OnUObjectArrayShutdown() override {}
+    };
+
     // WHAT: a belt seek with no rock in range asks for the fallback (valid for ROCK_FALLBACK_WANT_MS).
-    void rock_fallback_request() { g_rock_fallback = GetTickCount64(); }
+    void rock_fallback_request() { g_rock_fallback = GetTickCount64(); g_fb_req = true; }
 
     // WHAT: true while a fallback request is recent.
-    bool fallback_wanted() { return g_rock_fallback != 0 && GetTickCount64() - g_rock_fallback <= ROCK_FALLBACK_WANT_MS; }
+    bool fallback_wanted() { return g_rock_fallback != 0; }   // sticky: once any ship asked, the shared world list is kept, refreshed and merged for all ships
+
+    // WHAT: true when a new world scan should run: never ran, the 60 s refresh is due, or a miner found nothing and the last pass is 10 s old.
+    bool fb_scan_due(ULONGLONG now)
+    {
+        if (!fallback_wanted()) return false;
+        return g_rock_fb_pass_ms == 0 || now - g_rock_fb_pass_ms >= ROCK_FALLBACK_S_MS || (g_fb_req && now - g_rock_fb_pass_ms >= ROCK_FALLBACK_REQ_MS);
+    }
 
     // WHAT: true when a is still one of the controller's live ScannableHUDMarkers entries (or a live fallback actor while wanted) and still alive.
     // WHY: cached actor pointers can be freed when the game streams actors out; reading a freed actor crashes (access violation),
     //      so list membership is checked before any call on it.
+    void rock_drain_dead();   // defined below
     bool actor_ok(UObject* a)
     {
         if (!a) return false;
@@ -77,6 +97,7 @@ namespace
         if (g_actor_set_frame != g_actor_frame)
         {
             g_actor_set_frame = g_actor_frame;
+            rock_drain_dead();
             g_actor_set.clear();
             // WHY: first_of is a full UObject walk and this runs every tick while ships move; cache the controller (revalidated by cached_ok, SEH-safe).
             static UObject* c_ctrl = nullptr;
@@ -186,6 +207,26 @@ namespace
 
     // ---------------- list refresh ----------------
 
+    // WHAT: removes every destroyed actor (queued by RockDeleteListener) from the shared rock containers. First call registers the listener.
+    void rock_drain_dead()
+    {
+        static RockDeleteListener lst;
+        static bool reg = false;
+        if (!reg) { reg = true; UObjectArray::AddUObjectDeleteListener(&lst); }
+        std::unordered_set<const void*> dead;
+        { std::lock_guard<std::mutex> l(g_dead_mx); if (g_dead.empty()) return; dead.swap(g_dead); }
+        auto gone = [&](UObject* a) { return dead.count(a) != 0; };
+        g_rock_actors.erase(std::remove_if(g_rock_actors.begin(), g_rock_actors.end(), gone), g_rock_actors.end());
+        g_fb_list.erase(std::remove_if(g_fb_list.begin(), g_fb_list.end(), gone), g_fb_list.end());
+        for (const void* d : dead)
+        {
+            UObject* a = const_cast<UObject*>(static_cast<const UObject*>(d));
+            g_fb_set.erase(a); g_actor_set.erase(a);
+            g_rock_item.erase(a);
+            if (auto it = g_rock_id.find(a); it != g_rock_id.end()) { if (it->second > 0) g_rock_by_id.erase(it->second); g_rock_id.erase(it); }
+        }
+    }
+
     // WHAT: adds rock actor a to the refresh being built (list, items, ids, by_id). Ore and id are reused from the previous refresh
     //       when known; otherwise GetScanItem and ObjectId are read once. A nullptr ore is cached the same way.
     // WHY: one place for the HUD walk and the fallback, so both read ore and id the same way.
@@ -216,13 +257,14 @@ namespace
     // WHY: an AI ship far from the player sees its belt rocks in the world but not in the player's HUD list.
     void rock_fallback_merge(std::vector<UObject*>& list, std::map<UObject*, UObject*>& items, std::map<UObject*, int>& ids, std::map<int, UObject*>& by_id)
     {
-        if (!fallback_wanted()) { g_fb_list.clear(); g_fb_set.clear(); return; }
+        if (!fallback_wanted()) return;   // the list is kept (pruned by the delete listener), just not merged
         const ULONGLONG now = GetTickCount64();
         bool ran = false;
-        if (g_rock_fb_pass_ms == 0 || now - g_rock_fb_pass_ms >= ROCK_FALLBACK_S_MS)
+        if (fb_scan_due(now))
         {
             ran = true;
             g_rock_fb_pass_ms = now;
+            g_fb_req = false;
             std::vector<UObject*> found;
             UObjectGlobals::FindAllOf(STR("BP_GenericResourceAsteroid_C"), found);
             g_fb_list.clear();
@@ -243,6 +285,7 @@ namespace
     {
         // 1. stamp the refresh time (rock_list_due() reads it)
         g_rock_list_ms = GetTickCount64();
+        rock_drain_dead();
         UObject* ctrl = first_of(STR("DMSPlayerController"));
         std::vector<UObject*> list;
         std::map<UObject*, UObject*> items;
@@ -303,7 +346,7 @@ namespace
     void rock_list_ensure()
     {
         const ULONGLONG now = GetTickCount64();
-        const bool fb_due = fallback_wanted() && (g_rock_fb_pass_ms == 0 || now - g_rock_fb_pass_ms >= ROCK_FALLBACK_S_MS);
+        const bool fb_due = fb_scan_due(now);
         if (rock_list_due() || fb_due) rock_list_refresh();
     }
 
