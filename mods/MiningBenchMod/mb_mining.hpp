@@ -211,21 +211,21 @@ namespace
         {
             e.first = now;
             e.second.clear();
-            std::vector<UObject*> saves;
-            UObjectGlobals::FindAllOf(STR("SmallResourceAsteroidObject"), saves);
-            for (UObject* o : saves)
-            {
-                if (!alive(o)) continue;
-                auto* arr = o->GetValuePtrByPropertyNameInChain<TArray<UObject*>>(STR("ResourceItems"));
-                bool has = false;
-                for (int32_t i = 0; arr && i < arr->Num(); ++i) if ((*arr)[i] == item) has = true;
-                if (!has) continue;
-                bool al = true; get_bool_prop(o, STR("bAlive"), al);
-                SaveRock r;
-                r.sys = sys_id(o);
-                if (!al || r.sys <= 0 || !get_chunk(o, r.c)) continue;
-                e.second.push_back(r);
-            }
+            std::vector<MsScanRow> rows;
+            std::wstring err;
+            if (ms_scan(1, 60000, false, rows, err))
+                for (const MsScanRow& r : rows)
+                {
+                    if (r.sys <= 0) continue;
+                    bool has = false;
+                    for (int i = 0; i < r.nores && i < 8; ++i) if (static_cast<UObject*>(r.ores[i]) == item) has = true;
+                    if (!has) continue;
+                    SaveRock s;
+                    s.sys = r.sys;
+                    for (int i = 0; i < 3; ++i) s.c[i] = r.ch[i];
+                    e.second.push_back(s);
+                }
+            else log_line(STR("SAVEROCK scan failed: ") + err);
             log_line(STR("SAVEROCK ") + item->GetName() + STR(" alive save rocks=") + std::to_wstring(e.second.size()));
         }
         // WHY: a rock that was picked many times and still gave no actor in range (mined out, or loaded but outside the radius) is skipped, so the next nearest is tried.

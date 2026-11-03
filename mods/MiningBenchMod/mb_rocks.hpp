@@ -59,8 +59,8 @@ namespace
     std::unordered_set<UObject*> g_actor_set;
 
     // FALLBACK: the HUD list is the player's own scan list. An AI ship far from the player can see no rock in it while rock actors
-    // are loaded in its sector. A belt seek with no rock in range requests the fallback; rock_list_refresh then adds the actors of
-    // class BP_GenericResourceAsteroid_C from FindAllOf (not in the HUD list). FindAllOf runs at most every ROCK_FALLBACK_S_MS.
+    // are loaded in its sector. A belt seek with no rock in range requests the fallback; rock_list_refresh then adds the loaded rock
+    // actors from MSCore_scan (kind 1, loaded only; not in the HUD list). The scan runs at most every ROCK_FALLBACK_S_MS.
     constexpr ULONGLONG ROCK_FALLBACK_WANT_MS = 6000;   // a request lasts this long (seek re-requests on each rock check)
     constexpr ULONGLONG ROCK_FALLBACK_S_MS = 60000;     // FindAllOf refresh period (ms); destroyed rocks leave the shared list at once via the delete listener, so a pass only finds NEW rocks
     constexpr ULONGLONG ROCK_FALLBACK_REQ_MS = 10000;   // a miner that found nothing may trigger an extra pass, at most this often (ms)
@@ -285,8 +285,8 @@ namespace
         list.push_back(a);
     }
 
-    // WHAT: adds the FindAllOf(BP_GenericResourceAsteroid_C) actors to the refresh being built while a fallback request is recent.
-    //       FindAllOf runs at most every ROCK_FALLBACK_S_MS; between passes the last pass's live actors are reused.
+    // WHAT: adds the loaded rock actors (MSCore_scan kind 1) to the refresh being built while a fallback request is recent.
+    //       The scan runs at most every ROCK_FALLBACK_S_MS; between passes the last pass's live actors are reused.
     // WHY: an AI ship far from the player sees its belt rocks in the world but not in the player's HUD list.
     void rock_fallback_merge(std::vector<UObject*>& list, std::map<UObject*, UObject*>& items, std::map<UObject*, int>& ids, std::map<int, UObject*>& by_id)
     {
@@ -296,13 +296,24 @@ namespace
         if (fb_scan_due(now))
         {
             ran = true;
+            const ULONGLONG age = (g_rock_fb_pass_ms == 0 || g_fb_req) ? 0 : ROCK_FALLBACK_S_MS;
             g_rock_fb_pass_ms = now;
             g_fb_req = false;
-            std::vector<UObject*> found;
-            UObjectGlobals::FindAllOf(STR("BP_GenericResourceAsteroid_C"), found);
-            g_fb_list.clear();
-            g_fb_set.clear();
-            for (UObject* a : found) if (alive(a)) { g_fb_list.push_back(a); g_fb_set.insert(a); }
+            std::vector<MsScanRow> rows;
+            std::wstring e;
+            if (ms_scan(1, age, true, rows, e))
+            {
+                g_fb_list.clear();
+                g_fb_set.clear();
+                for (const MsScanRow& r : rows)
+                {
+                    UObject* a = static_cast<UObject*>(r.actor);
+                    if (!a) continue;
+                    g_fb_list.push_back(a);
+                    g_fb_set.insert(a);
+                }
+            }
+            else { static bool w = false; if (!w) { w = true; log_line(STR("rock: MSCore_scan failed: ") + e); } }
         }
         for (UObject* a : g_fb_list) if (alive_seh(a) && !items.count(a)) rock_add(a, list, items, ids, by_id);
         if (!ran) return;

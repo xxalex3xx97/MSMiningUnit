@@ -8,7 +8,7 @@
 //      instead of a crash or a wrong write. Limits: a same-name, same-type change in behaviour is not detected; the natives are confirmed only by
 //      the chunk-hold canary (mb_chunkhold.hpp).
 // DEPENDS ON: mb_common.hpp (log_line, alive, STR, widen, u8, get_dll_dir, write_atomic), mb_compat.hpp (g_compat, SafeMode, feature_name),
-//             mb_pattern.hpp / mb_natives.hpp (nat_resolve, g_nat, nat_hex), mb_version.hpp (kKnownBuildSize), mb_warpreal.hpp (kCmdTypeOff,
+//             mb_mscore.hpp (ms_load, g_ms: the chunk-hold natives are MSCore's), mb_version.hpp (kKnownBuildSize), mb_warpreal.hpp (kCmdTypeOff,
 //             kThrottleTypeId), mb_ue.hpp (first_of, get_obj_prop), mb_mining.hpp (g_bench_ids, mine_halt),
 //             mb_chunkhold.hpp (chunk_hold_release_all), mb_config.hpp (check_config, g_cfg.kill_switch).
 // USED BY: dllmain.cpp (tick lambda: compat_killed, compat_run, compat_selftest through the thunks).
@@ -26,6 +26,9 @@
 
 namespace
 {
+    // WHAT: "0x<hex>" of a value (build info and fault codes).
+    std::wstring nat_hex(uint64_t v) { wchar_t b[32]; swprintf(b, 32, L"0x%llx", static_cast<unsigned long long>(v)); return b; }
+
     std::atomic<bool> g_safe{false};    // SAFE MODE: no more ticks of the mod until restart
     SafeMode g_sm_cmd;                  // fault counter of the command tick (cmd_tick)
     SafeMode g_sm_scan;                 // fault counter of the scan tick (tick_work)
@@ -205,13 +208,13 @@ namespace
         return true;
     }
 
-    // WHAT: the contract's map key check: SolarSystem.ChunkMap key element size must be CH_KEY_SIZE (12). ok false + why otherwise.
+    // WHAT: the contract's map key check: SolarSystem.ChunkMap key element size must be 12 bytes (chunk key, MSCore msc_chunks.hpp). ok false + why otherwise.
     bool chunkmap_key_ok(UClass* solar, std::string& why)
     {
         FProperty* p = solar ? row_prop(solar, STR("ChunkMap")) : nullptr;
         auto* mp = p ? CastField<FMapProperty>(p) : nullptr;
         if (!mp || !mp->GetKeyProp()) { why = "ChunkMap is not a map"; return false; }
-        if (mp->GetKeyProp()->GetElementSize() != CH_KEY_SIZE) { why = "key size " + std::to_string(mp->GetKeyProp()->GetElementSize()) + " != 12"; return false; }
+        if (mp->GetKeyProp()->GetElementSize() != 12) { why = "key size " + std::to_string(mp->GetKeyProp()->GetElementSize()) + " != 12"; return false; }
         return true;
     }
 
@@ -278,8 +281,10 @@ namespace
             g_compat.add(F_WARPREAL, "command type id @0x28", ok, u8(why));
         }
         {
-            const bool ok = nat_resolve();
-            g_compat.add(F_CHUNKHOLD, "natives", ok, u8(g_nat.why));
+            std::wstring e;
+            wchar_t w[256] = {0};
+            const bool ok = ms_load(e) && g_ms.chunk_ready(w, 256) != 0;
+            g_compat.add(F_CHUNKHOLD, "natives (MSCore)", ok, ok ? std::string() : u8(e.empty() ? std::wstring(w) : e));
         }
 
         for (const CompatRow& r : g_compat.rows)
