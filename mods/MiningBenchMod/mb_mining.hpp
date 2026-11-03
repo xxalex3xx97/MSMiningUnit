@@ -28,7 +28,6 @@ namespace
     bool chunk_hold_settling(int sid);                // true while the ship's cube was set less than 4 s ago
     void chunk_hold_keep_only(const std::vector<int>& sids);   // release holds of ships no longer on the bench
 
-    constexpr double MINE_ROCK_CHECK_S = 5.0;   // rock scan period (s): the scan walks every rock of the ore, keep it rare
     constexpr double MINE_FUEL_CHECK_S = 5.0;   // fuel check period while flying out / mining (s)
     constexpr double MINE_HOLD_CHECK_S = 2.0;   // at-dock completion check period (s)
     constexpr double MINE_BELT_EMPTY_S = 10.0;  // seek with no rock in range for this long -> warp to the belt sector with the ore (s)
@@ -157,13 +156,13 @@ namespace
 
 
     // nearest rock holding `item` measured from the anchor (not the ship); nullptr when none or outside the radius
-    UObject* rock_in_range(const double anchor[3], UObject* item, double rad_m)
+    UObject* rock_in_range(int sid, const double anchor[3], UObject* item, double rad_m)
     {
         rock_list_ensure();
         ActFrame f;
         std::copy(anchor, anchor + 3, f.loc);
         ActAim r;
-        UObject* a = nearest_item_actor(f, item, r);
+        UObject* a = nearest_item_actor(sid, f, item, r);
         if (!a || !actor_ok(a)) return nullptr;
         if (rad_m > 0.0 && r.dist_m > rad_m) return nullptr;
         return a;
@@ -527,8 +526,9 @@ namespace
         ActFrame f;
         if (!act_frame(ship, f)) { m.st = MS_OFF; m.chk_t = 0.0; mset(sid, m, STR("ship actor unreadable")); return; }
         std::copy(f.loc, f.loc + 3, m.anchor);
+        const bool in_range = rock_in_range(sid, m.anchor, item, mine_radius_m(c));   // one scan for all the checks below
         // belt: ship not in the target sector -> warp after the undock (after_undock); HALT when no sector has the ore
-        if (!belt_off(c.belt) && !rock_in_range(m.anchor, item, mine_radius_m(c)))   // rock in range here -> mine it, warp only when none
+        if (!belt_off(c.belt) && !in_range)   // rock in range here -> mine it, warp only when none
         {
             int cur = 0;
             std::wstring nm, why2;
@@ -537,7 +537,7 @@ namespace
             if (t == 0) { m.st = MS_HALT; m.err = true; mset(sid, m, STR("ERROR: ") + why2, STR("ERROR: ") + why2); return; }
             if (t > 0 && t != cur) m.warp_to = t;
         }
-        if (m.warp_to == 0 && !rock_in_range(m.anchor, item, mine_radius_m(c)))
+        if (m.warp_to == 0 && !in_range)
         {
             // undocked ship (far sector, Start loop): hold its chunk cube so the next check sees the rocks. The belt counter waits while it settles.
             const bool docked = ship_docked(ship);
@@ -548,7 +548,7 @@ namespace
             rock_fallback_request();
             if (!belt_off(c.belt) && !docked)
             {
-                if (m.empty_t >= MINE_BELT_EMPTY_S && !rock_in_range(m.anchor, item, mine_radius_m(c)) && belt_go(ship, sid, m, c, item, true) != 0) return;
+                if (m.empty_t >= MINE_BELT_EMPTY_S && !in_range && belt_go(ship, sid, m, c, item, true) != 0) return;
             }
             if (g_debug)
             {   // WHY: "nothing in range" gave no reason; one ROCKSCAN line per check shows list size, rocks with this ore and the nearest distances (m from the ship)
@@ -611,7 +611,7 @@ namespace
         if (m.chk_t >= MINE_ROCK_CHECK_S)
         {
             m.chk_t = 0.0;
-            UObject* rock = rock_in_range(m.anchor, item, mine_radius_m(c));
+            UObject* rock = rock_in_range(sid, m.anchor, item, mine_radius_m(c));
             m.no_rock = !rock;
             if (!rock)
             {
@@ -619,7 +619,7 @@ namespace
                 hold_nearest_save_rock(ship, sid, item, mine_radius_m(c));   // the rock may exist only as save data: load its chunks
                 rock_fallback_request();   // any seek (belt on or off): the HUD list can miss ores; belt seek: the next rock_in_range may use the FindAllOf fallback
                 // belt: no rock in range for MINE_BELT_EMPTY_S and no rock of the ore at all (unlimited search) -> warp to the next sector
-                if (!belt_off(c.belt) && m.rng_t >= MINE_BELT_EMPTY_S && !rock_in_range(m.anchor, item, mine_radius_m(c)) && belt_go(ship, sid, m, c, item, true) != 0) return;
+                if (!belt_off(c.belt) && m.rng_t >= MINE_BELT_EMPTY_S && !rock_in_range(sid, m.anchor, item, mine_radius_m(c)) && belt_go(ship, sid, m, c, item, true) != 0) return;
             }
             else
             {

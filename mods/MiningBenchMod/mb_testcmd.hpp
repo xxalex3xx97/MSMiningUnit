@@ -176,6 +176,8 @@ namespace
     // WHY: work is spread over different periods so no single tick does everything (perf lessons: heavy reads caused freezes).
     void cmd_tick(double dt)
     {
+        LARGE_INTEGER t0;
+        QueryPerformanceCounter(&t0);
         // 1.
         rock_drain_dead();   // deleted actors queued by the engine listener are removed every tick, also while no ship asks for rocks
         ++g_actor_frame;   // invalidates the actor_ok() set: it is rebuilt at most once per engine tick
@@ -200,5 +202,6 @@ namespace
             mining_tick(step);
             station_destroy_tick(step);
         }
+        timing_log(STR("cmd_tick"), perf_ms_since(t0), g_rock_actors.size());
     }
 }
