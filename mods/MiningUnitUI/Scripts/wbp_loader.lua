@@ -25,7 +25,7 @@ local TXT_ON = { R = 0.010330, G = 0.010330, B = 0.010330, A = 1.0 }
 local TXT_OFF = { R = 1.0, G = 1.0, B = 1.0, A = 1.0 }
 local EST_RED_TXT = { R = 1.0, G = 0.25, B = 0.2, A = 1.0 }   -- Txt_StatusAction tint on an ERROR status
 local UDN = 20 -- max docks per unload-ore list and per refuel list (= gen_paste UDOCK_N)
--- ore key k = widget part (Pnl_UDockCard_<k>, modal key UDock_<k>_<n>); ini = INI key part (unload_docks_<ini>, ore_<ini>)
+-- ore key k = widget part (Pnl_UDockCard_<k>, modal key UDock_<k>_<n>); ini = INI key part (unload_docks_<ini>)
 local UD_ORES = { { k = "Cobalt", ini = "cobalt" }, { k = "Graphite", ini = "graphite" }, { k = "Iridium", ini = "iridium" },
   { k = "Nickel", ini = "nickel" }, { k = "Silica", ini = "silica" }, { k = "Titanium", ini = "titanium" }, { k = "WaterIce", ini = "waterice" } }
 -- every name Lua touches; missing ones are logged after CreateWidget
@@ -703,21 +703,18 @@ function dynDocks(name, getList, save, title, docks, cardName)
     end }
 end
 -- Ship tab dock lists. S.ud[<ini>] = unload dock ids of the ore, S.rd = refuel dock ids (this ship; All ships = first ship of the set).
--- Ore card shown only while the global ore_<ini> flag is on (default on). Warning = ore on + empty list (not in All ships mode).
+-- Every ore has a dock card. An ore unloads when its list is not empty. Warning = no ore has a dock (not in All ships mode).
 local function udRender()
   if not S.ud then return end
-  local glob = iniGet(rdlines(INI) or {}, nil)
-  local docks, warn = S.docks or {}, {}
+  local docks, nodock = S.docks or {}, 0
   for _, u in ipairs(UD_ORES) do
-    local on = (glob["ore_" .. u.ini] or "1") == "1"
-    local list = S.ud[u.ini]
-    setVis(w("Pnl_UDockCard_" .. u.k), on and 0 or 1)
-    if on then dynDocks("UDock_" .. u.k, function() return S.ud and S.ud[u.ini] or {} end, udSave, "Unload dock", docks, "Pnl_UDockCard_" .. u.k) end
-    if on and #list == 0 then warn[#warn + 1] = u.k end
+    setVis(w("Pnl_UDockCard_" .. u.k), 0)
+    dynDocks("UDock_" .. u.k, function() return S.ud and S.ud[u.ini] or {} end, udSave, "Unload dock", docks, "Pnl_UDockCard_" .. u.k)
+    if #S.ud[u.ini] == 0 then nodock = nodock + 1 end
   end
   setVis(w("Pnl_RDockCard"), 0)
   dynDocks("RDock", function() return S.rd end, udSave, "Refuel dock", docks)
-  S.warn = (not S.all and #warn > 0) and ("No unload dock for: " .. table.concat(warn, ", ")) or ""
+  S.warn = (not S.all and nodock == #UD_ORES) and "No unload dock set for any ore" or ""
   M.setText("Txt_ShipWarn", S.warn)
   setVis(w("Txt_ShipWarn"), S.warn ~= "" and 0 or 1)
 end
@@ -912,10 +909,6 @@ for _, f in ipairs({ { "Deuterium", "deuterium", "0" }, { "Hydrogen", "hydrogen"
   OPS[#OPS + 1] = { w = "Edt_Fuel" .. f[1] .. "Threshold", k = "fuel_" .. f[2] .. "_threshold", sc = "global", kind = "int", def = "300", msg = f[1] .. " threshold must be an integer >= 0" }
   OPS[#OPS + 1] = { w = "Edt_Fuel" .. f[1] .. "Amount", k = "fuel_" .. f[2] .. "_amount", sc = "global", kind = "int", def = "300", msg = f[1] .. " amount must be an integer >= 0" }
 end
-for _, o in ipairs({ { "Cobalt", "cobalt" }, { "Graphite", "graphite" }, { "Iridium", "iridium" }, { "Nickel", "nickel" },
-                     { "Silica", "silica" }, { "Titanium", "titanium" }, { "WaterIce", "waterice" } }) do
-  OPS[#OPS + 1] = { w = "Chk_Unload" .. o[1], k = "ore_" .. o[2], sc = "global", kind = "chk", def = "1" }
-end
 -- Operation item icons (Image widgets; brush from bundled Img_ItemSrc_<id> texture, game Item.Icon only as fallback; hidden when no icon)
 local OPICONS = { Img_FuelDeuterium = "ITEM_EnrichedFuel", Img_FuelHydrogen = "ITEM_HydrogenFuel", Img_FuelWarp = "ITEM_WarpFuel",
   Img_UnloadCobalt = "ITEM_CobaltOre", Img_UnloadGraphite = "ITEM_Graphite", Img_UnloadIridium = "ITEM_IridiumOre",
@@ -993,7 +986,6 @@ local function opsTick()
         local v = (e.kind == "chk") and t or opVal(e, t)
         if v then
           opSave(e, v)
-          if e.k:find("^ore_") then udRender() end   -- ore on/off shows or hides its dock card + warning
           if S.op.err == e.w then S.op.err = nil; M.setText("Txt_Status", "") end
         else
           S.op.err = e.w; M.setText("Txt_Status", "error: " .. e.msg)
@@ -1123,7 +1115,7 @@ end
 --   Dock   = dock_auto: C++ auto_rule picks refuel dock if an enabled fuel is below its threshold, else mining dock (same rule as the loop).
 --   Undock = undock: leave the current dock for a second configured dock (refuel dock first).
 --   Refuel = dock_refuel: dock at the refuel dock and fill the enabled fuel items.
---   Unload = dock_mining: dock at the mining dock and unload the enabled ore (job_start: not refuel -> ob_plan_unload).
+--   Unload = dock_mining: dock at the mining dock and unload every ore that has an unload dock (job_start: not refuel -> ob_plan_unload).
 -- These are overrides: stop_all for this ship first (halts the loop), then the action 400 ms later (user decision).
 local ACT_BTNS = {
   Btn_Dock = { cmd = "dock_auto", label = "dock" },

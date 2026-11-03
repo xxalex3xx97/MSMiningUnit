@@ -457,6 +457,15 @@ static void t_dock_limit_giveup()
     CHECK(dock_limit_giveup(11));
 }
 
+static void t_unload_chain_more()
+{
+    CHECK(unload_chain_more(-1, 5));
+    CHECK(unload_chain_more(5, 3));
+    CHECK(!unload_chain_more(5, 5));
+    CHECK(!unload_chain_more(5, 0));
+    CHECK(!unload_chain_more(-1, 0));
+}
+
 static void t_refuel_stalled()
 {
     CHECK(!refuel_stalled(true, 60, 10.0, 10, 60.0));   // all delivered
@@ -535,7 +544,7 @@ int main()
         {"belt", t_belt}, {"csq", t_csq}, {"sector_contains", t_sector_contains}, {"warp_fuel", t_warp_fuel},
         {"cargo_pct", t_cargo_pct}, {"fuel_low", t_fuel_low}, {"got_delta", t_got_delta}, {"row_done", t_row_done},
         {"item_next", t_item_next}, {"collect_verdict", t_collect_verdict}, {"sweep", t_sweep}, {"ore_scan_due", t_ore_scan_due}, {"dock_backoff", t_dock_backoff}, {"hull_dropped", t_hull_dropped},
-        {"dock_limit_giveup", t_dock_limit_giveup}, {"refuel_stalled", t_refuel_stalled}, {"mine_radius", t_mine_radius},
+        {"dock_limit_giveup", t_dock_limit_giveup}, {"unload_chain_more", t_unload_chain_more}, {"refuel_stalled", t_refuel_stalled}, {"mine_radius", t_mine_radius},
         {"station", t_station},
     };
     for (const Case& c : cases)

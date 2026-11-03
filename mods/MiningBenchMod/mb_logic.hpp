@@ -95,8 +95,6 @@ namespace
         int wait_seconds = 10;
         // per fuel: on / refuel threshold / amount (global only). (INI: fuel_<key>_on / _threshold / _amount)
         FuelCfg fuel[N_FUEL] = {{1, 300, 300}, {1, 300, 300}, {0, 300, 300}};
-        // per ore: 1 = unload this ore at the mining dock (global only). (INI: ore_<key>)
-        int ore_on[N_ORE] = {1, 1, 1, 1, 1, 1, 1};
     };
     // WHAT: the active global config, read by tick_work and the feature code. Replaced as a whole by reload_config; a failed parse keeps the old value.
     Config g_cfg;
@@ -433,6 +431,12 @@ namespace
     bool dock_limit_giveup(int n)
     {
         return n >= MINE_DOCK_RETRIES;
+    }
+
+    // WHAT: unload chain goes on when cargo of docked ores is left (now > 0) and it shrank since the last hop (prev < 0 = first hop).
+    inline bool unload_chain_more(int64_t prev, int64_t now)
+    {
+        return now > 0 && (prev < 0 || now < prev);
     }
 
     // WHAT: refuel stalled: items not all delivered, t >= wait_s, and the fuel cargo has not grown for idle_s (idle_s 0 = off).

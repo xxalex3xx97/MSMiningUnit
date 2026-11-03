@@ -79,8 +79,8 @@ Page_Items (key: items):
 - Btn_ItemAdd Button "Add resource" / Txt_ItemAdd, wide, below the list (appends a row)
 - The list scrolls with the page. Rows are a fixed pool of 20: Lua never creates widgets.
 
-Page_Operation (keys: radius, mining_distance, max_radius, idle_seconds, wait_seconds, dock_hold_limit, enabled, repeat, fuel_<k>_threshold, fuel_<k>_amount, 7 ore unload toggles):
-Save: per-ship keys (radius, mining_distance, idle_seconds, dock_hold_limit, enabled, repeat) -> [ship.<id>]; global-only keys (max_radius, wait_seconds, fuel_<k>_on/_threshold/_amount, ore_<k>) -> top level (C++ ignores them per ship). Text boxes saved on change, checkboxes polled. Applied at next loop start. Invalid input shows "error: ..." in Txt_Status and is not saved.
+Page_Operation (keys: radius, mining_distance, max_radius, idle_seconds, wait_seconds, dock_hold_limit, enabled, repeat, fuel_<k>_threshold, fuel_<k>_amount):
+Save: per-ship keys (radius, mining_distance, idle_seconds, dock_hold_limit, enabled, repeat) -> [ship.<id>]; global-only keys (max_radius, wait_seconds, fuel_<k>_on/_threshold/_amount) -> top level (C++ ignores them per ship). Text boxes saved on change, checkboxes polled. Applied at next loop start. Invalid input shows "error: ..." in Txt_Status and is not saved.
 Layout (names below unchanged; only Row_*/Lbl_* layout widgets are added, none are variables): bordered cards (Row_CardOutline<K> > Row_CardBody<K> > Row_CardInner<K> = gold title Lbl_Hdr<K> + 2px gold Row_CardLine<K> + rows). Row_OpTop = two columns: left card Mining (Radius, Mining distance, Max radius), right cards Timing (Idle, Wait, Dock time limit) and Run (Enabled, Repeat). Then full-width card Fuel (3 rows: icon | checkbox | "min" box | "max" box), full-width card Unload ores (4 columns x 2 rows, icon + checkbox per cell), Btn_ApplyGlobal bottom right. Columns 60/40 (fill 1.2 / 0.8). The Mining card stretches to the height of the Timing+Run column (no gap). Number boxes are fixed width 80. Display labels Lbl_Fuel<K>Threshold / Lbl_Fuel<K>Amount read "min" / "max" (widget names and Lua keys fuel_<k>_threshold/_amount unchanged).
 - Txt_OpRadiusLabel "Radius" / Edt_Radius
 - Txt_OpMiningDistLabel "Mining distance" / Edt_MiningDistance
@@ -91,7 +91,7 @@ Layout (names below unchanged; only Row_*/Lbl_* layout widgets are added, none a
 - Txt_OpDockLimitLabel "Dock time limit (s)" / Edt_DockHoldLimit (max seconds at the dock for unload/refuel before undock + error stop; 0 = no limit; per ship)
 - Chk_Enabled "Enabled", Chk_Repeat "Repeat"
 - Per fuel (Deuterium, Hydrogen, Warp): Chk_Fuel<K>On, Edt_Fuel<K>Threshold, Edt_Fuel<K>Amount (K = Deuterium|Hydrogen|Warp)
-- Per ore (Cobalt, Graphite, Iridium, Nickel, Silica, Titanium, Water Ice): Chk_Unload<K> (7 toggles, K = ore name without space, e.g. WaterIce)
+- Unload ores card removed (collapsed in the WBP): an ore is unloaded when its Ship-tab unload dock list is not empty. Chk_Unload<K> (K = ore name without space, e.g. WaterIce) stay in the tree as hidden variables; Lua no longer reads them.
 - Per fuel icon: Img_Fuel<K> Image Hidden 24x24, Is Variable (Lua sets brush from Item.Icon; Deuterium=ITEM_EnrichedFuel, Hydrogen=ITEM_HydrogenFuel, Warp=ITEM_WarpFuel).
 - Per ore icon: Img_Unload<K> Image Hidden 24x24, Is Variable (K = Cobalt|Graphite|Iridium|Nickel|Silica|Titanium|WaterIce; ids ITEM_CobaltOre, ITEM_Graphite, ITEM_IridiumOre, ITEM_NickelOre, ITEM_Silica, ITEM_TitaniumOre, ITEM_WaterIce).
 - Btn_ApplyGlobal "Set as default" (old plain Apply button removed; every value saves instantly).

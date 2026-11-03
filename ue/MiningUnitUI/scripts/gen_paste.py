@@ -648,6 +648,7 @@ def build_tree():
         fill=1, pad=(0, 0, 8, 0), v="Center") for k in ORES]
     ore_chks.append(S(N("SizeBox", "Row_OreSpacer", var=False), fill=1))
     c_ores = card("Ores", "Lbl_HdrOres", "Unload ores", [hrow("Row_Ores1", ore_chks[:4]), hrow("Row_Ores2", ore_chks[4:])])
+    c_ores.props.append(("Visibility", "Collapsed"))
     c_belt = card("Warp", "Lbl_HdrWarp", "Warp management", [
         row("Txt_OpBeltLabel", "Sector Selector", select_field("Belt")),
         crow("Txt_OpWarpRangeLabel", "Warp range", edt("Edt_WarpRange")),

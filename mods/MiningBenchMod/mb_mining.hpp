@@ -84,6 +84,8 @@ namespace
         std::set<int> tried;                   // sectors already searched without a rock this belt run (cleared when mining starts)
         int32_t hull = -1;                     // Health at the last check (-1 = no baseline); a drop = attacked
         bool flee = false;                     // hull hit: the dock trip ends in HALT (trip_end)
+        int64_t unl_prev = -1;                 // unload chain: docked-ore cargo after the last dock trip (-1 = first hop)
+        bool unl_undock = false;               // MS_UNDOCK: the undock is the unload chain's (then dock_mining trip), not the seek undock
         double since_stop = 1e9;               // seconds since STOP ALL (mine_halt)
         double scan_t = 0.0;                   // ROCKSCAN diagnostic: seconds since the last SEEK line
         int scan_n = 0;                        // ROCKSCAN diagnostic: SEEK lines logged this arrival (max 8)
@@ -498,6 +500,22 @@ namespace
         return false;
     }
 
+    // WHAT: cargo sum of ores that have an unload dock (names = those ores); nodock = ores in cargo with no dock list.
+    int64_t unload_pending(UObject* ship, const Config& c, std::wstring& names, std::wstring& nodock)
+    {
+        int64_t sum = 0;
+        for (int i = 0; i < N_ORE; ++i)
+        {
+            std::wstring w;
+            UObject* it = item_c(ORE_ITEM[i], w);
+            const int64_t have = alive(it) ? inv_total(ship, it) : 0;
+            if (have <= 0) continue;
+            if (c.ore_docks[i].empty()) nodock += widen(ORE_KEY[i]) + STR(" ");
+            else { sum += have; names += widen(ORE_KEY[i]) + STR(" "); }
+        }
+        return sum;
+    }
+
     // trip finished at the dock: autopilot off, then continue / stop. Orders are left in place (next build clears them, undock reuses a DeliverOrder).
     void trip_end(UObject* ship, int sid, MineSt& m, const Config& c)
     {
@@ -506,6 +524,33 @@ namespace
         zero_all(ship);
         // hull hit: fled to dock, the trip is over for good
         if (m.flee) { m.flee = false; m.fin = false; m.err = true; m.st = MS_HALT; mset(sid, m, STR("ERROR: hull damaged, fled to dock, stopped"), STR("ERROR: ship was attacked, fled to dock, stopped")); return; }
+        // unload chain: another dock trip while docked ores are still in cargo and it shrank; an ore with no dock left = HALT
+        if (!is_refuel(m) && !g_dock_pick.count(sid))
+        {
+            std::wstring names, nodock;
+            const int64_t now = unload_pending(ship, c, names, nodock);
+            if (unload_chain_more(m.unl_prev, now))
+            {
+                m.unl_prev = now;
+                mlog(sid, STR("Unload: undock before next dock, ore: ") + names);
+                cancel_dock_job(ship, sid);
+                g_job_res.erase(sid);
+                const std::wstring r = job_start(sid, "undock", -1);
+                if (r == STR("waiting")) { m.unl_undock = true; m.st = MS_UNDOCK; m.t = 0.0; mset(sid, m, STR("undocking for next dock")); return; }
+                if (!ok_res(r)) { m.sweep = false; m.fin = false; m.err = true; m.st = MS_HALT; mset(sid, m, STR("ERROR: undock failed: ") + r, STR("ERROR: undock failed: ") + r); return; }
+                trip_begin(ship, sid, m, STR("more ore to unload: ") + names, "dock_mining");
+                return;
+            }
+            m.unl_prev = -1;
+            if (!nodock.empty())
+            {
+                m.sweep = false; m.fin = false; m.err = true; m.st = MS_HALT;
+                mlog(sid, STR("ERROR: no unload dock for ") + nodock);
+                mset(sid, m, STR("ERROR: no unload dock for ") + nodock, STR("ERROR: no unload dock for ") + nodock);
+                return;
+            }
+        }
+        else m.unl_prev = -1;
         // sweep: unloaded, back to the sweep (undock, return to the field)
         if (m.sweep)
         {
@@ -624,7 +669,7 @@ namespace
         if (cargo_full(ship, item) || m.cargo_pct >= 100)   // pct 100 = every non-fuel slot used (a partial stack can still take 1: HasSpaceForItems says yes)
         {
             // loop guard: a second unload from CHECK without mining in between means the cargo is not in the unload list
-            if (m.unl_chk++ >= 1) { m.st = MS_HALT; mset(sid, m, STR("cargo still full after unload (is the ore enabled for unload?)")); return; }
+            if (m.unl_chk++ >= 1) { m.st = MS_HALT; mset(sid, m, STR("cargo still full after unload (does the ore have an unload dock?)")); return; }
             trip_begin(ship, sid, m, STR("cargo ready to unload"));
             return;
         }
@@ -681,6 +726,13 @@ namespace
     {
         for (const DockJob& j : g_jobs) if (j.sid == sid) return;
         const std::wstring r = g_job_res[sid];
+        if (m.unl_undock)   // unload chain: undock done, next dock_mining trip (trip_end)
+        {
+            m.unl_undock = false;
+            if (ok_res(r)) { trip_begin(ship, sid, m, STR("more ore to unload"), "dock_mining"); return; }
+            m.sweep = false; m.fin = false; m.err = true; m.st = MS_HALT; mset(sid, m, STR("ERROR: undock failed: ") + r, STR("ERROR: undock failed: ") + r);
+            return;
+        }
         if (ok_res(r)) { std::wstring wy; UObject* it2 = item_c(c.resource, wy); if (!after_undock(ship, sid, m, c, it2)) mset(sid, m, STR("undocked, seeking rock")); }
         else { m.st = MS_HALT; mset(sid, m, STR("undock failed: ") + r); }
         return;
@@ -998,7 +1050,7 @@ namespace
                 if (m.unl_chk++ >= 1)
                 {
                     m.sweep = false; m.st = MS_HALT; m.err = true;
-                    mset(sid, m, STR("ERROR: cargo still full after unload (is the ore enabled for unload?)"), STR("ERROR: cargo still full after unload (is the ore enabled for unload?)"));
+                    mset(sid, m, STR("ERROR: cargo still full after unload (does the ore have an unload dock?)"), STR("ERROR: cargo still full after unload (does the ore have an unload dock?)"));
                     return;
                 }
                 int sys = 0;
@@ -1146,11 +1198,10 @@ namespace
         else { m.st = MS_HALT; mset(sid, m, STR("dock trip failed: ") + r); }
         return;
     }
-    // WHAT: true when ore i is unloaded on this ship's current dock trip: enabled and in g_unl_ores[sid]. No entry for the ship = every enabled ore.
+    // WHAT: true when ore i is unloaded on this ship's current dock trip: in g_unl_ores[sid]. No entry for the ship = every ore.
     // WHY: the other ores stay in cargo for the next trip, so MS_HOLD must not wait for them.
     bool unl_ore(int sid, int i, const Config& c)
     {
-        if (!c.ore_on[i]) return false;
         auto it = g_unl_ores.find(sid);
         if (it == g_unl_ores.end()) return true;
         return std::find(it->second.begin(), it->second.end(), i) != it->second.end();
@@ -1598,7 +1649,7 @@ namespace
         m.run = start;
         if (start)
         {
-            m.btn = false;             g_item_idx[sid] = 0; m.got = 0; m.fin = false; m.noore = false;   // always: a stale queue position must not survive a Start
+            m.btn = false;             g_item_idx[sid] = 0; m.got = 0; m.fin = false; m.noore = false; m.unl_prev = -1; m.unl_undock = false;   // always: a stale queue position must not survive a Start
             m.sweep = false;
             m.flee = false; m.warp_to = 0; m.tried.clear(); m.hull = -1; m.dl_n = 0;    // a new run starts with no flee, no pending warp, no sector blacklist, no dock time limit rounds
             if (m.st == MS_HALT) m.st = MS_OFF;
@@ -1618,7 +1669,7 @@ namespace
         if (!alive(ship)) return STR("error: ship not found");
         if (!g_compat.ok(F_MINING)) return STR("error: COMPAT: mining disabled");
         MineSt& m = g_mine[sid];
-        m.run = false; m.leave = false; m.fin = false; m.btn = true; m.err = false;
+        m.run = false; m.leave = false; m.fin = false; m.btn = true; m.err = false; m.unl_prev = -1; m.unl_undock = false;
         m.sweep = true; m.sw_rescans = 0; m.sw_back = false; m.sw_nofly = false; m.sw_ore = nullptr; m.unl_chk = 0;
         m.sw_undock_n = 0; m.sw_found = -1; m.sw_frame = false;
         m.st = MS_SWEEP; m.t = 0.0;

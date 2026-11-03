@@ -80,8 +80,6 @@ namespace
             f.push_back({widen(base + "_threshold"), std::to_wstring(c.fuel[i].threshold)});
             f.push_back({widen(base + "_amount"), std::to_wstring(c.fuel[i].amount)});
         }
-        for (int i = 0; i < N_ORE; ++i)
-            f.push_back({widen(std::string("ore_") + ORE_KEY[i]), std::to_wstring(c.ore_on[i])});
         // WHAT: dock lists (unload per ore, refuel) appended last, as "id,id,".
         for (int i = 0; i < N_ORE; ++i)
             f.push_back({widen(std::string("unload_docks_") + ORE_KEY[i]), ids_text(c.ore_docks[i])});
@@ -226,12 +224,6 @@ namespace
                     ensure_key(thr.c_str(), std::to_string(def.fuel[i].threshold).c_str(), c_thr.c_str());
                     ensure_key(amt.c_str(), std::to_string(def.fuel[i].amount).c_str(), c_amt.c_str());
                 }
-                for (int i = 0; i < N_ORE; ++i)
-                {
-                    const std::string k = std::string("ore_") + ORE_KEY[i];
-                    const std::string cm = k + ": 1 = unload " + ORE_KEY[i] + " at the mining dock (global only)";
-                    ensure_key(k.c_str(), std::to_string(def.ore_on[i]).c_str(), cm.c_str());
-                }
             }
 
             // WHAT: builds the new global config nc from kv.
@@ -250,7 +242,7 @@ namespace
             if (nc.record_interval_seconds < 1) nc.record_interval_seconds = 1;
             if (kv.count("kill_switch")) nc.kill_switch = to_int(kv["kill_switch"], 0) != 0;
             if (nc.log_interval_seconds < 1) nc.log_interval_seconds = 1;
-            // WHAT: wait, per-fuel and per-ore keys (global only). An empty or non-number value falls back to the struct default (to_int).
+            // WHAT: wait and per-fuel keys (global only). An empty or non-number value falls back to the struct default (to_int).
             // WHY: the INI may predate these keys; ensure_key below adds them on first load.
             if (kv.count("wait_seconds")) nc.wait_seconds = to_int(kv["wait_seconds"], 10);
             for (int i = 0; i < N_FUEL; ++i)
@@ -259,11 +251,6 @@ namespace
                 if (kv.count(base + "_on")) nc.fuel[i].on = to_int(kv[base + "_on"], nc.fuel[i].on);
                 if (kv.count(base + "_threshold")) nc.fuel[i].threshold = to_int(kv[base + "_threshold"], nc.fuel[i].threshold);
                 if (kv.count(base + "_amount")) nc.fuel[i].amount = to_int(kv[base + "_amount"], nc.fuel[i].amount);
-            }
-            for (int i = 0; i < N_ORE; ++i)
-            {
-                const std::string k = std::string("ore_") + ORE_KEY[i];
-                if (kv.count(k)) nc.ore_on[i] = to_int(kv[k], nc.ore_on[i]);
             }
             // raw per meter must be positive. The value also replaces g_raw_per_m, which the mod math uses.
             if (kv.count("raw_per_meter"))

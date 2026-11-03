@@ -153,19 +153,19 @@ namespace
         return false;
     }
 
-    // WHAT: unload dock for a dock_mining trip. fixed > 0 = the Dock picker's dock; else the first free dock in list order of the enabled ores
-    //       (ores with cargo first, ore order inside each group). ores = enabled ores whose list holds the chosen dock (ORE indices).
-    //       Returns 0 with busy=false when no enabled ore has a dock; busy=true when the dock is taken or every listed dock is busy.
+    // WHAT: unload dock for a dock_mining trip. fixed > 0 = the Dock picker's dock; else the first free dock in list order of the ores that have an unload dock
+    //       (ores with cargo first, ore order inside each group). ores = ores whose list holds the chosen dock (ORE indices).
+    //       Returns 0 with busy=false when no ore has a dock; busy=true when the dock is taken or every listed dock is busy.
     // WHY: one trip unloads at one dock (ob_plan_unload takes one dock); the other ores wait in cargo for the next trip.
     int unload_pick(int sid, UObject* ship, const Config& c, int fixed, std::vector<int>& ores, bool& busy)
     {
         ores.clear();
         busy = false;
-        std::vector<int> cand;   // enabled ores with a dock list: cargo first
+        std::vector<int> cand;   // ores with a dock list: cargo first
         for (int pass = 0; pass < 2; ++pass)
             for (int i = 0; i < N_ORE; ++i)
             {
-                if (!c.ore_on[i] || c.ore_docks[i].empty()) continue;
+                if (c.ore_docks[i].empty()) continue;
                 std::wstring w;
                 UObject* it = item_c(ORE_ITEM[i], w);
                 const bool has = alive(it) && inv_total(ship, it) > 0;
@@ -230,14 +230,14 @@ namespace
         // 3. target dock
         if (cmd == "undock")
         {
-            // leave the current dock: second dock = first free refuel candidate, then first free unload dock of an enabled ore; never the current dock
+            // leave the current dock: second dock = first free refuel candidate, then first free unload dock of any ore; never the current dock
             UObject* cur = get_obj_prop(ship, STR("Dock"));
             if (!alive(cur)) { g_undock_state = STR("free"); return STR("ok already free"); }
             int32_t cur_id = 0;
             if (!get_int_prop(ship, STR("DockID"), cur_id) || cur_id <= 0) cur_id = obj_id(cur);
             const Config c = eff_cfg(sid);
             std::vector<int> cands = refuel_candidates(c, why);
-            for (int i = 0; i < N_ORE; ++i) if (c.ore_on[i]) for (int d : c.ore_docks[i]) add_unique(cands, d);
+            for (int i = 0; i < N_ORE; ++i) for (int d : c.ore_docks[i]) add_unique(cands, d);
             cands.erase(std::remove(cands.begin(), cands.end(), cur_id), cands.end());
             if (cands.empty()) return STR("error: need a second configured dock to leave");
             dk = cands.front();
@@ -263,13 +263,8 @@ namespace
             bool busy = false;
             dk = unload_pick(sid, ship, c, fixed, unl, busy);
             if (busy) { tlog(STR("unload dock busy, ship ") + std::to_wstring(sid) + STR(" waits")); return STR("waiting dock"); }
-            if (dk <= 0)
-            {
-                bool any_on = false;
-                for (int i = 0; i < N_ORE; ++i) any_on = any_on || c.ore_on[i];
-                return any_on ? STR("error: no unload dock set") : STR("error: no ore enabled");
-            }
-            if (unl.empty()) return STR("error: no enabled ore lists this dock");
+            if (dk <= 0) return STR("error: no unload dock set");
+            if (unl.empty()) return STR("error: no ore lists this dock");
         }
         // 4. order list readable
         TArray<int32_t>* ids = int_array(ship, STR("OrderIDs"));
