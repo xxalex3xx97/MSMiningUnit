@@ -733,6 +733,10 @@ namespace
         return false;
     }
 
+    // WHAT: a dock job must undock first when the ship sits at another dock than its target (docked_at 0 = not docked, target 0 = none).
+    // WHY: a dock order from a dock does not move the ship (stuck retries, live log 16:03): undock, then dock.
+    inline bool dock_undock_first(int docked_at, int target) { return docked_at > 0 && target > 0 && docked_at != target; }
+
     // WHAT: ship must unload before it refuels: only a refuel trip with ore of this dock in cargo.
     inline bool net_unload_first(bool has_dock_ore, Purpose purpose) { return has_dock_ore && purpose == P_REFUEL; }
 

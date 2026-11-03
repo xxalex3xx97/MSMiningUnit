@@ -437,6 +437,7 @@ namespace
     // WHAT: ship sid leaves the dock network for good (stop, halt, new trip, ship gone): holding slot cleared (slot_clear), then net_leave.
     void net_leave_slot(int sid)
     {
+        g_dock_after_undock.erase(sid);   // a stopped or new trip does not start its dock command after an undock
         slot_clear(sid);
         net_leave(sid);
     }
@@ -1529,6 +1530,11 @@ namespace
             return;
         }
         if (ok_res(r)) { m.st = MS_HOLD; m.t = 0.0; m.hold_idle = 0.0; m.hold_last = -1; m.chk_t = MINE_HOLD_CHECK_S; m.hold_seen = false; m.left_last.clear(); mset(sid, m, STR("docked, waiting for orders to finish"), is_refuel(m) ? STR("Docked, refueling") : STR("Docked, unloading")); }
+        else if (r.find(STR("seems stuck")) != std::wstring::npos)
+        {
+            m.err = true; m.st = MS_HALT;
+            mset(sid, m, STR("ERROR: Cannot move: seems stuck (docked?)"), STR("Cannot move: ") + widen(net_ship_label(sid)) + STR(" seems stuck (docked?)"));
+        }
         else { m.st = MS_HALT; mset(sid, m, STR("dock trip failed: ") + r); }
         return;
     }

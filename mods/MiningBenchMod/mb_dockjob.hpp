@@ -34,6 +34,8 @@ namespace
 
     // WHAT: end job idx: remove it from g_jobs, log the result, and set the command result when this job is still the last command.
     // WHY: one exit path for dock and undock jobs. The seq check keeps an old job from overwriting a newer command's result.
+    std::wstring job_start_run(int sid, const std::string& cmd0, int seq);   // defined below (job_start body)
+
     void job_finish(size_t idx, const std::wstring& res)
     {
         const DockJob j = g_jobs[idx];
@@ -42,6 +44,17 @@ namespace
         mine_status_x_write();   // job column clears now, not at the next second
         tlog(STR("seq=") + std::to_wstring(j.seq) + STR(" ") + widen(j.cmd) + STR(" ship=") + std::to_wstring(j.sid) + STR(" result: ") + res);
         if (g_cmd.seq == j.seq) g_cmd.result = res;
+        // the undock was the first step of a dock trip: the dock job starts now, so the trip sees one job running (no gap with a result)
+        const auto pend = g_dock_after_undock.find(j.sid);
+        if (j.cmd == "undock" && pend != g_dock_after_undock.end())
+        {
+            const std::string next = pend->second;
+            g_dock_after_undock.erase(pend);
+            if (!ok_res(res)) return;
+            const std::wstring r = job_start_run(j.sid, next, j.seq);
+            if (r == STR("waiting")) g_job_res.erase(j.sid);   // dock job running: its result comes later
+            else g_job_res[j.sid] = r;
+        }
     }
 
     // WHAT: call DMSPlayerController.SkipToOrder(ShipID, NewIndex = idx). Always sent (no CurrentOrderIndex check).
@@ -213,6 +226,23 @@ namespace
         return false;
     }
 
+    // WHAT: the ship sits at a dock other than this job's target: the pick is dropped, the undock starts now, and the dock command runs when the undock ends ok (job_finish).
+    // WHAT: returns "" when no undock is needed (the caller goes on), else the result of the undock start ("waiting" = started).
+    // WHY: a dock order from a dock does not move the ship (live log 16:03: stuck retries, Stop All + Undock was the only fix).
+    std::wstring undock_first(int sid, UObject* ship, int target, const std::string& cmd, int seq)
+    {
+        const int at = net_docked_at(sid, ship);
+        if (!dock_undock_first(at, target)) return STR("");
+        net_release_ship(g_net_docks, g_net_ships, sid);   // the pick's reservation and queue place go
+        tlog(STR("undock first: ship ") + std::to_wstring(sid) + STR(" docked at ") + std::to_wstring(at) + STR(", target ") + std::to_wstring(target));
+        g_dock_after_undock[sid] = cmd;
+        const std::wstring r = job_start_run(sid, "undock", seq);
+        if (r == STR("waiting")) return r;
+        g_dock_after_undock.erase(sid);
+        if (r == STR("ok already free")) return job_start_run(sid, cmd, seq);   // not docked after all: the dock command runs now
+        return r;
+    }
+
     // WHAT: start a dock_mining, dock_refuel or undock job for ship sid. Returns "waiting" when started, else the error text.
     //       dock_auto picks dock_refuel or dock_mining with auto_rule.
     //       Steps: 1 refuse if a dock job already runs for this ship. 2 find the ship. 3 pick the target dock:
@@ -264,6 +294,7 @@ namespace
             if (cands.empty()) return why == STR("no dock configured") ? why : STR("error: ") + why;
             const NetVerdict v = net_pick(g_net_docks, g_net_ships, g_net_ticket, sid, P_REFUEL, net_req_of(sid, P_REFUEL), cands, 0, g_now);
             if (v.k == NetVerdict::ERR) return net_refusal(v, net_dock_label(cands.front()));
+            { const std::wstring u = undock_first(sid, ship, v.dock, cmd, seq); if (!u.empty()) return u; }
             if (v.k == NetVerdict::WAIT) { tlog(STR("refuel docks busy, ship ") + std::to_wstring(sid) + STR(" waits")); return STR("waiting dock"); }
             dk = v.dock;
         }
@@ -276,6 +307,7 @@ namespace
             std::string subject;
             const NetVerdict v = unload_pick(sid, ship, c, fixed, unl, subject);
             if (v.k == NetVerdict::ERR) return net_refusal(v, subject);
+            { const std::wstring u = undock_first(sid, ship, v.dock, cmd, seq); if (!u.empty()) return u; }
             if (v.k == NetVerdict::WAIT) { tlog(STR("unload dock busy, ship ") + std::to_wstring(sid) + STR(" waits")); return STR("waiting dock"); }
             dk = v.dock;
             if (unl.empty()) return STR("error: no ore lists this dock");
@@ -373,6 +405,8 @@ namespace
     //       7 dock job: done when DockID or Dock equals the target ("ok"); a log line every CMD_WATCH_LOG_S (1 s); CMD_WATCH_S (180 s) -> timeout error.
     // WHY: the code waits for the order to show the target dock (stage 1, up to 3 s), then turns the autopilot on and sends SkipToOrder
     //      (brief Updates 23-26). Why the wait is needed is unknown (ported as is). Work is split over poll steps so the engine tick stays short.
+    constexpr int DOCK_STALL_MAX = 5;   // stall retries per dock job before it ends with "error: cannot move"
+
     void jobs_tick(double dt)
     {
         ob_tick(dt);   // order builders (mb_orders.hpp) and filter syncs (mb_filters.hpp) run one send per call
@@ -519,9 +553,28 @@ namespace
                 double me[3] = {0, 0, 0};
                 get_loc(ship, me);
                 if (j.stall_t < 0.0 || dist3(me, j.p_stall) >= g_raw_per_m) { j.stall_t = 0.0; std::copy(me, me + 3, j.p_stall); }
-                else if ((j.stall_t += dt) >= 10.0 && j.retries < 5)
+                else if ((j.stall_t += dt) >= 10.0)
                 {
+                    if (j.retries >= DOCK_STALL_MAX)   // retries used up: no more silent loop, the trip ends with a red error
+                    {
+                        log_line(STR("DOCK stuck ship=") + std::to_wstring(j.sid) + STR(": cannot move after ") + std::to_wstring(j.retries) + STR(" retries, job ended"));
+                        job_finish(i, STR("error: cannot move: seems stuck (docked?)"));
+                        continue;
+                    }
                     ++j.retries; j.stall_t = 0.0;
+                    if (j.retries >= 2 && net_docked_at(j.sid, ship) > 0)
+                    {
+                        // docked: a repeated dock order does not move the ship, so undock first; the dock command runs again after the undock (job_finish)
+                        const std::string cmd = j.cmd;
+                        const int sid = j.sid, seq = j.seq;
+                        log_line(STR("DOCK retry ") + std::to_wstring(j.retries) + STR(" ship=") + std::to_wstring(sid) + STR(": still docked, undock first, then the dock job again"));
+                        g_dock_after_undock[sid] = cmd;
+                        job_finish(i, STR("undock first"));
+                        const std::wstring r = job_start_run(sid, "undock", seq);
+                        if (r == STR("waiting")) g_job_res.erase(sid);
+                        else { g_dock_after_undock.erase(sid); g_job_res[sid] = r; }
+                        continue;
+                    }
                     std::wstring err;
                     log_line(STR("DOCK retry ") + std::to_wstring(j.retries) + STR(" ship=") + std::to_wstring(j.sid) + STR(": not moving for 10 s, repeat job, autopilot off/on, repeat job"));
                     skip_to(ship, j.new_index, err);                  // 1 repeat the job: back to the dock order

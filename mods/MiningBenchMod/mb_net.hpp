@@ -49,6 +49,20 @@ namespace
     std::string net_dock_label(int id) { const std::string n = net_name(g_net_dock_names, id); return n.empty() ? std::to_string(id) : n; }
     std::string net_ship_label(int sid) { const std::string n = net_name(g_net_ship_names, sid); return n.empty() ? std::to_string(sid) : n; }
     std::set<int> g_flee_pick;            // ships whose dock trip is a hull flee (purpose P_FLEE until the job starts)
+    std::map<int, std::string> g_dock_after_undock;   // ship -> dock command to start when its undock (first step) ends ok
+
+    // WHAT: dock id the ship is docked at, 0 = not docked. Table occupancy first (net_tick: DockID or Dock object), then the ship's own DockID / Dock.
+    // WHY: ship_docked() needs both props and read false for docked ships (live log 16:03): one source is not enough.
+    int net_docked_at(int sid, UObject* ship)
+    {
+        for (const auto& kv : g_net_docks) if (kv.second.occ == sid) return kv.first;
+        if (!alive(ship)) return 0;
+        int32_t did = 0;
+        get_int_prop(ship, STR("DockID"), did);
+        if (did > 0) return did;
+        UObject* d = get_obj_prop(ship, STR("Dock"));
+        return alive(d) ? obj_id(d) : 0;
+    }
     constexpr double NET_FULL_S = 300.0;  // a FULL mark clears after this long (s), or earlier when the ore cargo shrinks there
 
     // WHAT: ship sid leaves the dock network (stop, halt, new trip, ship gone): queue place, ticket and reservation go. Logs RELEASE.
