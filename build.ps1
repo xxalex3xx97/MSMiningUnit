@@ -31,5 +31,17 @@ if ($Install) {
     $bk = "$deps\build\backups\main.$(Get-Date -f yyyyMMdd-HHmmss).dll"
     Copy-Item "$game\main.dll" $bk
     Copy-Item $dll "$game\main.dll" -Force
+    # mscore.mod (manager Installed column) + MSCore install list (lets the manager Remove this mod)
+    $vh = Get-Content "$src\mods\MiningBenchMod\mb_version.hpp" -Raw
+    if ($vh -notmatch 'kVersion\s*=\s*"([^"]+)"') { throw "kVersion not found in mb_version.hpp" }
+    $ver = $Matches[1]
+    $modDir = Split-Path $game -Parent
+    $utf8 = New-Object System.Text.UTF8Encoding $false
+    [IO.File]::WriteAllText("$modDir\mscore.mod", "name=MiningBenchMod`nrepo=xxalex3xx97/MiningBenchMod`nversion=$ver`n", $utf8)
+    $files = @('Mods/MiningBenchMod/dlls/main.dll', 'Mods/MiningBenchMod/mscore.mod')
+    if (Test-Path "$modDir\enabled.txt") { $files += 'Mods/MiningBenchMod/enabled.txt' }
+    $ilDir = "$gameDir\Binaries\Win64\ue4ss\Mods\MSCore\installed"
+    New-Item -ItemType Directory -Force $ilDir | Out-Null
+    [IO.File]::WriteAllText("$ilDir\MiningBenchMod.txt", "$ver`n" + (($files | Sort-Object) -join "`n") + "`n", $utf8)
     "Installed. Backup: $bk"
 }
