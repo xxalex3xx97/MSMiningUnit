@@ -1383,6 +1383,55 @@ namespace
         }
     }
 
+    constexpr double WARP_TRIP_STANDOFF_M = 300.0;   // a far dock trip warps to this distance from the dock
+
+    // WHAT: far dock trip (dock job stage 2, once per job): a ship more than warp_trip_km from its dock warps to 300 m out from the dock when it has warp fuel. Else it keeps flying. Returns true when the teleport was sent.
+    // WHY: a slow flight over a long distance hit the dock timeout (live case: 10 km). The warp shortens the trip; the timeout clock resets on progress (jobs_tick).
+    bool trip_warp_try(UObject* ship, int sid, int dock)
+    {
+        const std::wstring who = STR("TRIPWARP ship=") + std::to_wstring(sid) + STR(" skip: ");
+        const auto pi = g_net_dockpos.find(dock);
+        if (pi == g_net_dockpos.end() || !pi->second.known) { log_line(who + STR("dock position unknown")); return false; }
+        DockPos& dp = pi->second;
+        const int sys = sys_id(ship);
+        int64_t ch[3] = {0, 0, 0};
+        double loc[3] = {0, 0, 0};
+        if (!(sys > 0 && get_chunk(ship, ch) && get_loc(ship, loc))) { log_line(who + STR("ship position unreadable")); return false; }
+        if (sys != dp.sys) { log_line(who + STR("other system")); return false; }
+        if (ship_docked(ship)) { log_line(who + STR("ship docked")); return false; }
+        double a[3], dk[3];
+        dock_abs_m(ch, loc, a);
+        dock_abs_m(dp.ch, dp.loc, dk);
+        const double v[3] = {a[0] - dk[0], a[1] - dk[1], a[2] - dk[2]};
+        const double dist = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+        const Config c = eff_cfg(sid);
+        if (!trip_warp_wanted(dist, c.warp_trip_km)) return false;
+        int32_t drive = 0;
+        if (!call_int(ship, STR("GetAvailableJumpFuel"), drive) || !warp_fuel_ok(true, dist / DOCK_CHUNK_M, 0, drive))
+        {
+            log_line(who + STR("no warp fuel, flying drive=") + std::to_wstring(drive) +
+                     STR(" need=") + std::to_wstring(warp_fuel_need(dist / DOCK_CHUNK_M)));
+            return false;
+        }
+        double off[3], tch_loc[3];
+        int64_t tch[3];
+        for (int i = 0; i < 3; ++i) off[i] = v[i] / dist * WARP_TRIP_STANDOFF_M;
+        dock_add_m(dp.ch, dp.loc, off, tch, tch_loc);
+        chunk_hold_target(sid, dp.sys, tch);
+        const int64_t arr[3] = {static_cast<int64_t>(tch_loc[0]), static_cast<int64_t>(tch_loc[1]), static_cast<int64_t>(tch_loc[2])};
+        std::wstring e;
+        if (!warp_send(sid, dp.sys, tch, arr, false, e))
+        {
+            chunk_hold_target_clear(sid);
+            log_line(who + STR("warp failed: ") + e);
+            return false;
+        }
+        log_line(STR("TRIPWARP ship=") + std::to_wstring(sid) + STR(" dock=") + std::to_wstring(dock) +
+                 STR(" dist_m=") + std::to_wstring(dist) + STR(" km_limit=") + std::to_wstring(c.warp_trip_km));
+        mlog(sid, STR("Far trip: warping to dock"));
+        return true;
+    }
+
     // WHAT: MS_TRIP: dock trip (job result).
     void st_trip(UObject* ship, int sid, MineSt& m, double dt, const Config& c)
     {

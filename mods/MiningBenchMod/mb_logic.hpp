@@ -68,6 +68,8 @@ namespace
         int idle_seconds = 0;
         // s: max time at the dock for unload/refuel with items left; then undock, wait 30 s, dock again (10 rounds, then undock + idle). Not an error. 0 = no limit. (INI: dock_hold_limit)
         int dock_hold_limit = 300;
+        // km: a dock trip longer than this warps when the ship has warp fuel. (INI: warp_trip_km)
+        int warp_trip_km = 5;
         // s: how often tick_work runs (ship scan, lists). Minimum 1 (clamped on load). (INI: log_interval_seconds)
         int log_interval_seconds = 10;
         // s: minimum time between order attempts per ship. No order is issued in M3a, so this is inactive. (INI: order_retry_seconds)
@@ -218,6 +220,7 @@ namespace
         if (auto v = get("radius")) { if (!trim(*v).empty()) c.radius = *v; }
         if (auto v = get("idle_seconds")) c.idle_seconds = to_int(*v, 0);
         if (auto v = get("dock_hold_limit")) c.dock_hold_limit = to_int(*v, 300);
+        if (auto v = get("warp_trip_km")) c.warp_trip_km = to_int(*v, 5);
         if (auto v = get("mining_distance")) { if (!trim(*v).empty()) c.mining_distance = *v; }
         if (auto v = get("warp_range")) { if (!trim(*v).empty()) c.warp_range = *v; }
         if (auto v = get("fuel_margin")) c.fuel_margin = to_int(*v, 0);
@@ -334,6 +337,18 @@ namespace
     bool warp_fuel_ok(bool same_system, double dist_chunks, long long jump_cost, long long drive)
     {
         return same_system ? warp_fuel_need(dist_chunks) <= drive : 2LL * jump_cost <= drive;
+    }
+
+    // WHAT: dock trip warps when it is longer than km kilometres.
+    inline bool trip_warp_wanted(double dist_m, int km) { return dist_m > km * 1000.0; }
+
+    // WHAT: dock-job timeout clock reset. best_m = distance at last reset (<0 = none yet). now_m <= 0 = unreadable, ignored.
+    // Returns true (and sets best_m) on the first reading or when the ship got >= step_m closer since the last reset.
+    inline bool trip_progress(double& best_m, double now_m, double step_m = 500.0)
+    {
+        if (now_m <= 0.0) return false;
+        if (best_m < 0.0 || best_m - now_m >= step_m) { best_m = now_m; return true; }
+        return false;
     }
 
     // WHAT: cargo fill % from slot counts: other / (isz - fuel) * 100, clamped 0..100. 0 when no non-fuel slot is used, -1 when the cargo has no free slot base.

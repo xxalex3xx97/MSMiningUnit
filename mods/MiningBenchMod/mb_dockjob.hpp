@@ -27,6 +27,7 @@
 namespace
 {
     void mine_status_x_write();   // mb_mining.hpp (same anonymous namespace)
+    bool trip_warp_try(UObject* ship, int sid, int dock);   // mb_mining.hpp: warp a far dock trip (true = teleport sent)
 
     // WHAT: undock state text for the status file (undock_state=): "n/a", "docked", "undocking t=..", "free", "error".
     // WHY: the Test tab shows where the undock job is without reading the job list.
@@ -525,6 +526,8 @@ namespace
             const bool okd = get_int_prop(ship, STR("DockID"), dk);
             UObject* dock_obj = get_obj_prop(ship, STR("Dock"));
             const bool at_target = (okd && dk == j.dock) || (alive(dock_obj) && obj_id(dock_obj) == j.dock);
+            if (!j.tw_done && j.stage == 2 && j.skip_wait < 0.0 && !at_target) { j.tw_done = true; trip_warp_try(ship, j.sid, j.dock); }
+            { int64_t draw = 0; if (pnum_prop(ship, STR("DistanceToTarget"), draw) && trip_progress(j.prog_best, static_cast<double>(draw) / g_raw_per_m)) j.prog_t = j.t; }
             if (j.log_acc >= CMD_WATCH_LOG_S)
             {
                 j.log_acc = 0.0;
@@ -546,7 +549,7 @@ namespace
             // a dock this ship holds (reserved for it, or docked there) is never busy: ending the job here restarted the same dock trip every 34 s (live log 15:16-15:18)
             if (!at_target && j.t >= 30.0 && dock_busy(j.dock, j.sid) && !net_owns(j.dock, j.sid)) { job_finish(i, STR("waiting dock")); continue; }
             if (at_target) { tlog(STR("docked at t=") + std::to_wstring(j.t)); job_finish(i, STR("ok")); continue; }
-            if (j.t >= CMD_WATCH_S) { job_finish(i, STR("error: dock timeout after 180 s")); continue; }
+            if (j.t - j.prog_t >= CMD_WATCH_S) { job_finish(i, STR("error: dock timeout after 180 s")); continue; }
             // stall retry: autopilot on but the ship does not move for 10 s (Miner 3 case: thrust 0) -> autopilot off/on + SkipToOrder again, same job and orders
             if (j.stage == 2 && j.skip_wait < 0.0)
             {
