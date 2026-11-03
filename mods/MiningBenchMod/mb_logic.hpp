@@ -670,6 +670,19 @@ namespace
         for (int i = 0; i < 3; ++i) out[i] = len > 0 ? dir[i] / len * m : 0.0;
     }
 
+    // WHAT: chunk + raw loc moved by off_m metres (raw_per_m = raw per metre). A chunk is 134217728 raw (2048 m): the carry goes to the chunk, loc stays in 0..134217728.
+    inline void net_offset_pos(const int64_t ch0[3], const double loc0[3], const double off_m[3], double raw_per_m, int64_t ch[3], double loc[3])
+    {
+        const double chunk_raw = 134217728.0;
+        for (int i = 0; i < 3; ++i)
+        {
+            const double raw = loc0[i] + off_m[i] * raw_per_m;
+            const double carry = std::floor(raw / chunk_raw);
+            ch[i] = ch0[i] + static_cast<int64_t>(carry);
+            loc[i] = raw - carry * chunk_raw;
+        }
+    }
+
     // WHAT: holding slot for ship sid at this dock: the slot it already has, else the lowest free one (1-based). line_slots = slots in the line.
     inline int net_slot_assign(NetDock& nd, int sid)
     {

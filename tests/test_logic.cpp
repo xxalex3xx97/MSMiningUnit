@@ -839,6 +839,21 @@ static void t_net_slot_pos()
     CHECK(std::fabs(o[0] - 150.0) < 1e-9);
 }
 
+static void t_net_offset_carry()
+{
+    const int64_t ch0[3] = {5, -2, 0};
+    const double loc0[3] = {134217000.0, 100.0, 0.0};   // near the +X chunk border
+    const double off[3] = {10.0, -1.0, 0.0};             // metres
+    const double rpm = 65536.0;
+    int64_t ch[3];
+    double loc[3];
+    net_offset_pos(ch0, loc0, off, rpm, ch, loc);
+    CHECK(ch[0] == 6 && std::fabs(loc[0] - (134217000.0 + 10.0 * rpm - 134217728.0)) < 1e-6);   // carried into chunk x+1
+    CHECK(ch[1] == -3 && std::fabs(loc[1] - (100.0 - rpm + 134217728.0)) < 1e-6);          // y goes below 0 raw: carry -1 to chunk y-3
+    CHECK(loc[1] >= 0.0 && loc[1] < 134217728.0);                                            // loc always inside the chunk
+    CHECK(ch[2] == 0 && std::fabs(loc[2]) < 1e-9);
+}
+
 static void t_net_line_spacing()
 {
     // 8 docks 80 m apart on one row, 6 slots each: every pair of slot points must stay >= 50 m apart
@@ -916,7 +931,7 @@ int main()
         {"net_log_gate", t_net_log_gate}, {"net_self_occupant", t_net_self_occupant}, {"net_queue_never_occupant", t_net_queue_never_occupant}, {"net_blocked_by_never_self", t_net_blocked_by_never_self},
         {"net_reconcile", t_net_reconcile}, {"net_release", t_net_release}, {"net_text", t_net_text},
         {"net_score_order", t_net_score_order}, {"net_higher_cargo_wins", t_net_higher_cargo_wins}, {"net_non_preempt", t_net_non_preempt},
-        {"net_flee_no_slot", t_net_flee_no_slot}, {"net_slots", t_net_slots}, {"net_slot_pos", t_net_slot_pos}, {"net_line_spacing", t_net_line_spacing},
+        {"net_flee_no_slot", t_net_flee_no_slot}, {"net_slots", t_net_slots}, {"net_slot_pos", t_net_slot_pos}, {"net_offset_carry", t_net_offset_carry}, {"net_line_spacing", t_net_line_spacing},
         {"net_clear_expired", t_net_clear_expired}, {"net_unload_first", t_net_unload_first},
     };
     for (const Case& c : cases)

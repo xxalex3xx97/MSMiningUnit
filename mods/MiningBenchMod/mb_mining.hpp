@@ -423,7 +423,11 @@ namespace
     {
         const auto mi = g_mine.find(sid);
         UObject* ship = find_by_id(STR("DMSPlayerShipObject"), sid);
-        if (mi != g_mine.end() && mi->second.hold_ph == 1 && alive(ship)) mv_cancel(sid);
+        if (mi != g_mine.end() && mi->second.hold_ph == 1 && alive(ship))
+        {
+            if (mi->second.hold_warp) warp_cancel(sid);
+            mv_cancel(sid);
+        }
         if (mi != g_mine.end()) { mi->second.hold_ph = 0; mi->second.hold_t = 0.0; mi->second.hold_warp = false; }
         for (auto& kv : g_net_docks) net_slot_free(kv.second, sid);
         const auto si = g_net_ships.find(sid);
@@ -1290,6 +1294,171 @@ namespace
         }
     }
 
+    // WHAT: holding slot helpers (D4). A chunk is 2048 m = 134217728 raw. abs = chunk * 2048 + loc / g_raw_per_m (m, same frame for all docks).
+    // WHY: slot points of different docks must be compared in one frame (net_line_dir_fix).
+    constexpr double DOCK_CHUNK_M = 2048.0;
+    constexpr int DOCK_LINE_SLOTS = 6;        // slots checked when a dock line is set (net_line_dir_fix)
+    constexpr double DOCK_SLOT_ARRIVE_M = 100.0;   // a warp to a slot is arrived within this distance
+    constexpr double DOCK_SLOT_WARP_WAIT_S = 15.0; // a slot warp not arrived after this long is tried again
+    constexpr double DOCK_SLOT_RETRY_S = 5.0;      // a failed slot flight/warp start waits this long before the next try
+
+    void dock_abs_m(const int64_t ch[3], const double loc[3], double out[3])
+    {
+        for (int i = 0; i < 3; ++i) out[i] = static_cast<double>(ch[i]) * DOCK_CHUNK_M + loc[i] / g_raw_per_m;
+    }
+
+    // WHAT: chunk + raw loc moved by off_m metres (carry over the chunk border, net_offset_pos in mb_logic.hpp).
+    void dock_add_m(const int64_t ch0[3], const double loc0[3], const double off_m[3], int64_t ch[3], double loc[3])
+    {
+        net_offset_pos(ch0, loc0, off_m, g_raw_per_m, ch, loc);
+    }
+
+    // WHAT: flight or warp to the slot is over: stop, hold (hold_ph 2), phase holding, Control lines.
+    void slot_arrive(UObject* ship, int sid, MineSt& m, NetShip& s, int d)
+    {
+        zero_all(ship);
+        if (m.hold_warp) chunk_hold_target_clear(sid);
+        m.hold_warp = false; m.hold_t = 0.0;
+        m.hold_ph = 2; s.phase = 2;
+        const std::wstring slot_no = std::to_wstring(s.slot);
+        mlog(sid, STR("Control: ") + widen(net_ship_label(sid)) + STR(" holding at slot ") + slot_no);
+        log_line(STR("CONTROL ship=") + std::to_wstring(sid) + STR(" holding at slot ") + slot_no + STR(" dock=") + std::to_wstring(d));
+    }
+
+    // WHAT: waiting ship sid goes to its holding slot near the dock and holds there. Returns false only when the dock position is unknown.
+    // WHAT: the dock's line is set on its first slot: direction from the dock toward this ship (+X when the ship is in another system), turned by net_line_dir_fix.
+    // WHAT: close in the same system (sweep_fly_back) = point flight (approach_rock with PtTarget); else warp_send. Holding = zero_all, hold_ph 2.
+    // WHY: waiting ships keep out of the dock; the grant (st_trip) takes them from the slot. A docked ship is not a waiter (no slot).
+    bool slot_flight(UObject* ship, int sid, MineSt& m, double dt)
+    {
+        const auto gi = g_net_ships.find(sid);
+        if (gi == g_net_ships.end() || gi->second.waits_dock == 0) return true;
+        if (ship_docked(ship)) return true;
+        NetShip& s = gi->second;
+        const int d = s.waits_dock;
+        const auto pi = g_net_dockpos.find(d);
+        const auto di = g_net_docks.find(d);
+        if (pi == g_net_dockpos.end() || !pi->second.known || di == g_net_docks.end()) return false;
+        DockPos& dp = pi->second;
+        NetDock& nd = di->second;
+        if (s.slot == 0) s.slot = net_slot_assign(nd, sid);
+        const int sys = sys_id(ship);
+        int64_t ch[3] = {0, 0, 0};
+        double loc[3] = {0, 0, 0};
+        const bool readable = sys > 0 && get_chunk(ship, ch) && get_loc(ship, loc);
+        const bool same = readable && sys == dp.sys;
+        double dk[3];
+        dock_abs_m(dp.ch, dp.loc, dk);
+        if (!dp.dir_known)
+        {
+            double dir[3] = {1.0, 0.0, 0.0};   // other system: +X
+            if (same)
+            {
+                double a[3];
+                dock_abs_m(ch, loc, a);
+                const double v[3] = {a[0] - dk[0], a[1] - dk[1], a[2] - dk[2]};
+                const double len = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+                if (len > 0.0) { dir[0] = v[0] / len; dir[1] = v[1] / len; dir[2] = v[2] / len; }
+            }
+            std::vector<std::array<double, 3>> others;   // slot points of the other docks in this system
+            for (const auto& kv : g_net_dockpos)
+            {
+                const auto od = g_net_docks.find(kv.first);
+                if (kv.first == d || !kv.second.known || !kv.second.dir_known || kv.second.sys != dp.sys || od == g_net_docks.end()) continue;
+                double ob[3];
+                dock_abs_m(kv.second.ch, kv.second.loc, ob);
+                for (int k = 1; k <= od->second.line_slots; ++k)
+                {
+                    double o[3];
+                    net_slot_pos(kv.second.dir, k, o);
+                    others.push_back({ob[0] + o[0], ob[1] + o[1], ob[2] + o[2]});
+                }
+            }
+            if (!net_line_dir_fix(dk, dir, DOCK_LINE_SLOTS, others))
+                log_line(STR("CONTROL dock=") + std::to_wstring(d) + STR(" line not clear of the other docks, using the first direction"));
+            for (int i = 0; i < 3; ++i) dp.dir[i] = dir[i];
+            dp.dir_known = true;
+        }
+        const std::wstring slot_no = std::to_wstring(s.slot);
+        const std::wstring dname = widen(net_dock_label(d));
+        const std::wstring who = widen(net_ship_label(sid));
+        if (m.hold_ph == 2) return true;   // holding
+        if (m.hold_ph == 1)
+        {
+            m.hold_t += dt;
+            if (m.hold_warp)
+            {
+                if (same)
+                {
+                    double a[3], t[3];
+                    dock_abs_m(ch, loc, a);
+                    double off[3], tch_loc[3];
+                    int64_t tch[3];
+                    net_slot_pos(dp.dir, s.slot, off);
+                    dock_add_m(dp.ch, dp.loc, off, tch, tch_loc);
+                    dock_abs_m(tch, tch_loc, t);
+                    const double dist = std::sqrt((a[0] - t[0]) * (a[0] - t[0]) + (a[1] - t[1]) * (a[1] - t[1]) + (a[2] - t[2]) * (a[2] - t[2]));
+                    if (dist <= DOCK_SLOT_ARRIVE_M) { slot_arrive(ship, sid, m, s, d); return true; }
+                }
+                if (m.hold_t < DOCK_SLOT_WARP_WAIT_S) return true;
+                m.hold_ph = 0; m.hold_t = DOCK_SLOT_RETRY_S / 2.0;   // not arrived in time: warp again after the retry wait
+                s.phase = 0;
+                return true;
+            }
+            if (mv_active(sid) && m.hold_t < SWEEP_FLY_TIMEOUT_S) return true;
+            if (mv_active(sid)) mv_cancel(sid);   // flight timed out: hold where it is
+            slot_arrive(ship, sid, m, s, d);
+            return true;
+        }
+        // hold_ph 0: start the flight or warp (retry wait after a failure)
+        if (m.hold_t > 0.0)
+        {
+            m.hold_t += dt;
+            if (m.hold_t < DOCK_SLOT_RETRY_S) return true;
+            m.hold_t = 0.0;
+        }
+        if (!readable) return true;
+        {
+            double off[3], tch_loc[3];
+            int64_t tch[3];
+            net_slot_pos(dp.dir, s.slot, off);
+            dock_add_m(dp.ch, dp.loc, off, tch, tch_loc);
+            double a[3], t[3];
+            dock_abs_m(ch, loc, a);
+            dock_abs_m(tch, tch_loc, t);
+            const double dist = std::sqrt((a[0] - t[0]) * (a[0] - t[0]) + (a[1] - t[1]) * (a[1] - t[1]) + (a[2] - t[2]) * (a[2] - t[2]));
+            if (sweep_fly_back(same, dist))
+            {
+                PtTarget pt;
+                pt.sys = dp.sys;
+                std::copy(tch, tch + 3, pt.ch);
+                std::copy(tch_loc, tch_loc + 3, pt.loc);
+                if (move_start(sid, "approach_rock", -1, nullptr, &pt) == STR("waiting"))
+                {
+                    m.hold_ph = 1; m.hold_warp = false; m.hold_t = 0.0; s.phase = 1;
+                    mlog(sid, STR("Control: ") + who + STR(" flying to holding slot ") + slot_no + STR(" near ") + dname);
+                    log_line(STR("CONTROL ship=") + std::to_wstring(sid) + STR(" flying to holding slot ") + slot_no + STR(" dock=") + std::to_wstring(d));
+                    return true;
+                }
+            }
+            chunk_hold_target(sid, dp.sys, tch);
+            const int64_t arr[3] = {static_cast<int64_t>(tch_loc[0]), static_cast<int64_t>(tch_loc[1]), static_cast<int64_t>(tch_loc[2])};
+            std::wstring e;
+            if (warp_send(sid, dp.sys, tch, arr, false, e))
+            {
+                m.hold_ph = 1; m.hold_warp = true; m.hold_t = 0.0; s.phase = 1;
+                mlog(sid, STR("Control: ") + who + STR(" flying to holding slot ") + slot_no + STR(" near ") + dname);
+                log_line(STR("CONTROL ship=") + std::to_wstring(sid) + STR(" warping to holding slot ") + slot_no + STR(" dock=") + std::to_wstring(d));
+            }
+            else
+            {
+                m.hold_t = dt > 0.0 ? dt : 1.0;   // retry after DOCK_SLOT_RETRY_S
+                log_line(STR("CONTROL ship=") + std::to_wstring(sid) + STR(" holding slot warp failed: ") + e);
+            }
+            return true;
+        }
+    }
+
     // WHAT: MS_TRIP: dock trip (dock busy retry backoff, job result).
     void st_trip(UObject* ship, int sid, MineSt& m, double dt, const Config& c)
     {
@@ -1302,8 +1471,22 @@ namespace
             const bool granted = gi != g_net_ships.end() && gi->second.granted;
             if (!granted && m.dwait_t < 60.0)
             {
-                // wait text once a second: dock, holder, queue place, elapsed time
-                if (m.dwait_shown < 0.0 || m.dwait_t - m.dwait_shown >= 1.0) { m.dwait_shown = m.dwait_t; dock_wait_text(sid, m); }
+                // holding slot: fly / warp there and hold (every tick, cheap); the wait text once a second: dock, holder, queue place, elapsed time
+                const bool slot_ok = slot_flight(ship, sid, m, dt);
+                if (m.flee && m.hold_ph == 2)   // a fleeing ship that reached its holding spot: the flee ends here (no dock slot taken)
+                {
+                    net_leave_slot(sid);
+                    m.dwait = false; m.flee = false; m.fin = false; m.err = true; g_flee_pick.erase(sid);
+                    m.st = MS_HALT;
+                    mset(sid, m, STR("ERROR: hull damaged, fled, holding near dock, stopped"), STR("ERROR: ship was attacked, fled, holding near dock, stopped"));
+                    return;
+                }
+                if (m.dwait_shown < 0.0 || m.dwait_t - m.dwait_shown >= 1.0)
+                {
+                    m.dwait_shown = m.dwait_t;
+                    dock_wait_text(sid, m);
+                    if (!slot_ok) m.result += STR(" (no holding position yet)");
+                }
                 return;
             }
             m.dwait_t = 0.0; m.dwait_shown = -1.0;
@@ -1959,6 +2142,8 @@ namespace
                 for (int q : d.queue) { auto it = g_net_ships.find(q); if (it != g_net_ships.end()) { it->second.reason = NR_WAIT_PARKED; it->second.blocked_by = h; } }
                 continue;
             }
+            const std::string why = d.full ? "full" : (st == HS_PARKED ? "parked" : "empty");
+            mlog(h, STR("Control: ") + widen(net_ship_label(h)) + STR(" asked to leave ") + widen(net_dock_label(d.id)) + STR(" (") + widen(why) + STR(")"));
             const std::wstring who = STR("Leaving dock for ship ") + widen(net_ship_label(d.queue.front()));
             mset(h, g_mine[h], who, who);
             log_line(STR("NET dock=") + std::to_wstring(d.id) + STR(" UNDOCK holder=") + std::to_wstring(h) + STR(" for=") + std::to_wstring(d.queue.front()));
