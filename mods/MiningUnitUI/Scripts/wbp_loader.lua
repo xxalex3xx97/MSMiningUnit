@@ -1699,7 +1699,16 @@ function M.open(ship)
       return
     end
     local p
-    try("FindFirstOf DMSPlayerController", function() p = FindFirstOf("DMSPlayerController") end)
+    -- FindFirstOf can return a stale controller after a long session (GetViewportSize nil, CreateWidget fails): prefer the local one
+    try("local DMSPlayerController", function()
+      for _, c in ipairs(FindAllOf("DMSPlayerController") or {}) do
+        if ok(c) then
+          local sl, loc = pcall(function() return c:IsLocalPlayerController() end)
+          if sl and loc then p = c break end
+        end
+      end
+    end)
+    if not ok(p) then try("FindFirstOf DMSPlayerController", function() p = FindFirstOf("DMSPlayerController") end) end
     if not ok(p) then L("open: no DMSPlayerController") return end
     local vw, vh = viewport(p)
     local lib = StaticFindObject(LIB)
