@@ -56,11 +56,21 @@ local mk, setText, onClick = UIH.mk, UIH.setText, UIH.onClick
 -- ESlateVisibility: 0 Visible, 1 Collapsed, 2 Hidden, 3 HitTestInvisible, 4 SelfHitTestInvisible
 local VIS_OPEN = { [0] = true, [3] = true, [4] = true }
 
+local invW, invT = nil, 0
 local function invOpen()
     local info = { valid = false, inViewport = "-", vis = "-" }
     local ok, open = pcall(function()
-        local w = FindFirstOf(R.invWidget)
-        if not (w and w:IsValid()) then return false end
+        -- WHY: FindFirstOf walks every object and this runs every 250 ms; keep the widget, and retry the lookup at most once a second while it is missing.
+        local w = invW
+        if not (w and w:IsValid()) then
+            invW = nil
+            local now = os.clock()
+            if now - invT < 1 then return false end
+            invT = now
+            w = FindFirstOf(R.invWidget)
+            if not (w and w:IsValid()) then return false end
+            invW = w
+        end
         info.valid = true
         local okv, vp = pcall(function() return w:IsInViewport() == true end)
         if not okv then info.inViewport = "ERR" return false end
@@ -608,11 +618,14 @@ local function tick()
     end
     local open, info = invOpen()
     -- no controller or player (map change): treat as closed and rebuild on next open
-    if not (live(table.unpack(R.controller))
-            and live(table.unpack(R.player))) then
+    -- map-change check: 2 FindFirstOf-style lookups, once a second is enough
+    local now = os.clock()
+    if now - (UI.liveT or 0) >= 1 then UI.liveT = now; UI.liveOk = live(table.unpack(R.controller)) and live(table.unpack(R.player)) end
+    if UI.liveOk == false or UI.liveOk == nil then
         open = false
         -- WHY: dropping the refs left the old panels in the viewport (leak, rebuilt on every map change)
         for _, r in ipairs({ UI.root, UI.btnRoot }) do pcall(function() if r and r:IsValid() then r:RemoveFromParent() end end) end
+        if MSCore and MSCore.ui and MSCore.ui.clearClicks then pcall(MSCore.ui.clearClicks) end
         UI.root = nil
         UI.btnRoot = nil
         UI.shown = false
