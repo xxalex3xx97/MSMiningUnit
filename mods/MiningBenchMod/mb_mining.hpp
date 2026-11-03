@@ -339,13 +339,22 @@ namespace
     struct OreEnt { UObject* a = nullptr; double p[3] = {0, 0, 0}; };
     struct OreScan { ULONGLONG ms = 0; int found = 0; std::vector<OreEnt> list; };
     OreScan g_ore_scan;
-    constexpr ULONGLONG ORE_SCAN_MS = 10000;
+    constexpr ULONGLONG ORE_SCAN_MS = 60000;   // one scan per 60 s for the whole mod (forced: sweep start, rescans, sweep end)
+    int g_ore_pub = -1;                        // count last written to MiningOre.txt (-1 = never)
 
-    // WHAT: the shared scan. Refreshed when forced, never run, or older than ORE_SCAN_MS. Returns the cache (valid until the next call).
+    // WHAT: writes MiningOre.txt "count|unix_seconds" for the Lua Collect button, only when the count changed.
+    void ore_publish(size_t n)
+    {
+        if (static_cast<int>(n) == g_ore_pub) return;
+        g_ore_pub = static_cast<int>(n);
+        try { write_atomic(get_dll_dir() / "MiningOre.txt", std::to_string(n) + "|" + std::to_string(static_cast<long long>(std::time(nullptr))) + "\n"); } catch (...) {}
+    }
+
+    // WHAT: the shared scan. Refreshed when forced or older than ORE_SCAN_MS (ore_scan_due). Returns the cache (valid until the next call).
     OreScan& ore_scan(bool force)
     {
         const ULONGLONG now = GetTickCount64();
-        if (!force && g_ore_scan.ms != 0 && now - g_ore_scan.ms < ORE_SCAN_MS) return g_ore_scan;
+        if (!ore_scan_due(force, g_ore_scan.ms, now, ORE_SCAN_MS)) return g_ore_scan;
         std::vector<UObject*> v;
         UObjectGlobals::FindAllOf(STR("BP_FloatingOre_C"), v);
         g_ore_scan.list.clear();
@@ -360,6 +369,7 @@ namespace
         }
         g_ore_scan.found = (int)v.size();
         g_ore_scan.ms = now;
+        ore_publish(g_ore_scan.list.size());
         return g_ore_scan;
     }
 
@@ -1049,6 +1059,7 @@ namespace
                     return;
                 }
                 mine_stop_work(ship, sid);
+                ore_scan(true);   // sweep finished: refresh the shared count (Collect button)
                 m.sweep = false; m.st = MS_HALT;
                 if (m.sw_found == 0)
                 {

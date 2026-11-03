@@ -1283,6 +1283,12 @@ local function refresh()
   if S.all then run = allRun end
   setRun(run, S.pend and S.pend.k or nil)
   paintAct(job and job.btn or (S.req and S.req.n) or ((not S.all) and st.simple == "collecting" and "Btn_Collect") or nil)
+  -- Collect button text: floating ore count from MiningOre.txt ("count|unix", written by the mod when the shared scan refreshes)
+  do
+    local ol = rdcached(M.DATA .. "MiningOre.txt")
+    local on = ol and ol[1] and tonumber(ol[1]:match("^(%d+)")) or 0
+    M.setText("Txt_Collect", on > 0 and ("Collect " .. on .. " ores") or "Collect ore")
+  end
   S.simple = st.simple
   try("itemsTick", itemsTick)
   try("opsTick", opsTick)

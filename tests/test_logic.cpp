@@ -420,6 +420,14 @@ static void t_sweep()
     CHECK(sweep_fly_back(false, 1) == false);
 }
 
+static void t_ore_scan_due()
+{
+    CHECK(ore_scan_due(true, 1000, 1001, 60000) == true);     // forced
+    CHECK(ore_scan_due(false, 0, 5, 60000) == true);          // never run
+    CHECK(ore_scan_due(false, 1000, 60999, 60000) == false);  // within the period
+    CHECK(ore_scan_due(false, 1000, 61000, 60000) == true);   // period passed
+}
+
 static void t_dock_backoff()
 {
     CHECK(dock_backoff_s(0) == 2);
@@ -526,7 +534,7 @@ int main()
         {"parse_cmd_line", t_parse_cmd_line}, {"cmd_seq_is_new", t_cmd_seq_is_new},
         {"belt", t_belt}, {"csq", t_csq}, {"sector_contains", t_sector_contains}, {"warp_fuel", t_warp_fuel},
         {"cargo_pct", t_cargo_pct}, {"fuel_low", t_fuel_low}, {"got_delta", t_got_delta}, {"row_done", t_row_done},
-        {"item_next", t_item_next}, {"collect_verdict", t_collect_verdict}, {"sweep", t_sweep}, {"dock_backoff", t_dock_backoff}, {"hull_dropped", t_hull_dropped},
+        {"item_next", t_item_next}, {"collect_verdict", t_collect_verdict}, {"sweep", t_sweep}, {"ore_scan_due", t_ore_scan_due}, {"dock_backoff", t_dock_backoff}, {"hull_dropped", t_hull_dropped},
         {"dock_limit_giveup", t_dock_limit_giveup}, {"refuel_stalled", t_refuel_stalled}, {"mine_radius", t_mine_radius},
         {"station", t_station},
     };

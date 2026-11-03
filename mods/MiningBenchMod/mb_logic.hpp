@@ -10,6 +10,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdint>
+#include <ctime>
 #include <cstdlib>
 #include <map>
 #include <string>
@@ -398,6 +399,12 @@ namespace
         for (size_t i = 0; i < d.size(); ++i)
             if (!done[i] && (best < 0 || d[i] < d[(size_t)best])) best = (int)i;
         return best;
+    }
+
+    // WHAT: true when the shared ore scan must run: forced, never run (last_ms 0), or the last run is period_ms old or older.
+    inline bool ore_scan_due(bool force, uint64_t last_ms, uint64_t now_ms, uint64_t period_ms)
+    {
+        return force || last_ms == 0 || now_ms - last_ms >= period_ms;
     }
 
     // WHAT: next queue row index after idx for n rows. wrapped = true when it passed the last row (result 0).
