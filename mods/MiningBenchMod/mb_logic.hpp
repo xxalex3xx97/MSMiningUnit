@@ -342,6 +342,10 @@ namespace
     // WHAT: dock trip warps when it is longer than km kilometres.
     inline bool trip_warp_wanted(double dist_m, int km) { return dist_m > km * 1000.0; }
 
+    // WHAT: far trip warp only inside one sector: both sector ids known (> 0) and equal.
+    // WHY: a warp across sectors is not wanted; an unknown sector (0) on either side skips the warp (the ship flies as before).
+    inline bool trip_same_sector(int ship_sec, int dock_sec) { return ship_sec > 0 && ship_sec == dock_sec; }
+
     // WHAT: dock-job timeout clock reset. best_m = distance at last reset (<0 = none yet). now_m <= 0 = unreadable, ignored.
     // Returns true (and sets best_m) on the first reading or when the ship got >= step_m closer since the last reset.
     inline bool trip_progress(double& best_m, double now_m, double step_m = 500.0)

@@ -1399,6 +1399,12 @@ namespace
         double loc[3] = {0, 0, 0};
         if (!(sys > 0 && get_chunk(ship, ch) && get_loc(ship, loc))) { log_line(who + STR("ship position unreadable")); return false; }
         if (sys != dp.sys) { log_line(who + STR("other system")); return false; }
+        {
+            const std::vector<SecInfo> secs = sectors_read();
+            const SecInfo* ss = sector_of(secs, sys, ch);
+            const SecInfo* ds = sector_of(secs, dp.sys, dp.ch);
+            if (!trip_same_sector(ss ? ss->id : 0, ds ? ds->id : 0)) { log_line(who + STR("other sector")); return false; }
+        }
         if (ship_docked(ship)) { log_line(who + STR("ship docked")); return false; }
         double a[3], dk[3];
         dock_abs_m(ch, loc, a);
