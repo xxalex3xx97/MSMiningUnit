@@ -177,6 +177,7 @@ namespace
     void cmd_tick(double dt)
     {
         // 1.
+        rock_drain_dead();   // deleted actors queued by the engine listener are removed every tick, also while no ship asks for rocks
         ++g_actor_frame;   // invalidates the actor_ok() set: it is rebuilt at most once per engine tick
         // 2.
         move_tick(dt);   // move jobs run every engine tick

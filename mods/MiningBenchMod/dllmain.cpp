@@ -99,6 +99,7 @@ public:
         if (g_tick_cb) { Hook::UnregisterCallback(g_tick_cb); g_tick_cb = 0; }
         g_hook_registered = false;
         try { pin_hook_release(); } catch (...) {}
+        try { rock_listener_release(); } catch (...) {}
         try { chunk_hold_release_all(); } catch (...) {}   // no chunk hold outlives the mod (failures are logged in mb_chunkhold.hpp)
     }
 

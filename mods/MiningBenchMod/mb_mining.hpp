@@ -22,6 +22,8 @@ namespace
     // chunk hold (mb_chunkhold.hpp, defined after this file)
     void chunk_hold_update(int sid, UObject* ship);   // SEEK/MINE, arrival, CHECK nothing-in-range (undocked): set the ship's cube
     void chunk_hold_release(int sid);                 // drop the ship's cube (no-op when none)
+    void chunk_hold_target_clear(int sid);                          // back to the ship's own chunk
+    void chunk_hold_target(int sid, int sys, const int64_t c[3]);   // centre the ship's cube on this chunk instead of the ship's own (cleared by chunk_hold_release)
     void chunk_hold_tick(int sid);                    // forced rock passes at +1 s and +3 s after a set
     bool chunk_hold_settling(int sid);                // true while the ship's cube was set less than 4 s ago
     void chunk_hold_keep_only(const std::vector<int>& sids);   // release holds of ships no longer on the bench
@@ -165,6 +167,68 @@ namespace
         if (!a || !actor_ok(a)) return nullptr;
         if (rad_m > 0.0 && r.dist_m > rad_m) return nullptr;
         return a;
+    }
+
+    // WHAT: chunk (system + 3 ints) of the save-data asteroid nearest to the ship that holds `item` and is alive; the ore list is shared by all ships and refreshed at most once a minute.
+    // WHY: the rock ACTORS only exist in loaded chunks (the player's scan list and the world scan never see the rest), but the save objects of every rock exist always.
+    //      Holding the chunks around that rock makes its actor load, then the normal rock search finds it.
+    // radius_m <= 0: no limit. Returns false when the ship position is unreadable or no rock of the ore is in the ship's system within the radius.
+    // per ship: chunk -> times it was picked since the ship last had a rock in range
+    std::map<int, std::map<std::tuple<int64_t, int64_t, int64_t>, int>>& save_rock_picks() { static std::map<int, std::map<std::tuple<int64_t, int64_t, int64_t>, int>> m; return m; }
+    bool save_rock_nearest(int sid, UObject* ship, UObject* item, double radius_m, int& sys_out, int64_t out[3], int64_t& dist_chunks)
+    {
+        struct SaveRock { int sys; int64_t c[3]; };
+        static std::map<std::wstring, std::pair<ULONGLONG, std::vector<SaveRock>>> cache;   // ore item name -> (time, rocks)
+        int sys0 = 0; int64_t ch0[3] = {0, 0, 0};
+        if (!alive(item) || !ship_pos(ship, sys0, ch0)) return false;
+        auto& e = cache[item->GetName()];
+        const ULONGLONG now = GetTickCount64();
+        if (e.first == 0 || now - e.first >= 60000)
+        {
+            e.first = now;
+            e.second.clear();
+            std::vector<UObject*> saves;
+            UObjectGlobals::FindAllOf(STR("SmallResourceAsteroidObject"), saves);
+            for (UObject* o : saves)
+            {
+                if (!alive(o)) continue;
+                auto* arr = o->GetValuePtrByPropertyNameInChain<TArray<UObject*>>(STR("ResourceItems"));
+                bool has = false;
+                for (int32_t i = 0; arr && i < arr->Num(); ++i) if ((*arr)[i] == item) has = true;
+                if (!has) continue;
+                bool al = true; get_bool_prop(o, STR("bAlive"), al);
+                SaveRock r;
+                r.sys = sys_id(o);
+                if (!al || r.sys <= 0 || !get_chunk(o, r.c)) continue;
+                e.second.push_back(r);
+            }
+            log_line(STR("SAVEROCK ") + item->GetName() + STR(" alive save rocks=") + std::to_wstring(e.second.size()));
+        }
+        // WHY: a rock that was picked many times and still gave no actor in range (mined out, or loaded but outside the radius) is skipped, so the next nearest is tried.
+        auto& picks = save_rock_picks()[sid];
+        const int64_t max_chunks = radius_m > 0.0 ? static_cast<int64_t>(radius_m / 2048.0) + 1 : INT64_MAX;
+        int64_t best = -1;
+        for (const SaveRock& r : e.second)
+        {
+            if (r.sys != sys0) continue;
+            const int64_t d = std::max({std::llabs(r.c[0] - ch0[0]), std::llabs(r.c[1] - ch0[1]), std::llabs(r.c[2] - ch0[2])});
+            if (d > max_chunks || (best >= 0 && d >= best)) continue;
+            if (const auto pk = picks.find({r.c[0], r.c[1], r.c[2]}); pk != picks.end() && pk->second >= 6) continue;
+            best = d; sys_out = r.sys; for (int i = 0; i < 3; ++i) out[i] = r.c[i];
+        }
+        dist_chunks = best;
+        if (best >= 0) ++picks[{out[0], out[1], out[2]}];
+        return best >= 0;
+    }
+
+    // WHAT: nothing in range for this ship: hold the chunks around the nearest save-data rock of the ore so its actor loads. true = a hold was requested.
+    bool hold_nearest_save_rock(UObject* ship, int sid, UObject* item, double radius_m)
+    {
+        int sys = 0; int64_t c[3] = {0, 0, 0}, d = 0;
+        if (!save_rock_nearest(sid, ship, item, radius_m, sys, c, d)) { chunk_hold_target_clear(sid); return false; }
+        chunk_hold_target(sid, sys, c);
+        chunk_hold_update(sid, ship);
+        return true;
     }
 
     // DIAGNOSTIC (ROCKSCAN): counts over the same rock list rock_in_range scans. No state change.
@@ -477,13 +541,24 @@ namespace
         {
             // undocked ship (far sector, Start loop): hold its chunk cube so the next check sees the rocks. The belt counter waits while it settles.
             const bool docked = ship_docked(ship);
-            if (!docked) chunk_hold_update(sid, ship);
+            if (!hold_nearest_save_rock(ship, sid, item, mine_radius_m(c)) && !docked) chunk_hold_update(sid, ship);
             if (!chunk_hold_settling(sid)) m.empty_t += MINE_ROCK_CHECK_S;
             // belt, ship not docked: no rock in range for MINE_BELT_EMPTY_S and none of the ore at all (unlimited) -> next sector (same as SEEK)
+            // WHY: the HUD list is the PLAYER's scan list and can miss whole ores (silica rocks seen on the HUD were not in it); a docked ship or belt off never asked for the world scan.
+            rock_fallback_request();
             if (!belt_off(c.belt) && !docked)
             {
-                rock_fallback_request();
                 if (m.empty_t >= MINE_BELT_EMPTY_S && !rock_in_range(m.anchor, item, mine_radius_m(c)) && belt_go(ship, sid, m, c, item, true) != 0) return;
+            }
+            if (g_debug)
+            {   // WHY: "nothing in range" gave no reason; one ROCKSCAN line per check shows list size, rocks with this ore and the nearest distances (m from the ship)
+                const RockScan rs = rock_scan(ship, item);
+                log_line(STR("ROCKSCAN nothing-in-range ship=") + std::to_wstring(sid) + STR(" listed=") + std::to_wstring(g_rock_actors.size()) + STR(" live=") + std::to_wstring(rs.total) + STR(" with_ore=") + std::to_wstring(rs.with_ore) + STR(" nearest_any_m=") + std::to_wstring(static_cast<long long>(rs.nearest_any)) + STR(" nearest_ore_m=") + std::to_wstring(static_cast<long long>(rs.nearest_ore)) + STR(" radius_m=") + std::to_wstring(static_cast<long long>(mine_radius_m(c))) + STR(" want=") + (alive(item) ? item->GetName() : std::wstring(STR("?"))));
+                std::map<std::wstring, int> hist;   // ore item name -> rock count over the listed rocks
+                for (UObject* a : g_rock_actors) { auto it = g_rock_item.find(a); hist[it != g_rock_item.end() && alive(it->second) ? it->second->GetName() : std::wstring(STR("<none>"))]++; }
+                std::wstring h;
+                for (const auto& kv : hist) h += kv.first + STR("=") + std::to_wstring(kv.second) + STR(" ");
+                log_line(STR("ROCKSCAN items ship=") + std::to_wstring(sid) + STR(" ") + h);
             }
             m.st = MS_OFF; m.chk_t = 0.0; mset(sid, m, STR("nothing in range")); return;   // Update 15: do not undock
         }
@@ -521,6 +596,7 @@ namespace
                 m.fails = 0; m.unl_chk = 0;
                 m.tried.clear();   // a rock is being mined: every sector may be searched again later
                 m.st = MS_MINE; m.t = 0.0; m.idle_t = 0.0; m.chk_t = 0.0;
+                chunk_hold_target_clear(sid); save_rock_picks().erase(sid);   // mining: hold the ship's own chunks again
                 m.last_ore = inv_total(ship, item);
                 mine_fire(sid, true);
                 mset(sid, m, STR("mining rock ") + std::to_wstring(m.rock), STR("Mining ") + item_name(c.resource) + STR(" (rock ") + std::to_wstring(m.rock) + STR(")"));
@@ -540,7 +616,8 @@ namespace
             if (!rock)
             {
                 mset(sid, m, STR("nothing in range"));
-                if (!belt_off(c.belt)) rock_fallback_request();   // belt seek: the next rock_in_range may use the FindAllOf fallback
+                hold_nearest_save_rock(ship, sid, item, mine_radius_m(c));   // the rock may exist only as save data: load its chunks
+                rock_fallback_request();   // any seek (belt on or off): the HUD list can miss ores; belt seek: the next rock_in_range may use the FindAllOf fallback
                 // belt: no rock in range for MINE_BELT_EMPTY_S and no rock of the ore at all (unlimited search) -> warp to the next sector
                 if (!belt_off(c.belt) && m.rng_t >= MINE_BELT_EMPTY_S && !rock_in_range(m.anchor, item, mine_radius_m(c)) && belt_go(ship, sid, m, c, item, true) != 0) return;
             }
@@ -561,7 +638,7 @@ namespace
         if (m.no_rock && !belt_off(c.belt))
         {
             m.scan_t += dt;
-            if (m.scan_t >= 2.0 && m.scan_n < 8) { m.scan_t = 0.0; ++m.scan_n; rockscan_log(ship, sid, m, c, item, false); }
+            if (g_debug && m.scan_t >= 2.0 && m.scan_n < 8) { m.scan_t = 0.0; ++m.scan_n; rockscan_log(ship, sid, m, c, item, false); }
         }
         if (m.no_rock && c.idle_seconds > 0 && m.rng_t >= c.idle_seconds)
             go_home(ship, sid, m, STR("nothing in range for ") + std::to_wstring(c.idle_seconds) + STR(" s"));
@@ -746,7 +823,7 @@ namespace
             chunk_hold_update(sid, ship);   // chunk hold at once: the rock list (fallback pass) sees the belt rocks
             mset(sid, m, STR("arrived, seeking rock"), STR("Arrived, seeking rock"));
             std::wstring iwhy;
-            rockscan_log(ship, sid, m, c, item_c(c.resource, iwhy), true);   // DIAGNOSTIC (ROCKSCAN) arrival line
+            if (g_debug) rockscan_log(ship, sid, m, c, item_c(c.resource, iwhy), true);   // DIAGNOSTIC (ROCKSCAN) arrival line
             return;
         }
         if (m.warp_t >= MINE_WARP_TIMEOUT_S) { m.st = MS_HALT; m.err = true; mset(sid, m, STR("ERROR: warp to sector ") + std::to_wstring(m.warp_to) + STR(" timed out"), STR("ERROR: warp timed out")); }
@@ -1011,7 +1088,8 @@ namespace
             const std::string where = alive(ship) && ship_pos(ship, sys, ch) ? std::to_string(sys) + "," + std::to_string(ch[0]) + "," + std::to_string(ch[1]) + "," + std::to_string(ch[2]) : std::string("-");
             s += std::to_string(sid) + "|" + (m.run ? "1" : "0") + "|" + std::to_string(m.cargo_pct) + "|" + std::to_string(m.spd) + "|" + mine_next(m) + "|" + std::to_string(m.eta_left) + "|" + job + "|" + phase + "|" + (res.empty() ? std::string("-") : res) + "|" + where + "|" + have + "|" + std::to_string(eff_cfg(sid).amount) + "\n";
         }
-        try { write_atomic(get_dll_dir() / "MiningStatusX.txt", s); } catch (...) {}
+        static std::string last;   // unchanged: no file write
+        if (s != last) { try { write_atomic(get_dll_dir() / "MiningStatusX.txt", s); last = s; } catch (...) {} }
         dock_occ_write();
     }
 

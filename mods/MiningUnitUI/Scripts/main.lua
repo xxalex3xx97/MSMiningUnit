@@ -25,16 +25,27 @@ end
 
 -- wbp_loader needs only {onClick}: the button mechanism (ForceLayoutPrepass hook) lives here
 local BTN = {}
-local function onClick(btn, fn)
-    BTN[btn:GetFullName()] = fn
-    btn.OnClicked:Add(btn, FName("ForceLayoutPrepass"))
-end
-pcall(RegisterHook, "/Script/UMG.Widget:ForceLayoutPrepass", function(self)
+-- WHY: the ForceLayoutPrepass hook fires for EVERY widget in the game every frame; keep it registered only while our window has buttons (perf lesson: constant FPS cost + BTN grew forever).
+local HOOK = "/Script/UMG.Widget:ForceLayoutPrepass"
+local hookIds
+local function onPrepass(self)
     local okn, key = pcall(function() return self:get():GetFullName() end)
     local fn = okn and BTN[key]
     if fn then pcall(ExecuteInGameThread, function() pcall(fn) end) end
-end)
-W.bind({ onClick = onClick })
+end
+local function onClick(btn, fn)
+    if not hookIds then
+        local s, pre, post = pcall(RegisterHook, HOOK, onPrepass)
+        if s then hookIds = { pre, post } end
+    end
+    BTN[btn:GetFullName()] = fn
+    btn.OnClicked:Add(btn, FName("ForceLayoutPrepass"))
+end
+local function clearClicks()
+    BTN = {}
+    if hookIds then pcall(UnregisterHook, HOOK, hookIds[1], hookIds[2]); hookIds = nil end
+end
+W.bind({ onClick = onClick, clear = clearClicks })
 
 -- block interact: the game opens its own widget for BPO_MiningMod_C; hide it and open ours for that ship
 RegisterHook("/Script/MainSequence.DMSPlayerController:ToggleWidget", function() end, function(self, a1, a2, a3, a4, a5)

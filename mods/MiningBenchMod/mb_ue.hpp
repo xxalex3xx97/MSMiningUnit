@@ -157,9 +157,14 @@ namespace
             if (cached_ok(it->second, id)) return it->second;
             cache.erase(it);
         }
+        // WHY: a missing ship (removed, other sector) would run a full FindAllOf on every call; remember the miss for 3 s.
+        static std::map<std::pair<std::wstring, int>, ULONGLONG> miss;
+        const ULONGLONG now = GetTickCount64();
+        if (auto m = miss.find(key); m != miss.end()) { if (now - m->second < 3000) return nullptr; miss.erase(m); }
         std::vector<UObject*> v;
         UObjectGlobals::FindAllOf(cls, v);
         for (UObject* o : v) if (o && obj_id(o) == id) { cache[key] = o; return o; }
+        miss[key] = now;
         return nullptr;
     }
 

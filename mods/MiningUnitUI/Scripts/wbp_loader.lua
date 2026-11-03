@@ -141,9 +141,12 @@ end
 
 -- SetText(FText) on the real TextBlock; fallback .Text property; log widget class if both fail
 function M.setText(name, s)
+  -- WHY: unchanged writes invalidate layout every refresh; S.tc (name -> last text) is dropped on close.
+  S.tc = S.tc or {}
+  if S.tc[name] == s then return end
   local tb = w(name); if not tb then return end
-  if try("SetText " .. name, function() tb:SetText(FText(s)) end) then return end
-  if try("Text " .. name, function() tb.Text = FText(s) end) then return end
+  if try("SetText " .. name, function() tb:SetText(FText(s)) end) then S.tc[name] = s; return end
+  if try("Text " .. name, function() tb.Text = FText(s) end) then S.tc[name] = s; return end
   L("setText " .. name .. " both failed, class=" .. nm(tb, true))
 end
 
@@ -182,6 +185,16 @@ local function rdlines(path)
   for line in fh:lines() do out[#out + 1] = (line:gsub("\r$", "")) end
   fh:close()
   return out
+end
+
+-- WHY: refresh() runs every 500 ms and re-read the same status files once per ship; share one read for 0.3 s (perf).
+local rcache = {}
+local function rdcached(path)
+  local c, now = rcache[path], os.clock()
+  if c and now - c.t < 0.3 then return c.lines end
+  local lines = rdlines(path)
+  rcache[path] = { t = now, lines = lines }
+  return lines
 end
 
 local function split(s)
@@ -552,7 +565,7 @@ end
 -- dock id -> true when another ship occupies it or heads there (DockBusy.txt "<dock id>|<occupant ship id>", written by C++)
 local function dockBusyMap(sid)
   local busy = {}
-  for _, l in ipairs(rdlines(M.DATA .. "DockBusy.txt") or {}) do
+  for _, l in ipairs(rdcached(M.DATA .. "DockBusy.txt") or {}) do
     local p = split(l)
     local dk, occ = trim(p[1] or ""), trim(p[2] or "")
     if dk ~= "" and occ ~= tostring(sid) then busy[dk] = true end
@@ -570,7 +583,7 @@ local function dockPickOpts()
 end
 -- ship system + chunk from MiningStatusX field 10 "sys,x,y,z" (nil when absent or "-")
 local function shipChunk(sid)
-  for _, l in ipairs(rdlines(M.DATA .. "MiningStatusX.txt") or {}) do
+  for _, l in ipairs(rdcached(M.DATA .. "MiningStatusX.txt") or {}) do
     local p = split(l)
     if trim(p[1] or "") == tostring(sid) then
       local c = {}
@@ -1013,9 +1026,9 @@ end
 -- job = none|dock|unload|refuel|undock (7th col, nil when absent = old DLL); jobphase = short text (8th col, optional); item = current mining item id (9th col, nil when absent)
 local function readStatus(sid)
   local st = {}
-  local p = findRow(rdlines(M.DATA .. "MiningStatus.txt"), sid)
+  local p = findRow(rdcached(M.DATA .. "MiningStatus.txt"), sid)
   if p then st.simple = trim(p[3] or "") end
-  local x = findRow(rdlines(M.DATA .. "MiningStatusX.txt"), sid)
+  local x = findRow(rdcached(M.DATA .. "MiningStatusX.txt"), sid)
   if x then
     st.run = trim(x[2] or "") == "1"
     st.cargo = tonumber(x[3])
@@ -1139,7 +1152,7 @@ end
 local LOGN = 60  -- must equal the Txt_Log_1..N rows in the WBP (gen_paste)
 local function logLoad()
   local out = {}
-  for _, l in ipairs(rdlines(M.DATA .. "MiningLog.txt") or {}) do
+  for _, l in ipairs(rdcached(M.DATA .. "MiningLog.txt") or {}) do
     local p = split(l)
     if p[2] then out[#out + 1] = { sid = trim(p[1]), t = trim(p[2]), text = p[3] or "", i = #out + 1 } end
   end
@@ -1310,13 +1323,14 @@ function M.isOpen() return ok(S.frame) and inVp(S.frame) end
 
 function M.close()
   S.gen = S.gen + 1  -- stops the status loop
+  if BIND and BIND.clear then BIND.clear() end  -- drop button callbacks + global layout hook
   S.sid = nil
   S.mode = nil
   S.all = false
   S.last, S.docks, S.sel, S.modal, S.items, S.q, S.op = nil, nil, nil, nil, nil, nil, nil
   S.pend, S.arm, S.estop, S.etaS, S.etaKind = nil, nil, nil, nil, nil
   S.req, S.simple = nil, nil
-  S.fleet, S.holoOut = nil, nil
+  S.fleet, S.holoOut, S.tc = nil, nil, nil
   S.ud, S.rd, S.warn, S.dyn, S.dynDiag, S.dynWarn = nil, nil, nil, nil, nil, nil
   if not (S.root or S.p or S.frame) then return end
   local root, p = S.root, S.p
@@ -1394,21 +1408,23 @@ local function shipIcons()  -- ship id -> hologram texture. Own off-screen WBP_F
   local sc, cls = pcall(StaticFindObject, ENTRY_CLS)
   local sf, ships = pcall(FindAllOf, "DMSPlayerShipObject")
   S.holo = S.holo or {}
+  local seen = {}
   for _, o in ipairs(sf and ships or {}) do
     if ok(o) and sc and ok(cls) then
       local id = rd(o, "ID")
       if id ~= nil then
+        seen[tostring(id)] = true
         local e = S.holo[tostring(id)]
         if not ok(e) then
           pcall(function() e = StaticFindObject(LIB):Create(S.p, cls, S.p); e:SetShip(o) end)
           S.holo[tostring(id)] = e
         end
         local tex = ok(e) and holoTex(e)
-        L("holo id=" .. tostring(id) .. " entry=" .. tostring(ok(e)) .. " tex=" .. tostring(tex and tex:GetFullName()))
         if tex then out[tostring(id)] = tex end
       end
     end
   end
+  if sf then for k in pairs(S.holo) do if not seen[k] then S.holo[k] = nil end end end   -- drop widgets of ships that are gone
   S.holoOut, S.holoT = out, os.clock()
   return out
 end
