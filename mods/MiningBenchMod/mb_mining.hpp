@@ -556,7 +556,7 @@ namespace
         std::wstring w;
         if (auto_rule(sid, ship, w) == "dock_refuel") { trip_begin(ship, sid, m, STR("fuel low")); return; }
         if (m.fin) { trip_begin(ship, sid, m, STR("queue done, unloading")); return; }
-        if (cargo_full(ship, item))
+        if (cargo_full(ship, item) || m.cargo_pct >= 100)   // pct 100 = every non-fuel slot used (a partial stack can still take 1: HasSpaceForItems says yes)
         {
             // loop guard: a second unload from CHECK without mining in between means the cargo is not in the unload list
             if (m.unl_chk++ >= 1) { m.st = MS_HALT; mset(sid, m, STR("cargo still full after unload (is the ore enabled for unload?)")); return; }
@@ -708,12 +708,13 @@ namespace
             else m.idle_t += dt;
             m.last_ore = inv;
         }
-        const bool full = cargo_full(ship, item);
+        const bool full = cargo_full(ship, item) || m.cargo_pct >= 100;   // m.cargo_pct: sampled every status second (mine_sample)
         m.chk_t += dt;
         if (m.chk_t >= MINE_ROCK_CHECK_S)
         {
             m.chk_t = 0.0;
             log_line(STR("MINE ship=") + std::to_wstring(sid) + STR(" ore=") + i64w(inv) + STR("/") + std::to_wstring(c.amount) + STR(" full=") + std::to_wstring(full ? 1 : 0) +
+                     STR(" pct=") + std::to_wstring(m.cargo_pct) +
                      STR(" idle_t=") + std::to_wstring(m.idle_t) + STR(" rock=") + std::to_wstring(m.rock));
         }
         m.prog_t += dt;
