@@ -10,6 +10,7 @@ local function rd(o, p) local s, v = pcall(function() return o[p] end) if s then
 local function inVp(o) local s, v = pcall(function() return o:IsInViewport() end) return s and v == true end
 local function try(tag, f, ...) local s, r = pcall(f, ...) if not s then L("FAIL " .. tag .. ": " .. tostring(r)) end return s end
 local function nm(o, cls) if not ok(o) then return "invalid" end local s, r = pcall(function() if cls then return o:GetClass():GetFName():ToString() end return o:GetFName():ToString() end) return s and tostring(r) or "?" end
+local function v2(v) if type(v) ~= "userdata" then return tostring(v) end return tostring(rd(v, "X")) .. "x" .. tostring(rd(v, "Y")) end
 
 local LIB = "/Script/UMG.Default__WidgetBlueprintLibrary"
 local LIB_LAYOUT = "/Script/UMG.Default__WidgetLayoutLibrary"
