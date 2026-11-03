@@ -480,7 +480,7 @@ namespace
     // WHY: one shared queue per dock, FIFO by global ticket; no game objects here so the tests can run it.
     enum NetReason { NR_OK, NR_WAIT_BUSY, NR_WAIT_QUEUE, NR_WAIT_PARKED, NR_WAIT_FULL, NR_WAIT_UNMANAGED, NR_NOT_CONFIGURED, NR_DOCK_GONE, NR_NOTHING_TO_UNLOAD };
     enum Purpose { P_NONE, P_UNLOAD, P_REFUEL, P_UNDOCK_TARGET, P_PICK, P_FLEE };
-    enum HolderState { HS_WORKING, HS_PARKED, HS_IDLE };
+    enum HolderState { HS_WORKING, HS_PARKED };
 
     constexpr double NET_DWELL_S = 20.0;   // a working holder gets this long to unload before a waiter can send it away (s)
     constexpr double NET_AGE_S = 600.0;    // a ship that waited this long goes first (aged tier, FIFO by ticket)
