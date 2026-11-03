@@ -28,6 +28,7 @@ namespace
 {
     void mine_status_x_write();   // mb_mining.hpp (same anonymous namespace)
     bool trip_warp_try(UObject* ship, int sid, int dock);   // mb_mining.hpp: warp a far dock trip (true = teleport sent)
+    void chunk_hold_target_clear(int sid);                  // mb_chunkhold.hpp: back to the ship's own chunk
 
     // WHAT: undock state text for the status file (undock_state=): "n/a", "docked", "undocking t=..", "free", "error".
     // WHY: the Test tab shows where the undock job is without reading the job list.
@@ -42,6 +43,7 @@ namespace
         const DockJob j = g_jobs[idx];
         g_job_res[j.sid] = res;
         g_jobs.erase(g_jobs.begin() + static_cast<std::ptrdiff_t>(idx));
+        if (j.cmd != "undock") chunk_hold_target_clear(j.sid);   // a far trip warp set the cube on the dock: the trip is over
         mine_status_x_write();   // job column clears now, not at the next second
         tlog(STR("seq=") + std::to_wstring(j.seq) + STR(" ") + widen(j.cmd) + STR(" ship=") + std::to_wstring(j.sid) + STR(" result: ") + res);
         if (g_cmd.seq == j.seq) g_cmd.result = res;
