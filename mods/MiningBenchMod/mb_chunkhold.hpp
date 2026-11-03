@@ -313,6 +313,16 @@ namespace
     // WHAT: sets (or moves) the ship's cube. Called every mine_step tick in SEEK/MINE, at the belt arrival, and in CHECK for an undocked ship
     //       with nothing in range. Returns at once when the ship is on the same chunk as its cube.
     // WHY: the new cube is set before the old one is cleared, so chunks both cubes use never unload.
+    struct ChTarget { int sys = 0; int64_t c[3] = {0, 0, 0}; };
+    std::map<int, ChTarget> g_ch_target;   // ship id -> chunk the cube is centred on instead of the ship's own (a save-data rock the ship should load)
+
+    void chunk_hold_target(int sid, int sys, const int64_t c[3])
+    {
+        ChTarget& t = g_ch_target[sid];
+        t.sys = sys;
+        for (int i = 0; i < 3; ++i) t.c[i] = c[i];
+    }
+
     void chunk_hold_update(int sid, UObject* ship)
     {
         if (g_ch.disabled || !g_compat.usable(F_CHUNKHOLD) || !alive(ship)) return;
@@ -320,11 +330,14 @@ namespace
         int sys = 0;
         int64_t sch[3] = {0, 0, 0};
         if (!ship_pos(ship, sys, sch)) return;
+        const auto tgt = g_ch_target.find(sid);
+        const bool has_tgt = tgt != g_ch_target.end();
+        if (has_tgt) { sys = tgt->second.sys; for (int i = 0; i < 3; ++i) sch[i] = tgt->second.c[i]; }
         int psys = 0;
         int64_t pch[3] = {0, 0, 0};
         if (!ch_player(psys, pch)) return;
         ch_drain();
-        if (sys == psys && chunk_cheb(sch, pch) <= CH_NEAR_CH) { chunk_hold_release(sid); return; }   // the player's own streaming covers it
+        if (!has_tgt && sys == psys && chunk_cheb(sch, pch) <= CH_NEAR_CH) { chunk_hold_release(sid); return; }   // the player's own streaming covers it
         if (!ch_ready()) return;
         const int32_t c[3] = {static_cast<int32_t>(sch[0]), static_cast<int32_t>(sch[1]), static_cast<int32_t>(sch[2])};
         const auto old = g_ch.ships.find(sid);
@@ -409,6 +422,7 @@ namespace
     // WHAT: drops the ship's cube (its chunks no other ship holds are cleared). No-op without a cube.
     void chunk_hold_release(int sid)
     {
+        g_ch_target.erase(sid);
         const auto it = g_ch.ships.find(sid);
         if (it == g_ch.ships.end()) return;
         const ChRec rec = it->second;

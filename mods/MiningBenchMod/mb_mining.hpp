@@ -22,6 +22,7 @@ namespace
     // chunk hold (mb_chunkhold.hpp, defined after this file)
     void chunk_hold_update(int sid, UObject* ship);   // SEEK/MINE, arrival, CHECK nothing-in-range (undocked): set the ship's cube
     void chunk_hold_release(int sid);                 // drop the ship's cube (no-op when none)
+    void chunk_hold_target(int sid, int sys, const int64_t c[3]);   // centre the ship's cube on this chunk instead of the ship's own (cleared by chunk_hold_release)
     void chunk_hold_tick(int sid);                    // forced rock passes at +1 s and +3 s after a set
     bool chunk_hold_settling(int sid);                // true while the ship's cube was set less than 4 s ago
     void chunk_hold_keep_only(const std::vector<int>& sids);   // release holds of ships no longer on the bench
@@ -165,6 +166,62 @@ namespace
         if (!a || !actor_ok(a)) return nullptr;
         if (rad_m > 0.0 && r.dist_m > rad_m) return nullptr;
         return a;
+    }
+
+    // WHAT: chunk (system + 3 ints) of the save-data asteroid nearest to the ship that holds `item` and is alive; the ore list is shared by all ships and refreshed at most once a minute.
+    // WHY: the rock ACTORS only exist in loaded chunks (the player's scan list and the world scan never see the rest), but the save objects of every rock exist always.
+    //      Holding the chunks around that rock makes its actor load, then the normal rock search finds it.
+    // radius_m <= 0: no limit. Returns false when the ship position is unreadable or no rock of the ore is in the ship's system within the radius.
+    bool save_rock_nearest(UObject* ship, UObject* item, double radius_m, int& sys_out, int64_t out[3], int64_t& dist_chunks)
+    {
+        struct SaveRock { int sys; int64_t c[3]; };
+        static std::map<std::wstring, std::pair<ULONGLONG, std::vector<SaveRock>>> cache;   // ore item name -> (time, rocks)
+        int sys0 = 0; int64_t ch0[3] = {0, 0, 0};
+        if (!alive(item) || !ship_pos(ship, sys0, ch0)) return false;
+        auto& e = cache[item->GetName()];
+        const ULONGLONG now = GetTickCount64();
+        if (e.first == 0 || now - e.first >= 60000)
+        {
+            e.first = now;
+            e.second.clear();
+            std::vector<UObject*> saves;
+            UObjectGlobals::FindAllOf(STR("SmallResourceAsteroidObject"), saves);
+            for (UObject* o : saves)
+            {
+                if (!alive(o)) continue;
+                auto* arr = o->GetValuePtrByPropertyNameInChain<TArray<UObject*>>(STR("ResourceItems"));
+                bool has = false;
+                for (int32_t i = 0; arr && i < arr->Num(); ++i) if ((*arr)[i] == item) has = true;
+                if (!has) continue;
+                bool al = true; get_bool_prop(o, STR("bAlive"), al);
+                SaveRock r;
+                r.sys = sys_id(o);
+                if (!al || r.sys <= 0 || !get_chunk(o, r.c)) continue;
+                e.second.push_back(r);
+            }
+            log_line(STR("SAVEROCK ") + item->GetName() + STR(" alive save rocks=") + std::to_wstring(e.second.size()));
+        }
+        const int64_t max_chunks = radius_m > 0.0 ? static_cast<int64_t>(radius_m / 2048.0) + 1 : INT64_MAX;
+        int64_t best = -1;
+        for (const SaveRock& r : e.second)
+        {
+            if (r.sys != sys0) continue;
+            const int64_t d = std::max({std::llabs(r.c[0] - ch0[0]), std::llabs(r.c[1] - ch0[1]), std::llabs(r.c[2] - ch0[2])});
+            if (d > max_chunks || (best >= 0 && d >= best)) continue;
+            best = d; sys_out = r.sys; for (int i = 0; i < 3; ++i) out[i] = r.c[i];
+        }
+        dist_chunks = best;
+        return best >= 0;
+    }
+
+    // WHAT: nothing in range for this ship: hold the chunks around the nearest save-data rock of the ore so its actor loads. true = a hold was requested.
+    bool hold_nearest_save_rock(UObject* ship, int sid, UObject* item, double radius_m)
+    {
+        int sys = 0; int64_t c[3] = {0, 0, 0}, d = 0;
+        if (!save_rock_nearest(ship, item, radius_m, sys, c, d)) return false;
+        chunk_hold_target(sid, sys, c);
+        chunk_hold_update(sid, ship);
+        return true;
     }
 
     // DIAGNOSTIC (ROCKSCAN): counts over the same rock list rock_in_range scans. No state change.
@@ -477,7 +534,7 @@ namespace
         {
             // undocked ship (far sector, Start loop): hold its chunk cube so the next check sees the rocks. The belt counter waits while it settles.
             const bool docked = ship_docked(ship);
-            if (!docked) chunk_hold_update(sid, ship);
+            if (!hold_nearest_save_rock(ship, sid, item, mine_radius_m(c)) && !docked) chunk_hold_update(sid, ship);
             if (!chunk_hold_settling(sid)) m.empty_t += MINE_ROCK_CHECK_S;
             // belt, ship not docked: no rock in range for MINE_BELT_EMPTY_S and none of the ore at all (unlimited) -> next sector (same as SEEK)
             // WHY: the HUD list is the PLAYER's scan list and can miss whole ores (silica rocks seen on the HUD were not in it); a docked ship or belt off never asked for the world scan.
@@ -589,6 +646,7 @@ namespace
             if (!rock)
             {
                 mset(sid, m, STR("nothing in range"));
+                hold_nearest_save_rock(ship, sid, item, mine_radius_m(c));   // the rock may exist only as save data: load its chunks
                 rock_fallback_request();   // any seek (belt on or off): the HUD list can miss ores; belt seek: the next rock_in_range may use the FindAllOf fallback
                 // belt: no rock in range for MINE_BELT_EMPTY_S and no rock of the ore at all (unlimited search) -> warp to the next sector
                 if (!belt_off(c.belt) && m.rng_t >= MINE_BELT_EMPTY_S && !rock_in_range(m.anchor, item, mine_radius_m(c)) && belt_go(ship, sid, m, c, item, true) != 0) return;
