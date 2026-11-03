@@ -541,6 +541,150 @@ static void t_station()
     CHECK(parse_station_id("1234567890") == 0);
 }
 
+// ---------- dock network (mb_logic.hpp, net_*) ----------
+
+static void t_net_free_go()
+{
+    std::map<int, NetDock> d; std::map<int, NetShip> s; long t = 0;
+    const NetVerdict v = net_pick(d, s, t, 10, P_UNLOAD, {1}, 0, 5.0);
+    CHECK(v.k == NetVerdict::GO && v.dock == 1);
+    CHECK(d[1].resv == 10 && d[1].why == P_UNLOAD && d[1].since == 5.0);
+    CHECK(s[10].ticket == 0 && s[10].waits_dock == 0);
+}
+
+static void t_net_busy_wait()
+{
+    std::map<int, NetDock> d; std::map<int, NetShip> s; long t = 0;
+    d[1].occ = 7;
+    const NetVerdict v = net_pick(d, s, t, 11, P_UNLOAD, {1}, 0, 6.0);
+    CHECK(v.k == NetVerdict::WAIT && v.dock == 1 && v.holder == 7 && v.reason == NR_WAIT_BUSY);
+    CHECK(s[11].ticket == 1 && s[11].waits_dock == 1 && s[11].blocked_by == 7);
+    CHECK(d[1].queue.size() == 1 && d[1].queue[0] == 11);
+}
+
+static void t_net_second_dock()
+{
+    std::map<int, NetDock> d; std::map<int, NetShip> s; long t = 0;
+    d[1].occ = 7;
+    const NetVerdict v = net_pick(d, s, t, 12, P_UNLOAD, {1, 2}, 0, 0);
+    CHECK(v.k == NetVerdict::GO && v.dock == 2 && d[2].resv == 12);
+    const NetVerdict f = net_pick(d, s, t, 13, P_PICK, {1}, 2, 0);   // fixed dock 2 is busy now
+    CHECK(f.k == NetVerdict::WAIT && f.dock == 2 && f.holder == 12);
+}
+
+static void t_net_fifo()
+{
+    std::map<int, NetDock> d; std::map<int, NetShip> s; long t = 0;
+    d[1].occ = 7;
+    net_pick(d, s, t, 11, P_UNLOAD, {1}, 0, 1);
+    net_pick(d, s, t, 12, P_UNLOAD, {1}, 0, 2);
+    CHECK(s[11].ticket == 1 && s[12].ticket == 2);
+    CHECK(d[1].queue.size() == 2 && d[1].queue[0] == 11);
+    d[1].occ = 0;                                                    // dock freed
+    const NetVerdict nw = net_pick(d, s, t, 13, P_UNLOAD, {1}, 0, 3);  // newcomer must not jump the queue
+    CHECK(nw.k == NetVerdict::WAIT && nw.reason == NR_WAIT_QUEUE && s[13].ticket == 3);
+    net_grant_tick(d, s, 4);
+    CHECK(d[1].resv == 11 && s[11].granted && d[1].queue.size() == 2 && d[1].queue[0] == 12);
+    const NetVerdict w12 = net_pick(d, s, t, 12, P_UNLOAD, {1}, 0, 5);
+    CHECK(w12.k == NetVerdict::WAIT && w12.reason == NR_WAIT_QUEUE);
+    const NetVerdict g11 = net_pick(d, s, t, 11, P_UNLOAD, {1}, 0, 6);
+    CHECK(g11.k == NetVerdict::GO && d[1].resv == 11 && !s[11].granted);
+    net_release_ship(d, s, 11);                                     // 11 done
+    net_grant_tick(d, s, 7);
+    CHECK(d[1].resv == 12 && s[12].granted);
+}
+
+static void t_net_not_configured()
+{
+    std::map<int, NetDock> d; std::map<int, NetShip> s; long t = 0;
+    const NetVerdict v = net_pick(d, s, t, 10, P_UNLOAD, {}, 0, 0);
+    CHECK(v.k == NetVerdict::ERR && v.reason == NR_NOT_CONFIGURED);
+}
+
+static void t_net_dock_gone()
+{
+    std::map<int, NetDock> d; std::map<int, NetShip> s; long t = 0;
+    d[1].exists = false;
+    const NetVerdict v = net_pick(d, s, t, 10, P_UNLOAD, {1}, 0, 0);
+    CHECK(v.k == NetVerdict::ERR && v.reason == NR_DOCK_GONE);
+}
+
+static void t_net_full()
+{
+    std::map<int, NetDock> d; std::map<int, NetShip> s; long t = 0;
+    d[1].full = true;
+    const NetVerdict v = net_pick(d, s, t, 10, P_UNLOAD, {1, 2}, 0, 0);
+    CHECK(v.k == NetVerdict::GO && v.dock == 2);
+
+    std::map<int, NetDock> d2; std::map<int, NetShip> s2;
+    d2[1].full = true;
+    const NetVerdict w = net_pick(d2, s2, t, 10, P_UNLOAD, {1}, 0, 0);
+    CHECK(w.k == NetVerdict::WAIT && w.reason == NR_WAIT_FULL);
+    CHECK(d2[1].queue.size() == 1);
+    d2[1].full = false;                                             // space again
+    net_grant_tick(d2, s2, 1);
+    CHECK(d2[1].resv == 10 && s2[10].granted);
+}
+
+static void t_net_bad_holder()
+{
+    CHECK(net_bad_holder(HS_PARKED, true, false, 1));
+    CHECK(!net_bad_holder(HS_PARKED, true, false, 0));
+    CHECK(net_bad_holder(HS_WORKING, false, false, 1));   // empty of this dock's ores
+    CHECK(net_bad_holder(HS_WORKING, true, true, 1));     // dock full
+    CHECK(!net_bad_holder(HS_WORKING, true, false, 1));
+    CHECK(!net_bad_holder(HS_WORKING, false, true, 0));
+}
+
+static void t_unload_stalled()
+{
+    CHECK(!unload_stalled(true, 60, 10.0, 10, 60.0));
+    CHECK(!unload_stalled(false, 0, 10.0, 10, 60.0));
+    CHECK(!unload_stalled(false, 60, 9.0, 10, 60.0));
+    CHECK(!unload_stalled(false, 60, 10.0, 10, 59.0));
+    CHECK(unload_stalled(false, 60, 10.0, 10, 60.0));
+}
+
+static void t_net_reconcile()
+{
+    std::map<int, NetDock> d; std::map<int, NetShip> s;
+    d[1].resv = 5; d[1].queue = {5};
+    d[2].resv = 6;
+    d[3].resv = 9; d[3].occ = 8;
+    s[5].sid = 5; s[5].ticket = 1; s[5].wanted = {1}; s[5].waits_dock = 1;
+    s[6].sid = 6; s[6].granted = true;
+    s[9].sid = 9;
+    const std::map<int, int> occupant = {{3, 8}};
+    const std::map<int, int> heading = {{5, 2}, {6, 0}};     // 9 and 8 are dead
+    net_reconcile(d, s, occupant, heading, std::set<int>{1, 2, 3});
+    CHECK(d[1].resv == 0);                                   // holder 5 heads elsewhere
+    CHECK(d[2].resv == 6);                                   // granted ship keeps its grant
+    CHECK(d[3].resv == 0 && d[3].occ == 0);                  // dead holder and dead occupant
+    CHECK(!s.count(9) && s.count(5) && s.count(6));
+    CHECK(d[1].queue.size() == 1);
+    net_reconcile(d, s, occupant, heading, std::set<int>{1, 3});   // dock 2 gone
+    CHECK(!d[2].exists && d[2].resv == 0);
+}
+
+static void t_net_release()
+{
+    std::map<int, NetDock> d; std::map<int, NetShip> s; long t = 0;
+    d[1].occ = 7;
+    net_pick(d, s, t, 10, P_UNLOAD, {1}, 0, 0);              // waits, ticket 1
+    d[2].resv = 10;
+    net_release_ship(d, s, 10);
+    CHECK(d[1].queue.empty() && d[2].resv == 0);
+    CHECK(!s.count(10));
+}
+
+static void t_net_text()
+{
+    CHECK(net_ship_text(NR_WAIT_BUSY, "X", "S", 12, 2, 3) == "Waiting for dock X (used by S, 12 s, queue 2/3)");
+    CHECK(net_ship_text(NR_WAIT_FULL, "X", "", 0, 0, 0) == "Dock full (X), waiting for space");
+    CHECK(net_ship_text(NR_WAIT_PARKED, "X", "S", 0, 0, 0) == "Dock X held by idle ship S, no second dock to leave to");
+    CHECK(net_ship_text(NR_NOTHING_TO_UNLOAD, "", "", 0, 0, 0) == "Nothing to unload");
+}
+
 // ---------- runner ----------
 
 struct Case { const char* name; void (*fn)(); };
@@ -561,6 +705,10 @@ int main()
         {"item_next", t_item_next}, {"collect_verdict", t_collect_verdict}, {"sweep", t_sweep}, {"ore_scan_due", t_ore_scan_due}, {"dock_backoff", t_dock_backoff}, {"hull_dropped", t_hull_dropped},
         {"dock_limit_giveup", t_dock_limit_giveup}, {"unload_chain_more", t_unload_chain_more}, {"unload_cand", t_unload_cand}, {"refuel_stalled", t_refuel_stalled}, {"mine_radius", t_mine_radius},
         {"station", t_station},
+        {"net_free_go", t_net_free_go}, {"net_busy_wait", t_net_busy_wait}, {"net_second_dock", t_net_second_dock},
+        {"net_fifo", t_net_fifo}, {"net_not_configured", t_net_not_configured}, {"net_dock_gone", t_net_dock_gone},
+        {"net_full", t_net_full}, {"net_bad_holder", t_net_bad_holder}, {"unload_stalled", t_unload_stalled},
+        {"net_reconcile", t_net_reconcile}, {"net_release", t_net_release}, {"net_text", t_net_text},
     };
     for (const Case& c : cases)
     {

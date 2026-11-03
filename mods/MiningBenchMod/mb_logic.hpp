@@ -2,7 +2,7 @@
 // WHAT: pure logic: config structs and INI value parsing (Config, apply_kv, eff_cfg, parse_distance, parse_items), command line
 //       parsing, and the small rule functions the mining loop, belt and fuel code use (no game objects).
 // WHY separate: these have no UE or Windows calls, so the unit tests (tests/test_logic.cpp) can compile and run them alone.
-// DEPENDS ON (exact): std headers only (algorithm, cctype, cmath, cstdint, cstdlib, map, string, utility, vector). No UE4SS, no Windows.h.
+// DEPENDS ON (exact): std headers only (algorithm, cctype, cmath, cstdint, cstdlib, iterator, map, set, string, utility, vector). No UE4SS, no Windows.h.
 // USED BY: mb_common.hpp (includes this first), mb_config.hpp, mb_cmdstate.hpp, mb_belt.hpp, mb_mining.hpp, mb_dockjob.hpp, mb_testcmd.hpp, tests/test_logic.cpp
 // RULE: keep this file free of UE/Windows headers and STR(); use L"" literals.
 #pragma once
@@ -12,7 +12,9 @@
 #include <cstdint>
 #include <ctime>
 #include <cstdlib>
+#include <iterator>
 #include <map>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -477,5 +479,181 @@ namespace
     {
         if (arg.empty() || arg.size() > 9 || arg.find_first_not_of("0123456789") != std::string::npos) return 0;
         return std::atoi(arg.c_str());
+    }
+
+    // ---------- dock network: pure tables and rules (mb_net.hpp keeps the tables filled from the game) ----------
+    // WHAT: dock states for the status file, a ship's wait reason, why a ship is at a dock, and the holder state of a dock user.
+    // WHY: one shared queue per dock, FIFO by global ticket; no game objects here so the tests can run it.
+    enum DockStatus { DS_FREE, DS_RESERVED, DS_WORKING, DS_PARKED, DS_FULL, DS_GONE };
+    enum NetReason { NR_OK, NR_WAIT_BUSY, NR_WAIT_QUEUE, NR_WAIT_PARKED, NR_WAIT_FULL, NR_WAIT_UNMANAGED, NR_NOT_CONFIGURED, NR_DOCK_GONE, NR_NOTHING_TO_UNLOAD };
+    enum Purpose { P_NONE, P_UNLOAD, P_REFUEL, P_UNDOCK_TARGET, P_PICK, P_FLEE };
+    enum HolderState { HS_WORKING, HS_PARKED, HS_IDLE };
+
+    struct NetDock { int id = 0; bool exists = true; int occ = 0; int resv = 0; Purpose why = P_NONE; double since = 0; bool full = false; double full_since = 0; std::vector<int> queue; };
+    struct NetShip { int sid = 0; Purpose intent = P_NONE; std::vector<int> wanted; int waits_dock = 0; int blocked_by = 0; long ticket = 0; double wait_since = 0; NetReason reason = NR_OK; bool granted = false; };
+    struct NetVerdict { enum K { GO, WAIT, ERR } k = GO; int dock = 0; int holder = 0; NetReason reason = NR_OK; };
+
+    // WHAT: take ship sid out of every dock queue (ticket stays on the ship until drop_wait).
+    inline void net_unqueue(std::map<int, NetDock>& docks, int sid)
+    {
+        for (auto& kv : docks) { auto& q = kv.second.queue; q.erase(std::remove(q.begin(), q.end(), sid), q.end()); }
+    }
+
+    // WHAT: ship stops waiting: out of all queues, ticket and wait fields cleared.
+    inline void net_drop_wait(std::map<int, NetDock>& docks, NetShip& s)
+    {
+        net_unqueue(docks, s.sid);
+        s.ticket = 0; s.waits_dock = 0; s.blocked_by = 0; s.wait_since = 0; s.reason = NR_OK;
+    }
+
+    // WHAT: add ship to dock d's queue, queue kept sorted by ticket (FIFO).
+    inline void net_queue_add(std::map<int, NetDock>& docks, std::map<int, NetShip>& ships, int d, int sid)
+    {
+        std::vector<int>& q = docks[d].queue;
+        if (std::find(q.begin(), q.end(), sid) == q.end()) q.push_back(sid);
+        std::stable_sort(q.begin(), q.end(), [&](int a, int b) { return ships[a].ticket < ships[b].ticket; });
+    }
+
+    // WHAT: true when a queued ship with a lower ticket wants this dock (a new ship with no ticket is behind everyone queued).
+    inline bool net_queue_blocks(const NetDock& nd, const std::map<int, NetShip>& ships, const NetShip& me)
+    {
+        for (int q : nd.queue)
+        {
+            if (q == me.sid) continue;
+            const auto it = ships.find(q);
+            if (it != ships.end() && (me.ticket == 0 || it->second.ticket < me.ticket)) return true;
+        }
+        return false;
+    }
+
+    // WHAT: ship sid wants a dock for purpose. cands = dock ids in config order; fixed_dock > 0 = use only that dock (dock picker).
+    // WHAT (result): GO = dock reserved for sid now; WAIT = queued (dock = the one shown, holder = who uses it); ERR = real error (NOT_CONFIGURED / DOCK_GONE).
+    // WHY: free dock + no earlier waiter for it = GO. Full docks are skipped. Busy/reserved/queued = WAIT, never an error.
+    inline NetVerdict net_pick(std::map<int, NetDock>& docks, std::map<int, NetShip>& ships, long& ticket, int sid, Purpose purpose,
+                               std::vector<int> cands, int fixed_dock, double now)
+    {
+        NetVerdict v;
+        if (fixed_dock > 0) cands = {fixed_dock};
+        if (cands.empty()) { v.k = NetVerdict::ERR; v.reason = NR_NOT_CONFIGURED; return v; }
+        std::vector<int> live;
+        for (int d : cands) { docks[d].id = d; if (docks[d].exists) live.push_back(d); }
+        if (live.empty()) { v.k = NetVerdict::ERR; v.reason = NR_DOCK_GONE; return v; }
+        NetShip& s = ships[sid];
+        s.sid = sid; s.intent = purpose; s.wanted = live;
+        std::vector<int> open;
+        for (int d : live) if (!docks[d].full) open.push_back(d);
+        for (int d : open)
+        {
+            NetDock& nd = docks[d];
+            if (nd.occ != 0 || (nd.resv != 0 && nd.resv != sid)) continue;
+            if (nd.resv != sid && net_queue_blocks(nd, ships, s)) continue;
+            nd.resv = sid; nd.why = purpose; nd.since = now;
+            net_drop_wait(docks, s);
+            s.granted = false;
+            v.k = NetVerdict::GO; v.dock = d;
+            return v;
+        }
+        // WAIT: first ticket is kept; queue on every dock the ship could use (all full docks if none is open).
+        if (s.ticket == 0) { s.ticket = ++ticket; s.wait_since = now; }
+        const std::vector<int>& tg = open.empty() ? live : open;
+        net_unqueue(docks, sid);
+        for (int d : tg) net_queue_add(docks, ships, d, sid);
+        const NetDock& w = docks[tg[0]];
+        const int holder = w.occ != 0 ? w.occ : w.resv;
+        v.reason = open.empty() ? NR_WAIT_FULL : (w.occ != 0 ? NR_WAIT_BUSY : NR_WAIT_QUEUE);
+        s.waits_dock = tg[0]; s.blocked_by = holder; s.reason = v.reason;
+        v.k = NetVerdict::WAIT; v.dock = tg[0]; v.holder = holder;
+        return v;
+    }
+
+    // WHAT: each free, not full dock with waiters reserves for the lowest-ticket waiter (queue front). That ship gets granted=true.
+    // WHY: a waiting ship holds no dock; the grant is the only way a free dock goes to a waiter.
+    inline void net_grant_tick(std::map<int, NetDock>& docks, std::map<int, NetShip>& ships, double now)
+    {
+        for (auto& kv : docks)
+        {
+            NetDock& nd = kv.second;
+            if (!nd.exists || nd.full || nd.occ != 0 || nd.resv != 0 || nd.queue.empty()) continue;
+            const int sid = nd.queue.front();
+            NetShip& s = ships[sid];
+            net_drop_wait(docks, s);
+            s.granted = true;
+            nd.resv = sid; nd.why = s.intent; nd.since = now;
+        }
+    }
+
+    // WHAT: ship sid is gone (stop all, halt, release): drop its reservation, queue entries, ticket and the ship row.
+    inline void net_release_ship(std::map<int, NetDock>& docks, std::map<int, NetShip>& ships, int sid)
+    {
+        for (auto& kv : docks)
+        {
+            NetDock& nd = kv.second;
+            if (nd.resv == sid) { nd.resv = 0; nd.why = P_NONE; nd.since = 0; }
+        }
+        net_unqueue(docks, sid);
+        ships.erase(sid);
+    }
+
+    // WHAT: rebuild the tables from what the game shows. occupant: dock -> docked ship. heading: every live ship -> dock its job heads to (0 none). existing: dock ids that exist.
+    // WHY: drops reservations and queue entries of dead ships or ships that no longer want that dock, and clears tickets of ships not waiting.
+    inline void net_reconcile(std::map<int, NetDock>& docks, std::map<int, NetShip>& ships,
+                              const std::map<int, int>& occupant, const std::map<int, int>& heading, const std::set<int>& existing)
+    {
+        for (auto it = ships.begin(); it != ships.end();) it = heading.count(it->first) ? std::next(it) : ships.erase(it);
+        for (auto& kv : docks)
+        {
+            const int d = kv.first;
+            NetDock& nd = kv.second;
+            nd.exists = existing.count(d) != 0;
+            const auto o = occupant.find(d);
+            nd.occ = (o != occupant.end() && heading.count(o->second)) ? o->second : 0;
+            if (nd.resv != 0)
+            {
+                const auto h = heading.find(nd.resv);
+                const auto sf = ships.find(nd.resv);
+                const bool granted = sf != ships.end() && sf->second.granted;
+                const bool keep = nd.exists && h != heading.end() && (h->second == d || granted || nd.occ == nd.resv);
+                if (!keep) { nd.resv = 0; nd.why = P_NONE; nd.since = 0; }
+            }
+            nd.queue.erase(std::remove_if(nd.queue.begin(), nd.queue.end(), [&](int q)
+            {
+                const auto f = ships.find(q);
+                return f == ships.end() || f->second.ticket == 0 || std::find(f->second.wanted.begin(), f->second.wanted.end(), d) == f->second.wanted.end();
+            }), nd.queue.end());
+        }
+        for (auto& kv : ships) if (kv.second.waits_dock == 0) kv.second.ticket = 0;
+    }
+
+    // WHAT: holder of a dock is bad: someone waits for it and the holder is parked/idle (not working), has no ore of this dock in cargo, or the dock is full.
+    // WHY: only then the holder is sent away (undock). With no waiter nothing is touched.
+    inline bool net_bad_holder(HolderState st, bool has_ore, bool full, int waiters)
+    {
+        return waiters > 0 && (st != HS_WORKING || !has_ore || full);
+    }
+
+    // WHAT: unload stalled: items not all delivered, t >= wait_s, and the ore cargo has not grown for idle_s (idle_s 0 = off). Same rule as refuel_stalled.
+    bool unload_stalled(bool done, double idle_s, double t, double wait_s, double hold_idle)
+    {
+        return !done && idle_s > 0 && t >= wait_s && hold_idle >= idle_s;
+    }
+
+    // WHAT: status text for a ship's wait / refusal. Format is fixed here so the UI and tests see the same words.
+    // subject = dock name (or ore name for NR_NOT_CONFIGURED); holder = name of the ship using the dock; qpos/qn = queue place (shown when qn > 0).
+    inline std::string net_ship_text(NetReason r, const std::string& subject, const std::string& holder, double wait_s, int qpos, int qn)
+    {
+        const std::string secs = std::to_string(static_cast<long long>(wait_s)) + " s";
+        const std::string q = qn > 0 ? ", queue " + std::to_string(qpos) + "/" + std::to_string(qn) : "";
+        switch (r)
+        {
+        case NR_WAIT_BUSY: return "Waiting for dock " + subject + " (used by " + holder + ", " + secs + q + ")";
+        case NR_WAIT_QUEUE: return "Waiting for dock " + subject + " (" + secs + q + ")";
+        case NR_WAIT_FULL: return "Dock full (" + subject + "), waiting for space";
+        case NR_WAIT_PARKED: return "Dock " + subject + " held by idle ship " + holder + ", no second dock to leave to";
+        case NR_WAIT_UNMANAGED: return "Waiting for dock " + subject + " (held by ship " + holder + ", not managed)";
+        case NR_NOT_CONFIGURED: return "No unload dock configured for " + subject;
+        case NR_DOCK_GONE: return "Unload dock " + subject + " no longer exists";
+        case NR_NOTHING_TO_UNLOAD: return "Nothing to unload";
+        default: return "";
+        }
     }
 }
