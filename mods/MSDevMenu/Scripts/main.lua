@@ -609,6 +609,19 @@ local function buildPanel()
     log("panel built, rows " .. #UI.rows)
 end
 
+-- WHAT: closes the panel for real: removes it from the viewport, drops the refs (next open rebuilds) and clears MSCore's click map.
+-- WHY: the rebuild is needed because clearClicks empties the shared click map (buttons of a kept panel would stop answering).
+local function closePanel()
+    for _, r in ipairs({ UI.root, UI.btnRoot }) do pcall(function() if r and r:IsValid() then r:RemoveFromParent() end end) end
+    if MSCore and MSCore.ui and MSCore.ui.clearClicks then pcall(MSCore.ui.clearClicks) end
+    UI.root = nil
+    UI.btnRoot = nil
+    UI.shown = false
+    UI.rows = {}
+    UI.lastQ = nil
+    UI.sel = nil
+end
+
 local function tick()
     if UI.root and not UI.root:IsValid() then
         UI.root = nil
@@ -624,14 +637,7 @@ local function tick()
     if UI.liveOk == false or UI.liveOk == nil then
         open = false
         -- WHY: dropping the refs left the old panels in the viewport (leak, rebuilt on every map change)
-        for _, r in ipairs({ UI.root, UI.btnRoot }) do pcall(function() if r and r:IsValid() then r:RemoveFromParent() end end) end
-        if MSCore and MSCore.ui and MSCore.ui.clearClicks then pcall(MSCore.ui.clearClicks) end
-        UI.root = nil
-        UI.btnRoot = nil
-        UI.shown = false
-        UI.rows = {}
-        UI.lastQ = nil
-        UI.sel = nil
+        closePanel()
     end
     -- Esc forced hide: stays hidden until the inventory is seen closed once
     if open and UI.forceHide then open = false end
@@ -644,9 +650,13 @@ local function tick()
             tostring(open), info.inViewport, info.vis, tostring(info.valid)))
     end
     if UI.root and open ~= UI.shown then
-        UI.shown = open
-        UI.root:SetVisibility((open and not UI.collapsed) and 0 or 2)
-        if UI.btnRoot then pcall(function() UI.btnRoot:SetVisibility(open and 0 or 2) end) end
+        if open then
+            UI.shown = true
+            UI.root:SetVisibility(UI.collapsed and 2 or 0)
+            if UI.btnRoot then pcall(function() UI.btnRoot:SetVisibility(0) end) end
+        else
+            closePanel()   -- every hide: clicks unhooked, panel rebuilt on next open
+        end
     end
     if UI.search and UI.shown then
         local q = UI.search:GetText():ToString():lower()
@@ -688,9 +698,7 @@ MSCore.events.on("tick", tick)
 try("RegisterKeyBind Esc", function()
     RegisterKeyBind(Key.ESCAPE, function()
         pcall(ExecuteInGameThread, function()
-            if UI.root and UI.root:IsValid() then UI.root:SetVisibility(2) end
-            if UI.btnRoot then pcall(function() UI.btnRoot:SetVisibility(2) end) end
-            UI.shown = false
+            closePanel()
             UI.forceHide = true
             UI.f3 = false
         end)
@@ -704,9 +712,7 @@ try("RegisterKeyBind F3", function()
             local pc = ctrl()
             if pc then pcall(function() pc.bShowMouseCursor = UI.f3 end) end   -- clickable without the inventory
             if not UI.f3 and UI.root and UI.root:IsValid() and not invOpen() then
-                UI.root:SetVisibility(2)
-                if UI.btnRoot then pcall(function() UI.btnRoot:SetVisibility(2) end) end
-                UI.shown = false
+                closePanel()
             end
         end)
     end)
