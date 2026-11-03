@@ -377,6 +377,28 @@ namespace
         return COL_WAIT;
     }
 
+    // WHAT: sweep (MS_SWEEP) limits: pick timeout (s), rescans before giving up, fly-back max distance (m), fly timeout (s), warp wait (s).
+    constexpr double SWEEP_PICK_S = 10.0;
+    constexpr int SWEEP_RESCANS = 2;
+    constexpr double SWEEP_FLY_MAX_M = 4096.0;
+    constexpr double SWEEP_FLY_TIMEOUT_S = 120.0;
+    constexpr double SWEEP_WARP_WAIT_S = 15.0;
+
+    // WHAT: fly back by tractor flight only when same system and within SWEEP_FLY_MAX_M; else warp.
+    inline bool sweep_fly_back(bool same_sys, double dist_m)
+    {
+        return same_sys && dist_m <= SWEEP_FLY_MAX_M;
+    }
+
+    // WHAT: index of the smallest d[i] with done[i] == 0, or -1 when none.
+    inline int sweep_nearest(const std::vector<double>& d, const std::vector<char>& done)
+    {
+        int best = -1;
+        for (size_t i = 0; i < d.size(); ++i)
+            if (!done[i] && (best < 0 || d[i] < d[(size_t)best])) best = (int)i;
+        return best;
+    }
+
     // WHAT: next queue row index after idx for n rows. wrapped = true when it passed the last row (result 0).
     int item_next(int idx, int n, bool& wrapped)
     {

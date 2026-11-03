@@ -409,6 +409,17 @@ static void t_collect_verdict()
     CHECK(collect_verdict(0, 99, 99) == COL_DONE);
 }
 
+static void t_sweep()
+{
+    CHECK(sweep_nearest({5, 2, 9}, {0, 0, 0}) == 1);
+    CHECK(sweep_nearest({5, 2, 9}, {0, 1, 0}) == 0);
+    CHECK(sweep_nearest({1}, {1}) == -1);
+    CHECK(sweep_nearest({}, {}) == -1);
+    CHECK(sweep_fly_back(true, 4096) == true);
+    CHECK(sweep_fly_back(true, 4097) == false);
+    CHECK(sweep_fly_back(false, 1) == false);
+}
+
 static void t_dock_backoff()
 {
     CHECK(dock_backoff_s(0) == 2);
@@ -515,7 +526,7 @@ int main()
         {"parse_cmd_line", t_parse_cmd_line}, {"cmd_seq_is_new", t_cmd_seq_is_new},
         {"belt", t_belt}, {"csq", t_csq}, {"sector_contains", t_sector_contains}, {"warp_fuel", t_warp_fuel},
         {"cargo_pct", t_cargo_pct}, {"fuel_low", t_fuel_low}, {"got_delta", t_got_delta}, {"row_done", t_row_done},
-        {"item_next", t_item_next}, {"collect_verdict", t_collect_verdict}, {"dock_backoff", t_dock_backoff}, {"hull_dropped", t_hull_dropped},
+        {"item_next", t_item_next}, {"collect_verdict", t_collect_verdict}, {"sweep", t_sweep}, {"dock_backoff", t_dock_backoff}, {"hull_dropped", t_hull_dropped},
         {"dock_limit_giveup", t_dock_limit_giveup}, {"refuel_stalled", t_refuel_stalled}, {"mine_radius", t_mine_radius},
         {"station", t_station},
     };

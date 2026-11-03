@@ -28,6 +28,7 @@ namespace
     //         No instance -> error. 6 stop_all: lasers and scooper off, group input off,
     //       dock job and move job of this ship cancelled (rotation aim zeroed), autopilot off, zero_all.
     //         Mining loop (step 0, step 1b): mine_start_all / mine_stop_all (sid 0, all bench ships), mine_start / mine_stop (one ship): mb_mining.hpp mine_cmd.
+    //         Collect ore action (collect_ore): sweep_cmd (mb_mining.hpp), MS_SWEEP.
     //         8 anything else -> unknown error.
     // WHY: one place lists every Test tab command. The multi-step commands return "waiting" and finish later through their job.
     std::wstring run_cmd(int seq, int sid, const std::string& cmd)
@@ -123,6 +124,7 @@ namespace
             return ap ? std::wstring(STR("ok")) : STR("error: ") + err;
         }
         // 7. Operation tab "Warp to belt": the ship's belt sector (refused while the loop runs)
+        if (cmd == "collect_ore") return sweep_cmd(sid);   // collect ore action: MS_SWEEP (mb_mining.hpp)
         if (cmd == "warp_belt") return warp_belt_cmd(sid);
         // 8. dev commands (Dev Menu / Test tab only): mb_devcmd.hpp
         bool dev_handled = false;

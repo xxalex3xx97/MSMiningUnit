@@ -35,12 +35,16 @@ namespace
     constexpr double MINE_FLEE_GRACE_S = 10.0;   // after STOP ALL no flee for this long (s)
     constexpr double MINE_DOCK_RETRY_WAIT_S = 30.0; // dock time limit: wait after the undock before docking again (s)
 
-    enum MineState { MS_OFF = 0, MS_CHECK, MS_UNDOCK, MS_SEEK, MS_MINE, MS_TRIP, MS_HOLD, MS_HALT, MS_WARP, MS_DLWAIT, MS_COLLECT };
+    enum MineState { MS_OFF = 0, MS_CHECK, MS_UNDOCK, MS_SEEK, MS_MINE, MS_TRIP, MS_HOLD, MS_HALT, MS_WARP, MS_DLWAIT, MS_COLLECT, MS_SWEEP };
     const TCHAR* mine_state_name(int s)
     {
-        static const TCHAR* n[] = {STR("idle"), STR("checking"), STR("undocking"), STR("approaching rock"), STR("mining"), STR("flying to dock"), STR("at dock"), STR("stopped"), STR("warping"), STR("waiting to dock again"), STR("collecting ore")};
+        static const TCHAR* n[] = {STR("idle"), STR("checking"), STR("undocking"), STR("approaching rock"), STR("mining"), STR("flying to dock"), STR("at dock"), STR("stopped"), STR("warping"), STR("waiting to dock again"), STR("collecting ore"), STR("collecting ore (sweep)")};
         return n[s];
     }
+
+    // WHAT: MS_SWEEP ore list entry: floating ore actor, its position (uu) at the last scan, done = already tried this sweep.
+    struct SwOre { UObject* a = nullptr; double p[3] = {0, 0, 0}; bool done = false; };
+    enum { SW_UNDOCK = 0, SW_RETURN, SW_FLY, SW_WARP, SW_PICK, SW_APPROACH, SW_PULL };
 
     // WHAT: per-ship mining loop state. anchor = ship actor position (uu) at undock = centre of the search area.
     struct MineSt
@@ -89,6 +93,14 @@ namespace
         std::wstring col_why;                  // MS_COLLECT: reason it started (text shown at the end)
         double col_t = 0.0, col_stall = 0.0, col_scan_t = 0.0;   // MS_COLLECT: seconds total / since ore count dropped / since the last scan
         int col_last = -1;                     // MS_COLLECT: floating ore count at the last scan (-1 none, 0 scan failed)
+        bool sweep = false;                    // MS_SWEEP active (collect ore action)
+        int sw_ph = 0, sw_rescans = 0, sw_sys = 0;   // MS_SWEEP phase (SW_*), rescans left, saved system id
+        int64_t sw_ch[3] = {0, 0, 0};          // MS_SWEEP: saved ship chunk (return point)
+        double sw_loc[3] = {0, 0, 0};          // MS_SWEEP: saved ship raw location (return point)
+        bool sw_back = false, sw_nofly = false;   // sw_back: return to the saved point after the unload; sw_nofly: flight back failed, warp instead
+        double sw_t = 0.0;                     // MS_SWEEP: seconds in the current phase
+        UObject* sw_ore = nullptr;             // MS_SWEEP: ore actor being picked up
+        std::vector<SwOre> sw_list;            // MS_SWEEP: floating ore cache (nearest first when picking)
     };
     std::map<int, MineSt> g_mine;
 
@@ -450,6 +462,8 @@ namespace
         zero_all(ship);
         // hull hit: fled to dock, the trip is over for good
         if (m.flee) { m.flee = false; m.fin = false; m.err = true; m.st = MS_HALT; mset(sid, m, STR("ERROR: hull damaged, fled to dock, stopped"), STR("ERROR: ship was attacked, fled to dock, stopped")); return; }
+        // sweep: unloaded, back to the sweep (undock, return to the field)
+        if (m.sweep) { m.sw_ph = SW_UNDOCK; m.sw_nofly = false; m.st = MS_SWEEP; m.leave = false; m.t = 0.0; mset(sid, m, STR("unloaded, returning to sweep"), STR("Collecting ore")); return; }
         const bool refuel = is_refuel(m);
         m.t = 0.0;
         if (m.leave) { m.st = MS_HALT; mset(sid, m, STR("switched off, parked at dock")); return; }
@@ -508,7 +522,7 @@ namespace
         }
         else m.leave = false;
         // 1b. hull hit while flying / mining / warping: stop work, dock trip (flee), trip_end halts with the red ERROR
-        if (m.st == MS_SEEK || m.st == MS_MINE || m.st == MS_WARP || m.st == MS_COLLECT)
+        if (m.st == MS_SEEK || m.st == MS_MINE || m.st == MS_WARP || m.st == MS_COLLECT || m.st == MS_SWEEP)
         {
             int32_t h = 0;
             if (get_int_prop(ship, STR("Health"), h))
@@ -520,7 +534,7 @@ namespace
         }
         else if (m.st != MS_OFF && m.st != MS_HALT) m.hull = -1;
         // 2. fuel check while flying out / mining
-        if (m.st == MS_SEEK || m.st == MS_MINE || m.st == MS_COLLECT)
+        if (m.st == MS_SEEK || m.st == MS_MINE || m.st == MS_COLLECT || m.st == MS_SWEEP)
         {
             m.fuel_t += dt;
             if (m.fuel_t >= MINE_FUEL_CHECK_S)
@@ -773,6 +787,220 @@ namespace
         enter_seek(m);
         mset(sid, m, m.col_why);
     }
+
+    // WHAT: MS_SWEEP helper: cache the floating ore actors (BP_FloatingOre_C) and their positions (uu) into m.sw_list.
+    void sweep_scan(UObject* ship, MineSt& m)
+    {
+        m.sw_list.clear();
+        ActFrame f;
+        if (!act_frame(ship, f)) return;
+        std::vector<UObject*> v;
+        UObjectGlobals::FindAllOf(STR("BP_FloatingOre_C"), v);
+        for (UObject* a : v)
+        {
+            if (!actor_ok(a)) continue;
+            SwOre o;
+            o.a = a;
+            std::wstring why;
+            if (!actor_vec_call(a, STR("K2_GetActorLocation"), o.p, why)) continue;
+            m.sw_list.push_back(o);
+        }
+    }
+
+    // WHAT: MS_SWEEP helper: distance (m) from the ship to the saved return point, and whether the ship is in the saved system. false when unreadable.
+    bool sw_abs_dist(UObject* ship, const MineSt& m, double& dist_m, bool& same_sys)
+    {
+        same_sys = sys_id(ship) == m.sw_sys;
+        int64_t c[3];
+        double l[3];
+        if (!get_chunk(ship, c) || !get_loc(ship, l)) return false;
+        double s = 0.0;
+        for (int i = 0; i < 3; ++i)
+        {
+            const double dr = (double)(m.sw_ch[i] - c[i]) * 134217728.0 + (m.sw_loc[i] - l[i]);   // raw
+            s += dr * dr;
+        }
+        dist_m = std::sqrt(s) / g_raw_per_m;
+        return true;
+    }
+
+    // WHAT: MS_SWEEP helper: back at the ore field: rescan, pick from the top.
+    void sw_arrived(UObject* ship, int sid, MineSt& m)
+    {
+        m.sw_ph = SW_PICK; m.sw_back = false; m.sw_t = 0.0;
+        chunk_hold_target_clear(sid);
+        sweep_scan(ship, m);
+        m.sw_rescans = 0;
+        mlog(sid, STR("Collect: back at the ore field"));
+    }
+
+    // WHAT: MS_SWEEP: undock after a dock trip, return to the ore field, pick floating ore nearest first, dock when cargo is full.
+    // WHY: the collect action runs until no ore is left: the ship keeps the tractor on and flies to each piece in turn.
+    void st_sweep(UObject* ship, int sid, MineSt& m, double dt, const Config& c)
+    {
+        switch (m.sw_ph)
+        {
+        case SW_UNDOCK:
+        {
+            for (const DockJob& j : g_jobs) if (j.sid == sid) return;   // undock job running
+            if (g_job_res[sid].empty() && ship_docked(ship))             // first tick while docked: start the undock
+            {
+                g_job_res.erase(sid);
+                const std::wstring r = job_start(sid, "undock", -1);
+                if (r == STR("waiting")) return;
+                g_job_res[sid] = r;
+            }
+            const std::wstring r = g_job_res[sid];
+            if (!r.empty() && !ok_res(r))
+            {
+                m.sweep = false; m.st = MS_HALT; m.err = true;
+                mset(sid, m, STR("ERROR: undock failed: ") + r, STR("ERROR: undock failed: ") + r);
+                return;
+            }
+            // undocked (or was not docked)
+            m.sw_ph = m.sw_back ? SW_RETURN : SW_PICK; m.sw_t = 0.0;
+            run_cmd(-1, sid, "tractor_on");
+            run_cmd(-1, sid, "laser_off");
+            if (!m.sw_back && m.sw_list.empty()) sweep_scan(ship, m);
+            return;
+        }
+        case SW_RETURN:
+        {
+            double d = 0.0;
+            bool same = false;
+            if (!m.sw_nofly && sw_abs_dist(ship, m, d, same) && sweep_fly_back(same, d))
+            {
+                PtTarget t;
+                t.sys = m.sw_sys;
+                std::copy(m.sw_ch, m.sw_ch + 3, t.ch);
+                std::copy(m.sw_loc, m.sw_loc + 3, t.loc);
+                const std::wstring r = move_start(sid, "approach_rock", -1, nullptr, &t);
+                if (r == STR("waiting")) { m.sw_ph = SW_FLY; m.sw_t = 0.0; mlog(sid, STR("Collect: flying back")); return; }
+            }
+            chunk_hold_target(sid, m.sw_sys, m.sw_ch);
+            const int64_t arr[3] = {(int64_t)m.sw_loc[0], (int64_t)m.sw_loc[1], (int64_t)m.sw_loc[2]};
+            std::wstring e;
+            if (!warp_send(sid, m.sw_sys, m.sw_ch, arr, false, e))
+            {
+                m.sweep = false; m.st = MS_HALT; m.err = true;
+                mset(sid, m, STR("ERROR: return warp failed: ") + e, STR("ERROR: return warp failed: ") + e);
+                return;
+            }
+            m.sw_ph = SW_WARP; m.sw_t = 0.0;
+            mlog(sid, STR("Collect: warping back"));
+            return;
+        }
+        case SW_FLY:
+        {
+            m.sw_t += dt;
+            if (mv_active(sid) && m.sw_t < SWEEP_FLY_TIMEOUT_S) return;
+            if (mv_active(sid))
+            {
+                mv_cancel(sid); zero_all(ship);
+                m.sw_nofly = true; m.sw_ph = SW_RETURN;
+                return;
+            }
+            sw_arrived(ship, sid, m);
+            return;
+        }
+        case SW_WARP:
+        {
+            m.sw_t += dt;
+            double d = 0.0;
+            bool same = false;
+            if (sw_abs_dist(ship, m, d, same) && same && d <= 100.0) { sw_arrived(ship, sid, m); return; }
+            if (m.sw_t >= SWEEP_WARP_WAIT_S)
+            {
+                m.sweep = false; m.st = MS_HALT; m.err = true;
+                mset(sid, m, STR("ERROR: return warp did not arrive"), STR("ERROR: return warp did not arrive"));
+            }
+            return;
+        }
+        case SW_PICK:
+        {
+            if (chunk_hold_settling(sid)) return;
+            std::wstring w;
+            UObject* item = item_c(c.resource, w);
+            const bool full = (alive(item) && cargo_full(ship, item)) || m.cargo_pct >= 100;
+            if (full)
+            {
+                if (m.unl_chk++ >= 1)
+                {
+                    m.sweep = false; m.st = MS_HALT; m.err = true;
+                    mset(sid, m, STR("ERROR: cargo still full after unload (is the ore enabled for unload?)"), STR("ERROR: cargo still full after unload (is the ore enabled for unload?)"));
+                    return;
+                }
+                int sys = 0;
+                int64_t ch[3];
+                double l[3];
+                if (ship_pos(ship, sys, ch) && get_loc(ship, l))
+                {
+                    m.sw_sys = sys;
+                    std::copy(ch, ch + 3, m.sw_ch);
+                    std::copy(l, l + 3, m.sw_loc);
+                    m.sw_back = true;
+                }
+                mine_stop_work(ship, sid);
+                trip_begin(ship, sid, m, STR("cargo full"), "dock_mining");
+                mlog(sid, STR("Collect: cargo full, unloading"));
+                return;
+            }
+            m.unl_chk = 0;   // room in cargo: the unload worked, the retry counter restarts
+            ActFrame f;
+            if (!act_frame(ship, f)) return;
+            std::vector<double> d(m.sw_list.size(), 0.0);
+            std::vector<char> done(m.sw_list.size(), 0);
+            for (size_t i = 0; i < m.sw_list.size(); ++i)
+            {
+                const SwOre& o = m.sw_list[i];
+                const double dv[3] = {o.p[0] - f.loc[0], o.p[1] - f.loc[1], o.p[2] - f.loc[2]};
+                d[i] = norm3(dv);
+                done[i] = o.done || !actor_ok(o.a);
+            }
+            const int i = sweep_nearest(d, done);
+            if (i < 0)
+            {
+                if (m.sw_rescans < SWEEP_RESCANS) { ++m.sw_rescans; sweep_scan(ship, m); return; }
+                mine_stop_work(ship, sid);
+                m.sweep = false; m.st = MS_HALT;
+                mset(sid, m, STR("Collect done"), STR("Collect done"));
+                return;
+            }
+            m.sw_ore = m.sw_list[(size_t)i].a;
+            const std::wstring r = move_start(sid, "approach_rock", -1, m.sw_ore, nullptr);
+            if (r == STR("waiting")) m.sw_ph = SW_APPROACH;
+            else m.sw_list[(size_t)i].done = true;
+            return;
+        }
+        case SW_APPROACH:
+        {
+            if (mv_active(sid)) return;   // any result: a rock lost here means the tractor already took it
+            m.sw_ph = SW_PULL; m.sw_t = 0.0;
+            run_cmd(-1, sid, "tractor_on");
+            run_cmd(-1, sid, "laser_off");
+            return;
+        }
+        case SW_PULL:
+        {
+            m.sw_t += dt;
+            const bool gone = !actor_ok(m.sw_ore);
+            std::wstring w;
+            UObject* item = item_c(c.resource, w);
+            const bool full = (alive(item) && cargo_full(ship, item)) || m.cargo_pct >= 100;
+            if (gone || full || m.sw_t >= SWEEP_PICK_S)
+            {
+                for (SwOre& o : m.sw_list) if (o.a == m.sw_ore) o.done = true;
+                if (gone) mlog(sid, STR("Collect: ore picked up"));
+                m.sw_ore = nullptr;
+                m.sw_ph = SW_PICK;
+            }
+            return;
+        }
+        default:
+            return;
+        }
+    }
+
     // WHAT: MS_TRIP: dock trip (dock busy retry backoff, job result).
     void st_trip(UObject* ship, int sid, MineSt& m, double dt, const Config& c)
     {
@@ -936,10 +1164,11 @@ namespace
         m.t += dt;
         // chunk hold: SEEK/MINE keep the cube of the ship's chunk (update also drops it when the player flies the ship). OFF, CHECK and UNDOCK
         // keep what is there (CHECK sets it for an undocked ship with nothing in range); the other states release it. Forced rock passes: chunk_hold_tick.
-        if ((m.st == MS_SEEK || m.st == MS_MINE || m.st == MS_COLLECT) && on) chunk_hold_update(sid, ship);
+        const bool on2 = on || m.sweep;   // sweep runs with the Start flag off: it has its own on switch (sweep_cmd / mine_halt)
+        if (m.st == MS_SWEEP || ((m.st == MS_SEEK || m.st == MS_MINE || m.st == MS_COLLECT) && on2)) chunk_hold_update(sid, ship);
         else if (m.st != MS_OFF && m.st != MS_CHECK && m.st != MS_UNDOCK) chunk_hold_release(sid);
         chunk_hold_tick(sid);
-        if (step_pre(ship, sid, m, dt, on)) return;
+        if (step_pre(ship, sid, m, dt, on2)) return;
         switch (m.st)
         {
         case MS_OFF: st_off(ship, sid, m, dt, c); return;
@@ -948,6 +1177,7 @@ namespace
         case MS_SEEK: st_seek(ship, sid, m, dt, c); return;
         case MS_MINE: st_mine(ship, sid, m, dt, c); return;
         case MS_COLLECT: st_collect(ship, sid, m, dt, c); return;
+        case MS_SWEEP: st_sweep(ship, sid, m, dt, c); return;
         case MS_TRIP: st_trip(ship, sid, m, dt, c); return;
         case MS_HOLD: st_hold(ship, sid, m, dt, c); return;
         case MS_WARP: st_warp(ship, sid, m, dt, c); return;
@@ -965,6 +1195,7 @@ namespace
         switch (m.st)
         {
         case MS_UNDOCK: case MS_SEEK: case MS_MINE: case MS_COLLECT: return "mining";
+        case MS_SWEEP: return "collecting";
         case MS_TRIP: case MS_WARP: return "traveling";
         case MS_DLWAIT: return "waiting";
         case MS_HOLD: return is_refuel(m) ? "refueling" : "unloading";
@@ -999,6 +1230,7 @@ namespace
         case MS_HOLD: return "Check/Stop";
         case MS_WARP: return "Seek rock";
         case MS_COLLECT: return "Seek rock";
+        case MS_SWEEP: return "Collect ore";
         case MS_DLWAIT: return "Dock again";
         default: return "-";
         }
@@ -1217,7 +1449,7 @@ namespace
         auto it = g_mine.find(sid);
         if (it == g_mine.end()) return;
         it->second.btn = false;
-        it->second.flee = false; it->second.warp_to = 0; it->second.col_rock = 0;
+        it->second.flee = false; it->second.warp_to = 0; it->second.col_rock = 0; it->second.sweep = false;
         it->second.st = MS_HALT;
         it->second.run = false;
         it->second.since_stop = 0.0;
@@ -1257,6 +1489,7 @@ namespace
         if (start)
         {
             m.btn = false;             g_item_idx[sid] = 0; m.got = 0; m.fin = false; m.noore = false;   // always: a stale queue position must not survive a Start
+            m.sweep = false;
             m.flee = false; m.warp_to = 0; m.tried.clear(); m.hull = -1; m.dl_n = 0;    // a new run starts with no flee, no pending warp, no sector blacklist, no dock time limit rounds
             if (m.st == MS_HALT) m.st = MS_OFF;
             m.chk_t = MINE_ROCK_CHECK_S; m.fails = 0; m.unl_chk = 0; m.leave = false;
@@ -1264,6 +1497,27 @@ namespace
         }
         else mlog(sid, STR("Loop stop requested"));
         log_line(STR("MINE ship=") + std::to_wstring(sid) + (start ? STR(" loop started") : STR(" loop stop requested")));
+        return STR("ok");
+    }
+
+    // WHAT: collect ore action (Test command collect_ore): sweep the floating ore of the ship's system, dock when cargo is full, go back.
+    std::wstring sweep_cmd(int sid)
+    {
+        if (std::find(g_bench_ids.begin(), g_bench_ids.end(), sid) == g_bench_ids.end()) return STR("error: ship has no MiningBench");
+        UObject* ship = find_by_id(STR("DMSPlayerShipObject"), sid);
+        if (!alive(ship)) return STR("error: ship not found");
+        if (!g_compat.ok(F_MINING)) return STR("error: COMPAT: mining disabled");
+        MineSt& m = g_mine[sid];
+        m.run = false; m.leave = false; m.fin = false; m.btn = true; m.err = false;
+        m.sweep = true; m.sw_ph = SW_UNDOCK; m.sw_rescans = 0; m.sw_back = false; m.sw_nofly = false; m.sw_ore = nullptr; m.unl_chk = 0;
+        m.st = MS_SWEEP; m.t = 0.0;
+        mv_cancel(sid);   // a leftover move job of the mining loop must not block the sweep's own moves
+        g_job_res.erase(sid);
+        run_cmd(-1, sid, "tractor_on");
+        run_cmd(-1, sid, "laser_off");
+        if (!ship_docked(ship)) sweep_scan(ship, m);
+        mset(sid, m, STR("collecting ore"), STR("Collecting ore"));
+        mlog(sid, STR("Action: collect ore"));
         return STR("ok");
     }
 

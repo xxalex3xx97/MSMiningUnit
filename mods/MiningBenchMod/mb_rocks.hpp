@@ -438,6 +438,25 @@ namespace
     // WHY: one struct for picking, steering and status, so every caller uses the same aim math.
     struct ActAim { double dist_m = 0.0, err_deg = 0.0, a_body[3] = {0, 0, 0}, rloc[3] = {0, 0, 0}; };
 
+    // WHAT: aim numbers of a fixed point rloc (uu, world) against frame f. false when the vector is degenerate (point at the ship).
+    // WHY: split from act_aim so point targets (sweep return spot, no actor) use the same aim math.
+    bool act_aim_pt(const ActFrame& f, const double rloc[3], ActAim& r)
+    {
+        std::copy(rloc, rloc + 3, r.rloc);
+        double d[3] = {r.rloc[0] - f.loc[0], r.rloc[1] - f.loc[1], r.rloc[2] - f.loc[2]};
+        const double n = norm3(d);
+        if (n < 1e-9) return false;
+        for (double& x : d) x /= n;
+        r.dist_m = n / MV_UU_PER_M;
+        r.err_deg = std::acos(std::clamp(dot3(f.fw, d), -1.0, 1.0)) * 180.0 / MV_PI;
+        double a[3];
+        cross3(f.fw, d, a);
+        r.a_body[0] = dot3(a, f.fw);
+        r.a_body[1] = dot3(a, f.R);
+        r.a_body[2] = dot3(a, f.U);
+        return true;
+    }
+
     // WHAT: fill r with the aim numbers of rock actor 'rock' against frame f. false when the rock is not live or the vector is unreadable.
     // WHY: the rock location is read only after actor_ok(), so a freed actor is never touched.
     bool act_aim(const ActFrame& f, UObject* rock, ActAim& r)
@@ -451,19 +470,7 @@ namespace
             if (!actor_vec_call(rock, STR("K2_GetActorLocation"), l.p, why)) return false;
             lc = g_rock_loc.emplace(rock, l).first;
         }
-        std::copy(lc->second.p, lc->second.p + 3, r.rloc);
-        double d[3] = {r.rloc[0] - f.loc[0], r.rloc[1] - f.loc[1], r.rloc[2] - f.loc[2]};
-        const double n = norm3(d);
-        if (n < 1e-9) return false;
-        for (double& x : d) x /= n;
-        r.dist_m = n / MV_UU_PER_M;
-        r.err_deg = std::acos(std::clamp(dot3(f.fw, d), -1.0, 1.0)) * 180.0 / MV_PI;
-        double a[3];
-        cross3(f.fw, d, a);
-        r.a_body[0] = dot3(a, f.fw);
-        r.a_body[1] = dot3(a, f.R);
-        r.a_body[2] = dot3(a, f.U);
-        return true;
+        return act_aim_pt(f, lc->second.p, r);
     }
 
     // WHAT: nearest rock actor whose ore == item, by game distance. out = its aim numbers. nullptr when none.

@@ -32,7 +32,8 @@ WBP_MiningUnit (UserWidget)
    │     │     ├─ Btn_Dock    Button  Is Variable  └─ Txt_Dock    TextBlock Is Variable "Dock"
    │     │     ├─ Btn_Undock  Button  Is Variable  └─ Txt_Undock  TextBlock Is Variable "Undock"
    │     │     ├─ Btn_Refuel  Button  Is Variable  └─ Txt_Refuel  TextBlock Is Variable "Refuel"
-   │     │     └─ Btn_Unload  Button  Is Variable  └─ Txt_Unload  TextBlock Is Variable "Unload"
+   │     │     ├─ Btn_Unload  Button  Is Variable  └─ Txt_Unload  TextBlock Is Variable "Unload"
+   │     │     └─ Btn_Collect Button  Is Variable  └─ Txt_Collect TextBlock Is Variable "Collect ore"
    │     ├─ CENTER (header title = Txt_Title, min width 260)
    │     │  ├─ Txt_Title    TextBlock      Is Variable    "Mining Unit" (Lua sets "Mining Unit - <ship>")
    │     │  ├─ Btn_Close     Button         Is Variable    small gold X square at header right, hover/pressed tint  └─ Txt_Close TextBlock "X"

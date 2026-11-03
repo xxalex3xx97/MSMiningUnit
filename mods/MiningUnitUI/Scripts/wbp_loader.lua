@@ -34,7 +34,7 @@ local NAMES = { "Panel", "PageSwitcher", "Page_Ship", "Page_Items", "Page_Operat
   "Pnl_ModalHeadG", "Pnl_ModalHeadP", "Txt_ModalTitleG", "Btn_ModalCloseG", "Row_ModalCardScroll", "Row_ModalScroll",
   "Btn_TabShip", "Btn_TabItems", "Btn_TabOperation", "Btn_LoopStart", "Btn_LoopStop",
   "Txt_StatusAction", "PB_Cargo", "Txt_CargoPct", "Txt_Speed", "Txt_NextState", "Txt_Status",
-  "Txt_Eta", "Btn_EmergencyStop", "Txt_EmergencyStop", "Btn_Dock", "Btn_Undock", "Btn_Refuel", "Btn_Unload", "Btn_RemoteAll", "Pnl_AllWarn", "Txt_AllWarn",
+  "Txt_Eta", "Btn_EmergencyStop", "Txt_EmergencyStop", "Btn_Dock", "Btn_Undock", "Btn_Refuel", "Btn_Unload", "Btn_Collect", "Txt_Collect", "Btn_RemoteAll", "Pnl_AllWarn", "Txt_AllWarn",
   "Txt_TabLog", "Pnl_PageLog", "Txt_LogHint", "Row_LogScroll", "Row_StatusMine", "Txt_StatusMine", "Img_StatusOre", "Pnl_LogAll", "Row_LogAllScroll" }
 -- Mining line of every card (Card/Fleet): label + ore icon + ore name; log card pool (Pnl_LogCard_<f>, LOGCARD_ROWS lines each)
 for i = 1, 20 do
@@ -176,7 +176,7 @@ local BTN_RED = rgb(0x9C, 0x22, 0x22)    -- Stop button when loop stopped
 local BTN_NORMAL = rgb(0x4A, 0x4A, 0x4A)
 local BTN_AMBER = rgb(0xE6, 0x9A, 0x00)
 local WARN_YEL = rgb(0xF2, 0xD2, 0x1E)     -- Txt_ShipWarn + Txt_StatusAction tint when a loaded ore has no unload dock
-local ACTION = { mining = "Mining", traveling = "Docking", refueling = "Refueling", unloading = "Unloading", idle = "Idle", waiting = "Waiting for dock", error = "ERROR" }
+local ACTION = { mining = "Mining", traveling = "Docking", refueling = "Refueling", unloading = "Unloading", collecting = "Collecting ore", idle = "Idle", waiting = "Waiting for dock", error = "ERROR" }
 
 local function rdlines(path)
   local fh = io.open(path, "r")
@@ -1127,8 +1127,9 @@ local ACT_BTNS = {
   Btn_Undock = { cmd = "undock", label = "undock" },
   Btn_Refuel = { cmd = "dock_refuel", label = "refuel" },
   Btn_Unload = { cmd = "dock_mining", label = "unload" },
+  Btn_Collect = { cmd = "collect_ore", label = "collect ore" },
 }
-local ACT_ORDER = { "Btn_Dock", "Btn_Undock", "Btn_Refuel", "Btn_Unload" }
+local ACT_ORDER = { "Btn_Dock", "Btn_Undock", "Btn_Refuel", "Btn_Unload", "Btn_Collect" }
 -- MiningStatusX 'job' value -> button to keep amber + status text (job none/absent/unknown = no entry)
 local JOB = {
   dock = { btn = "Btn_Dock", txt = "Docking" },
@@ -1281,7 +1282,7 @@ local function refresh()
   local run = st.run
   if S.all then run = allRun end
   setRun(run, S.pend and S.pend.k or nil)
-  paintAct(job and job.btn or (S.req and S.req.n) or nil)
+  paintAct(job and job.btn or (S.req and S.req.n) or ((not S.all) and st.simple == "collecting" and "Btn_Collect") or nil)
   S.simple = st.simple
   try("itemsTick", itemsTick)
   try("opsTick", opsTick)

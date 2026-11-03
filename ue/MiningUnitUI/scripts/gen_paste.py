@@ -719,7 +719,7 @@ def build_tree():
     def act(n, l, b=6):
         return S(wrap(btn(n, l, BTN, size=18, tname="Txt_" + n[4:]), None, 56), pad=(0, 0, 0, b), h="Fill")
     actions = vbox("Row_ActionsBody", [act("Btn_Dock", "Dock"), act("Btn_Undock", "Undock"),
-                                       act("Btn_Refuel", "Refuel"), act("Btn_Unload", "Unload", 0)])
+                                       act("Btn_Refuel", "Refuel"), act("Btn_Unload", "Unload"), act("Btn_Collect", "Collect ore", 0)])
     actions.var = False
     xb = S(wrap(btn("Btn_RemoteAll", "X", BTN, size=14, tname="Txt_RemoteAll"), 36), pad=(6, 0, 0, 0), h="Fill", v="Fill")
     fleet = vbox("Row_FleetBody", [S(tb("Lbl_RemoteControl", "Remote Control", 15, var=False), pad=(0, 0, 0, 6)),
