@@ -92,8 +92,6 @@ namespace
         int64_t unl_prev = -1;                 // unload chain: docked-ore cargo after the last dock trip (-1 = first hop)
         bool unl_undock = false;               // MS_UNDOCK: the undock is the unload chain's (then dock_mining trip), not the seek undock
         double since_stop = 1e9;               // seconds since STOP ALL (mine_halt)
-        double scan_t = 0.0;                   // ROCKSCAN diagnostic: seconds since the last SEEK line
-        int scan_n = 0;                        // ROCKSCAN diagnostic: SEEK lines logged this arrival (max 8)
         double empty_t = 0.0;                  // CHECK: sum of check periods with no rock in range in a row (belt hop at MINE_BELT_EMPTY_S); reset on rock found / loop start / stop
         int col_rock = 0;                      // MS_COLLECT: rock id to return to after a cargo-full trip (0 = none)
         int col_next = 0;                      // MS_COLLECT end: 0 seek next rock, 1 go home (queue done)
@@ -255,65 +253,6 @@ namespace
         chunk_hold_target(sid, sys, c);
         chunk_hold_update(sid, ship);
         return true;
-    }
-
-    // DIAGNOSTIC (ROCKSCAN): counts over the same rock list rock_in_range scans. No state change.
-    struct RockScan { int total = 0, with_ore = 0; double nearest_any = -1.0, nearest_ore = -1.0; ActFrame f; bool have_pos = false; };
-
-    RockScan rock_scan(UObject* ship, UObject* item)
-    {
-        rock_list_ensure();
-        RockScan s;
-        s.have_pos = act_frame(ship, s.f);
-        const bool has_item = alive(item);
-        for (UObject* a : g_rock_actors)
-        {
-            if (!actor_ok(a)) continue;
-            ++s.total;
-            auto it = g_rock_item.find(a);
-            const bool ore = has_item && it != g_rock_item.end() && it->second == item;
-            if (ore) ++s.with_ore;
-            if (!s.have_pos) continue;
-            ActAim r;
-            if (!act_aim(s.f, a, r)) continue;
-            if (s.nearest_any < 0.0 || r.dist_m < s.nearest_any) s.nearest_any = r.dist_m;
-            if (ore && (s.nearest_ore < 0.0 || r.dist_m < s.nearest_ore)) s.nearest_ore = r.dist_m;
-        }
-        return s;
-    }
-
-    // DIAGNOSTIC (ROCKSCAN): one line with the rock counts around the ship. arrival = true adds the player pawn distance.
-    // Player = DMSPlayerController.Pawn (camera pawn); distance in m = uu / 100.
-    void rockscan_log(UObject* ship, int sid, const MineSt& m, const Config& c, UObject* item, bool arrival)
-    {
-        auto f1 = [](double v) { wchar_t b[32]; swprintf(b, 32, L"%.1f", v); return std::wstring(b); };
-        const RockScan s = rock_scan(ship, item);
-        int sys = 0;
-        int64_t ch[3] = {0, 0, 0};
-        const bool have_chunk = ship_pos(ship, sys, ch);
-        std::wstring pos = STR("n/a");
-        if (s.have_pos)
-            pos = (have_chunk ? STR("chunk(") + std::to_wstring(ch[0]) + STR(",") + std::to_wstring(ch[1]) + STR(",") + std::to_wstring(ch[2]) + STR(") ") : std::wstring()) +
-                  STR("loc_uu(") + f1(s.f.loc[0]) + STR(",") + f1(s.f.loc[1]) + STR(",") + f1(s.f.loc[2]) + STR(")");
-        std::wstring line = STR("ROCKSCAN ship=") + std::to_wstring(sid) + STR(" sector=") + std::to_wstring(cur_sector_id(ship)) +
-            STR(" pos_abs=") + pos + STR(" asteroids_total=") + std::to_wstring(s.total) + STR(" with_ore=") + std::to_wstring(s.with_ore) +
-            STR(" nearest_any_m=") + f1(s.nearest_any) + STR(" nearest_ore_m=") + f1(s.nearest_ore) + STR(" radius_m=") + f1(mine_radius_m(c)) +
-            STR(" t_since_arrival=") + f1(m.t);
-        if (arrival)
-        {
-            double pd = -1.0;
-            UObject* ctrl = first_of(STR("DMSPlayerController"));
-            UObject* pawn = alive(ctrl) ? obj_prop(ctrl, STR("Pawn")) : nullptr;
-            double pl[3] = {0, 0, 0};
-            std::wstring why;
-            if (alive(pawn) && s.have_pos && actor_vec_call(pawn, STR("K2_GetActorLocation"), pl, why))
-            {
-                const double dx = pl[0] - s.f.loc[0], dy = pl[1] - s.f.loc[1], dz = pl[2] - s.f.loc[2];
-                pd = std::sqrt(dx * dx + dy * dy + dz * dz) / MV_UU_PER_M;
-            }
-            line += STR(" player_dist_m=") + f1(pd);
-        }
-        log_line(line);
     }
 
     // true when Inventory.HasSpaceForItems({item, 1}) returns false. Unusable function -> false (logged once).
@@ -832,16 +771,6 @@ namespace
             {
                 if (m.empty_t >= MINE_BELT_EMPTY_S && !in_range && belt_go(ship, sid, m, c, item, true) != 0) return;
             }
-            if (g_debug)
-            {   // WHY: "nothing in range" gave no reason; one ROCKSCAN line per check shows list size, rocks with this ore and the nearest distances (m from the ship)
-                const RockScan rs = rock_scan(ship, item);
-                log_line(STR("ROCKSCAN nothing-in-range ship=") + std::to_wstring(sid) + STR(" listed=") + std::to_wstring(g_rock_actors.size()) + STR(" live=") + std::to_wstring(rs.total) + STR(" with_ore=") + std::to_wstring(rs.with_ore) + STR(" nearest_any_m=") + std::to_wstring(static_cast<long long>(rs.nearest_any)) + STR(" nearest_ore_m=") + std::to_wstring(static_cast<long long>(rs.nearest_ore)) + STR(" radius_m=") + std::to_wstring(static_cast<long long>(mine_radius_m(c))) + STR(" want=") + (alive(item) ? item->GetName() : std::wstring(STR("?"))));
-                std::map<std::wstring, int> hist;   // ore item name -> rock count over the listed rocks
-                for (UObject* a : g_rock_actors) { auto it = g_rock_item.find(a); hist[it != g_rock_item.end() && alive(it->second) ? it->second->GetName() : std::wstring(STR("<none>"))]++; }
-                std::wstring h;
-                for (const auto& kv : hist) h += kv.first + STR("=") + std::to_wstring(kv.second) + STR(" ");
-                log_line(STR("ROCKSCAN items ship=") + std::to_wstring(sid) + STR(" ") + h);
-            }
             m.st = MS_OFF; m.chk_t = 0.0; mset(sid, m, STR("nothing in range")); return;   // Update 15: do not undock
         }
         m.empty_t = 0.0;
@@ -930,12 +859,6 @@ namespace
                     if (++m.fails >= std::max(1, c.max_attempts)) { m.st = MS_HALT; mset(sid, m, STR("approach failed ") + std::to_wstring(m.fails) + STR("x: ") + r); return; }
                 }
             }
-        }
-        // DIAGNOSTIC (ROCKSCAN): belt mode, no rock in range -> one line every 2 s, max 8 per arrival
-        if (m.no_rock && !belt_off(c.belt))
-        {
-            m.scan_t += dt;
-            if (g_debug && m.scan_t >= 2.0 && m.scan_n < 8) { m.scan_t = 0.0; ++m.scan_n; rockscan_log(ship, sid, m, c, item, false); }
         }
         if (m.no_rock && c.idle_seconds > 0 && m.rng_t >= c.idle_seconds)
         {
@@ -1047,7 +970,7 @@ namespace
             m.sw_list.push_back(o);
         }
         m.sw_found = sc.found;
-        log_line(STR("SWEEP scan ship=") + std::to_wstring(sid) + STR(" found=") + std::to_wstring(sc.found) + STR(" ok=") + std::to_wstring(m.sw_list.size()) +
+        if (g_debug) log_line(STR("SWEEP scan ship=") + std::to_wstring(sid) + STR(" found=") + std::to_wstring(sc.found) + STR(" ok=") + std::to_wstring(m.sw_list.size()) +
                  STR(" frame=") + (m.sw_frame ? STR("1") : STR("0")));
     }
 
@@ -1094,12 +1017,12 @@ namespace
                 cancel_dock_job(ship, sid);
                 g_job_res.erase(sid);
                 const std::wstring r = job_start(sid, "undock", -1);
-                log_line(STR("SWEEP undock start ship=") + std::to_wstring(sid) + STR(" docked=") + (docked ? STR("1") : STR("0")) + STR(" r=") + r);
+                if (g_debug) log_line(STR("SWEEP undock start ship=") + std::to_wstring(sid) + STR(" docked=") + (docked ? STR("1") : STR("0")) + STR(" r=") + r);
                 if (r == STR("waiting")) return;
                 g_job_res[sid] = r.empty() ? STR("ok") : r;
             }
             const std::wstring r = g_job_res[sid];
-            log_line(STR("SWEEP undock ship=") + std::to_wstring(sid) + STR(" res=") + r + STR(" docked=") + (ship_docked(ship) ? STR("1") : STR("0")));
+            if (g_debug) log_line(STR("SWEEP undock ship=") + std::to_wstring(sid) + STR(" res=") + r + STR(" docked=") + (ship_docked(ship) ? STR("1") : STR("0")));
             if (!ok_res(r))
             {
                 m.sweep = false; m.st = MS_HALT; m.err = true;
@@ -1460,7 +1383,7 @@ namespace
         }
     }
 
-    // WHAT: MS_TRIP: dock trip (dock busy retry backoff, job result).
+    // WHAT: MS_TRIP: dock trip (job result).
     void st_trip(UObject* ship, int sid, MineSt& m, double dt, const Config& c)
     {
         // dock busy: no job runs; the ship waits in the dock queue (mb_net.hpp). The grant starts the job; a 60 s poll is the safety net.
@@ -1637,11 +1560,8 @@ namespace
             ActFrame f;
             if (act_frame(ship, f)) std::copy(f.loc, f.loc + 3, m.anchor);
             enter_seek(m);
-            m.scan_t = 0.0; m.scan_n = 0;
             chunk_hold_update(sid, ship);   // chunk hold at once: the rock list (fallback pass) sees the belt rocks
             mset(sid, m, STR("arrived, seeking rock"), STR("Arrived, seeking rock"));
-            std::wstring iwhy;
-            if (g_debug) rockscan_log(ship, sid, m, c, item_c(c.resource, iwhy), true);   // DIAGNOSTIC (ROCKSCAN) arrival line
             return;
         }
         if (m.warp_t >= MINE_WARP_TIMEOUT_S) { m.st = MS_HALT; m.err = true; mset(sid, m, STR("ERROR: warp to sector ") + std::to_wstring(m.warp_to) + STR(" timed out"), STR("ERROR: warp timed out")); }
@@ -1939,7 +1859,7 @@ namespace
         (void)purpose;
         NetReq r;
         const auto mi = g_mine.find(sid);
-        if (mi != g_mine.end()) { r.cargo_pct = std::max(0, mi->second.cargo_pct); r.hull_crit = mi->second.flee; }
+        if (mi != g_mine.end()) r.cargo_pct = std::max(0, mi->second.cargo_pct);
         UObject* ship = find_by_id(STR("DMSPlayerShipObject"), sid);
         if (alive(ship))
         {

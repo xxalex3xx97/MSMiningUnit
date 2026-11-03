@@ -466,8 +466,7 @@ namespace
         else if (mv.ore_on) { mv.ore_t += dt; if (!aim_calc_ore(ship, mv, err, a, dist, rad)) { mv_finish(sid, STR("error: rock lost")); return; } }
         else if (!actor_ok(mv.rock_act) || !aim_calc(ship, mv.rock_act, err, a, dist, rad)) { mv_finish(sid, STR("error: rock lost")); return; }
         // point flight: first-tick trace line
-        if (mv.pt_on && mv.phase == 1 && mv.t < 0.5) tlog(STR("PTAIM dist_m=") + std::to_wstring(dist / g_raw_per_m) + STR(" err=") + std::to_wstring(err));
-        // 2. remember the heading error (job state and status; the status shows the command ship only)
+                // 2. remember the heading error (job state and status; the status shows the command ship only)
         mv.err = err;
         if (sid == g_cmd.ship) g_last_err = err;
         // WHY no sign-flip here any more: view offsets are targets with a fixed sign (MV_VIEW_*_SIGN), the old rate-route flip is gone

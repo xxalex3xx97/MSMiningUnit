@@ -286,8 +286,7 @@ namespace
     }
 
     // WHAT: adds the FindAllOf(BP_GenericResourceAsteroid_C) actors to the refresh being built while a fallback request is recent.
-    //       FindAllOf runs at most every ROCK_FALLBACK_S_MS; between passes the last pass's live actors are reused. Logs one
-    //       "ROCKFALLBACK found=<n> with_ore=<m>" per pass (found = live actors, with_ore = those whose ore item was read).
+    //       FindAllOf runs at most every ROCK_FALLBACK_S_MS; between passes the last pass's live actors are reused.
     // WHY: an AI ship far from the player sees its belt rocks in the world but not in the player's HUD list.
     void rock_fallback_merge(std::vector<UObject*>& list, std::map<UObject*, UObject*>& items, std::map<UObject*, int>& ids, std::map<int, UObject*>& by_id)
     {
@@ -307,9 +306,6 @@ namespace
         }
         for (UObject* a : g_fb_list) if (alive_seh(a) && !items.count(a)) rock_add(a, list, items, ids, by_id);
         if (!ran) return;
-        int with_ore = 0;
-        for (UObject* a : g_fb_list) { auto it = items.find(a); if (it != items.end() && it->second) ++with_ore; }
-        log_line(STR("ROCKFALLBACK found=") + std::to_wstring(g_fb_list.size()) + STR(" with_ore=") + std::to_wstring(with_ore));
     }
 
     // WHAT: full refresh of the rock list (steps 1-5 below). Runs from rock_list_ensure() when rock_list_due() is true.
@@ -344,12 +340,10 @@ namespace
         std::map<UObject*, UObject*> items;
         std::map<UObject*, int> ids;
         std::map<int, UObject*> by_id;
-        int32_t hud_n = 0;   // ScannableHUDMarkers entry count (logged below when it changes by >10%)
         if (alive(ctrl) && prop_is(ctrl, STR("ScannableHUDMarkers"), STR("ArrayProperty")))
         {
             // 2. walk ScannableHUDMarkers. FScriptInterface = {UObject* ObjectPointer, void* InterfacePointer}: ObjectPointer is the actor.
             auto* arr = ctrl->GetValuePtrByPropertyNameInChain<TArray<FScriptInterface>>(STR("ScannableHUDMarkers"));
-            hud_n = arr ? arr->Num() : 0;
             for (int32_t i = 0; arr && i < arr->Num(); ++i)
             {
                 UObject* a = (*arr)[i].ObjectPointer;
@@ -384,13 +378,6 @@ namespace
             UObjectGlobals::FindAllOf(STR("SmallResourceAsteroidObject"), saves);
             for (UObject* o : saves) if (alive(o)) { const int sid_ = obj_id(o); if (want.count(sid_)) g_save_by_id[sid_] = o; }
             for (int w : want) if (!g_save_by_id.count(w)) save_miss.insert(w);
-        }
-        // 6. HUD list size: logged only when it changed by more than 10% since the last log
-        static int32_t hud_logged = 0;
-        if (hud_n != hud_logged && std::abs(hud_n - hud_logged) > hud_logged / 10)
-        {
-            log_line(STR("ROCKHUD list=") + std::to_wstring(hud_n) + STR(" was=") + std::to_wstring(hud_logged));
-            hud_logged = hud_n;
         }
         timing_log(STR("rock_list_refresh"), perf_ms_since(t0), g_rock_actors.size());
     }
