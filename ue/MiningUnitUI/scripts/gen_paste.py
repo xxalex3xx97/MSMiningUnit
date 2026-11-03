@@ -516,7 +516,8 @@ LOG_ROWS = 10   # Txt_LogCard_<f>_<r> rows per log card, must equal wbp_loader.l
 
 def build_tree():
     tabs =[("Btn_TabShip", "Txt_TabShip", "Ship"), ("Btn_TabItems", "Txt_TabItems", "Items"),
-            ("Btn_TabOperation", "Txt_TabOperation", "Operation"), ("Btn_TabLog", "Txt_TabLog", "Log")]
+            ("Btn_TabOperation", "Txt_TabOperation", "Operation"), ("Btn_TabLog", "Txt_TabLog", "Log"),
+            ("Btn_TabDocks", "Txt_TabDocks", "Docks")]
     tab_nodes = []
     for i, (bn, tn, label) in enumerate(tabs):
         t = S(tb(tn, label, 16, color=DARK_TXT if i == 0 else None), pad=(16, 8, 16, 8), h="Center", v="Center")
@@ -680,7 +681,12 @@ def build_tree():
     log_all.props.append(("Visibility", "Collapsed"))
     page_log = S(vbox("Pnl_PageLog", [log_hint, log_sb, log_all]), h="Fill", v="Fill")
 
-    pages = [S(p, h="Fill", v="Fill") for p in (page_ship, page_items, page_op, page_log)]
+    # Docks page: header + ScrollBox Row_DocksScroll; rows (Dyn_Docks, WBP_NetDockRow) are added by add_docks_tab.py, not here
+    docks_hdr = S(tb("Txt_DocksHdr", "Dock | Status | Used by | Purpose | Since | Waiting", 14, color=GOLD), pad=(6, 0, 6, 6))
+    docks_sb = S(N("ScrollBox", "Row_DocksScroll", [], props=[("ConsumeMouseWheel", "WhenScrollingPossible")]), fill=1, h="Fill", v="Fill")
+    page_docks = S(vbox("Pnl_PageDocks", [docks_hdr, docks_sb]), h="Fill", v="Fill")
+
+    pages = [S(p, h="Fill", v="Fill") for p in (page_ship, page_items, page_op, page_log, page_docks)]
     warn_t = S(tb("Txt_AllWarn", "All ships mode: any change overrides the settings of every ship.", 14, color=lin("FFFFFF")), h="Left", v="Center")
     warn_t.props.append(("AutoWrapText", "True"))
     warn = N("Border", "Row_AllWarnBody", [warn_t], var=False, props=[("BrushColor", DANGER), ("Padding", pad(12, 8, 12, 8))])
@@ -848,7 +854,7 @@ def emit(n, out, root=True):
 
 BEGIN = re.compile(r'^Begin Object (?:Class=/Script/(\w+)\.(\w+) )?Name="(\w+)"')
 REF = re.compile(r"/Script/UMG\.(\w+)'(\w+)'")
-FIXED_NAMES = {"Root", "Panel", "TabBar", "PageSwitcher", "Row_ModalCardScroll", "Row_ModalScroll", "Row_LogScroll", "Row_StatusMine"} | {"Row_ModalOres_%d" % i for i in range(1, SEL_N + 1)} | {"Row_CardHdr_%d" % i for i in range(1, CN + 1)}
+FIXED_NAMES = {"Root", "Panel", "TabBar", "PageSwitcher", "Row_ModalCardScroll", "Row_ModalScroll", "Row_LogScroll", "Row_StatusMine", "Row_DocksScroll"} | {"Row_ModalOres_%d" % i for i in range(1, SEL_N + 1)} | {"Row_CardHdr_%d" % i for i in range(1, CN + 1)}
 
 
 def spec_names():

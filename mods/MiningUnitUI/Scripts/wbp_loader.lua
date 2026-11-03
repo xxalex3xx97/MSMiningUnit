@@ -17,7 +17,7 @@ local LIB = "/Script/UMG.Default__WidgetBlueprintLibrary"
 local LIB_LAYOUT = "/Script/UMG.Default__WidgetLayoutLibrary"
 local WBP_CLS = "/Game/MiningUnitUI/WBP_MiningUnit.WBP_MiningUnit_C"  -- StaticFindObject takes the class path
 local Z = 49                                           -- below dev menu 50
-local TABS = { "Btn_TabShip", "Btn_TabItems", "Btn_TabOperation", "Btn_TabLog" }  -- PageSwitcher index 0..3
+local TABS = { "Btn_TabShip", "Btn_TabItems", "Btn_TabOperation", "Btn_TabLog", "Btn_TabDocks" }  -- PageSwitcher index 0..4
 -- linear colors = gen_paste.py lin(): #D49A00 gold (active), #1E1E1E .95 (off), #1A1A1A text on active, white off
 local TAB_ON = { R = 0.658375, G = 0.323143, B = 0.0, A = 1.0 }
 local TAB_OFF = { R = 0.012983, G = 0.012983, B = 0.012983, A = 0.95 }
@@ -35,7 +35,8 @@ local NAMES = { "Panel", "PageSwitcher", "Page_Ship", "Page_Items", "Page_Operat
   "Btn_TabShip", "Btn_TabItems", "Btn_TabOperation", "Btn_LoopStart", "Btn_LoopStop",
   "Txt_StatusAction", "PB_Cargo", "Txt_CargoPct", "Txt_Speed", "Txt_NextState", "Txt_Status",
   "Txt_Eta", "Btn_EmergencyStop", "Txt_EmergencyStop", "Btn_Dock", "Btn_Undock", "Btn_Refuel", "Btn_Unload", "Btn_Collect", "Txt_Collect", "Btn_RemoteAll", "Pnl_AllWarn", "Txt_AllWarn",
-  "Txt_TabLog", "Pnl_PageLog", "Txt_LogHint", "Row_LogScroll", "Row_StatusMine", "Txt_StatusMine", "Img_StatusOre", "Pnl_LogAll", "Row_LogAllScroll" }
+  "Txt_TabLog", "Pnl_PageLog", "Txt_LogHint", "Row_LogScroll", "Row_StatusMine", "Txt_StatusMine", "Img_StatusOre", "Pnl_LogAll", "Row_LogAllScroll",
+  "Btn_TabDocks", "Txt_TabDocks", "Pnl_PageDocks", "Txt_DocksHdr", "Row_DocksScroll" }
 -- Mining line of every card (Card/Fleet): label + ore icon + ore name; log card pool (Pnl_LogCard_<f>, LOGCARD_ROWS lines each)
 for i = 1, 20 do
   for _, P in ipairs({ "Card", "Fleet" }) do
@@ -1213,6 +1214,75 @@ local function logPaint()
   setVis(w("Txt_LogHint"), #rows == 0 and 0 or 1)
 end
 
+-- ===== Docks tab: NetDocks.txt / NetShips.txt (C++, every second). Rows = docks in a bench ship's unload/refuel lists (dockTags), by name.
+-- Rows are a dynList of WBP_NetDockRow (Dyn_Docks, added by add_docks_tab.py). Repaints only on text change, only while the tab is open (M.lastTab 5).
+local DOCK_COL = { FREE = rgb(0x42, 0xDA, 0x41), RESERVED = rgb(0xF2, 0xD2, 0x1E), WORKING = rgb(0xF2, 0xD2, 0x1E),
+  PARKED = rgb(0xE6, 0x9A, 0x00), FULL = rgb(0xE0, 0x40, 0x40), GONE = rgb(0x80, 0x80, 0x80) }
+local DOCK_PURP = { unload = "Unload", refuel = "Refuel", flee = "Flee", pick = "Pick", undock = "Undock", dock = "Dock" }
+-- NetShips.txt by ship id: name (col 11), slot (14), prio (15), phase (17: none|flying|holding|cleared)
+local function netShips()
+  local out = {}
+  for _, l in ipairs(rdcached(M.DATA .. "NetShips.txt") or {}) do
+    local p = split(l)
+    local sid = trim(p[1] or "")
+    if sid ~= "" then
+      out[sid] = { name = trim(p[11] or ""), slot = tonumber(trim(p[14] or "")) or 0, prio = tonumber(trim(p[15] or "")) or 0, phase = trim(p[17] or "") }
+    end
+  end
+  return out
+end
+local function docksLoad()
+  local tags, ships = dockTags(), netShips()
+  local names = {}
+  for _, o in ipairs(benchShips()) do names[o.id] = o.text end
+  for sid, s in pairs(ships) do if s.name ~= "" then names[sid] = s.name end end
+  local function nameOf(id) return names[id] or id end
+  local rows = {}
+  for _, l in ipairs(rdcached(M.DATA .. "NetDocks.txt") or {}) do
+    local p = split(l)
+    local id = trim(p[1] or "")
+    if id ~= "" and tags[id] then
+      local raw, occ, cleared = trim(p[2] or ""), trim(p[3] or ""), trim(p[9] or "")
+      local name = trim(p[8] or "")
+      local status = raw
+      if cleared ~= "" and cleared ~= "0" and (raw == "FREE" or raw == "RESERVED") then status = "Cleared: " .. nameOf(cleared) end
+      local q = {}
+      for qid in (p[6] or ""):gmatch("[^,]+") do
+        qid = trim(qid)
+        local s = ships[qid] or { prio = 0, slot = 0, phase = "" }
+        local t = nameOf(qid) .. " " .. s.prio .. "%"
+        if s.slot > 0 then t = t .. " slot " .. s.slot end
+        if s.phase == "flying" or s.phase == "holding" then t = t .. " (" .. s.phase .. ")" end
+        q[#q + 1] = t
+      end
+      local since = math.floor(tonumber(trim(p[5] or "")) or 0)
+      rows[#rows + 1] = { label = name ~= "" and name or ("Dock " .. id), status = status, color = DOCK_COL[raw] or DOCK_COL.GONE,
+        used = (occ ~= "" and occ ~= "0") and nameOf(occ) or "-", purp = DOCK_PURP[trim(p[4] or "")] or "-",
+        since = string.format("%d:%02d", math.floor(since / 60), since % 60), queue = #q > 0 and table.concat(q, ", ") or "-" }
+    end
+  end
+  table.sort(rows, function(a, b) return a.label:lower() < b.label:lower() end)
+  return rows
+end
+local function docksPaint()
+  if M.lastTab ~= 5 then return end   -- Docks = TABS index 5
+  local rows = docksLoad()
+  local key = {}
+  for i, r in ipairs(rows) do key[i] = table.concat({ r.label, r.status, r.used, r.purp, r.since, r.queue }, "|") end
+  key = table.concat(key, "\n")
+  if key == S.docksKey then return end
+  S.docksKey = key
+  dynList{ key = "Docks", anchor = "Row_DocksScroll", box = "Dyn_Docks", n = #rows, paint = function(_, find, i)
+    local r = rows[i]
+    local function put(name, s) local t = find(name); if t then try("docks " .. name, function() t:SetText(FText(s)) end) end end
+    put("Txt_DName", r.label); put("Txt_DStatus", r.status); put("Txt_DUsed", r.used)
+    put("Txt_DPurpose", r.purp); put("Txt_DSince", r.since); put("Txt_DQueue", r.queue)
+    local dot, st = find("Img_DDot"), find("Txt_DStatus")
+    if dot then try("docks dot", function() dot:SetColorAndOpacity(r.color) end) end
+    if st then try("docks status colour", function() st:SetColorAndOpacity({ SpecifiedColor = r.color }) end) end
+  end }
+end
+
 local fleetPaint  -- defined after shipRowRender (needs shipRows)
 local function refresh()
   if S.sid and S.last and os.clock() - (S.docksAt or 0) > 5 then   -- dock renames in game show up without reopening the window
@@ -1255,6 +1325,10 @@ local function refresh()
   if S.req then act = "Requested " .. S.req.label .. "..." end
   if S.pend then act = (S.pend.k == "start") and "Requested start..." or "Requested stop..." end
   if S.estop and S.tick < S.estop then act = "Emergency stop requested" else S.estop = nil end
+  local ns = (not S.all and S.sid) and netShips()[tostring(S.sid)] or nil   -- dock queue: flying to / holding at the holding spot
+  if ns and (ns.phase == "flying" or ns.phase == "holding") then
+    act = (act ~= "" and (act .. " - ") or "") .. (ns.phase == "flying" and "Flying to holding position" or ("Holding at slot " .. ns.slot))
+  end
   M.setText("Txt_StatusAction", act)
   local sa = w("Txt_StatusAction")
   local tint = TXT_OFF   -- error (red) beats the missing-unload-dock warning (yellow)
@@ -1288,6 +1362,7 @@ local function refresh()
   try("itemsTick", itemsTick)
   try("opsTick", opsTick)
   try("logPaint", logPaint)
+  try("docksPaint", docksPaint)
   updateEta(S.all and {} or st)
 end
 
@@ -1366,6 +1441,7 @@ function M.setTab(i)
   if i == 1 then try("shipLoad", shipLoad) end
   if i == 2 then try("itemsLoad", itemsLoad) end
   if i == 3 then try("opsLoad", opsLoad) end
+  if i == 5 then S.docksKey = nil; try("docksPaint", docksPaint) end
   L("tab " .. i)
 end
 
@@ -1620,6 +1696,7 @@ function M.open(ship)
     S.root, S.w, S.p, S.ship = wbp, wbp, p, ship
     S.mode, S.t0 = mode, os.clock()
     S.logKey = nil   -- new widgets: repaint the Log tab on the first tick
+    S.docksKey = nil
     -- ship list = bench ships; sid = block's ship if listed, else last picked (F4), else first; empty list = nil
     local list = benchShips()
     local function inList(id) for _, o in ipairs(list) do if o.id == id then return true end end return false end

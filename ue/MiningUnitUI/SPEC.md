@@ -41,13 +41,15 @@ WBP_MiningUnit (UserWidget)
    │     │  │  ├─ Btn_TabShip       Button  Is Variable   └─ Txt_TabShip      TextBlock "Ship" (active/gold first)
    │     │  │  ├─ Btn_TabItems      Button  Is Variable   └─ Txt_TabItems     TextBlock "Items"
    │     │  │  ├─ Btn_TabOperation  Button  Is Variable   └─ Txt_TabOperation TextBlock "Operation"
-   │     │  │  └─ Btn_TabLog        Button  Is Variable   └─ Txt_TabLog       TextBlock "Log"
+   │     │  │  ├─ Btn_TabLog        Button  Is Variable   └─ Txt_TabLog       TextBlock "Log"
+   │     │  │  └─ Btn_TabDocks      Button  Is Variable   └─ Txt_TabDocks     TextBlock "Docks"
    │     │  ├─ Pnl_AllWarn  Border  Is Variable  starts Collapsed  > Row_AllWarnBody > Txt_AllWarn: gold/red banner, visible only in All ships mode.
-   │     │  ├─ PageSwitcher  WidgetSwitcher Is Variable   (page index 0..3 = Ship, Items, Operation, Log)
+   │     │  ├─ PageSwitcher  WidgetSwitcher Is Variable   (page index 0..4 = Ship, Items, Operation, Log, Docks)
    │     │     ├─ Page_Ship       VerticalBox  Is Variable
    │     │     ├─ Page_Items      VerticalBox  Is Variable
    │     │     ├─ Page_Operation  VerticalBox  Is Variable
-   │     │     └─ Pnl_PageLog     VerticalBox  Is Variable  (index 3)
+   │     │     ├─ Pnl_PageLog     VerticalBox  Is Variable  (index 3)
+   │     │     └─ Pnl_PageDocks   VerticalBox  Is Variable  (index 4)
    │     └─ RIGHT "Status" (placeholders only; Lua feeds later)
    │        ├─ row 1: Txt_StatusAction  TextBlock  Is Variable  "Idle" (Mining/Docking/Refueling/Unloading/Idle), left
    │        │         Txt_Eta           TextBlock  Is Variable  "ETA: --" right-aligned, same row (Lua shows only while unloading/refueling, else Collapsed)
@@ -97,6 +99,8 @@ Layout (names below unchanged; only Row_*/Lbl_* layout widgets are added, none a
 - Btn_ApplyGlobal "Set as default" (old plain Apply button removed; every value saves instantly).
 
 Pnl_PageLog (Log tab, index 3): Txt_LogHint TextBlock Is Variable "No log yet" (Lua shows only when empty) + ScrollBox Row_LogScroll Is Variable holding Txt_Log_<l> (l = 1..60) TextBlock Is Variable (size 14, AutoWrapText, pad 6/2/12/2, Collapsed; Lua sets "hh:mm:ss text", ship-name prefix in All mode, newest first, shows used lines). Pool LOG_N=60 in gen_paste = LN in wbp_loader.lua.
+
+Pnl_PageDocks (Docks tab, index 4): Txt_DocksHdr TextBlock Is Variable (size 14, gold, one header line "Dock | Status | Used by | Purpose | Since | Waiting") + ScrollBox Row_DocksScroll Is Variable (empty in the paste). Rows are Python-built: Dyn_Docks DynamicEntryBox (VERTICAL, spacing 2) of WBP_NetDockRow, added by scripts\add_docks_tab.py (row widgets are a separate WBP, not listed here). Lua fills the rows from NetDocks.txt / NetShips.txt, only docks in a bench ship's unload/refuel lists, only while this tab is open.
 
 Status box mining line (single ship only; Lua hides in All mode): Row_StatusMine HorizontalBox Is Variable ( under Txt_NextState) = Txt_StatusMineLbl TextBlock Is Variable "Mining" + Img_StatusOre Image Is Variable (24x24, Hidden; Lua sets brush with the same ore icon helper as Img_Unload<K>) + Txt_StatusMine TextBlock Is Variable "-" (ore display name, "-" when none).
 
