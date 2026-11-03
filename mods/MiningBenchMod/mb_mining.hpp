@@ -344,7 +344,7 @@ namespace
         int n = 0;
         for (UObject* a : v)
         {
-            if (!actor_ok(a)) continue;
+            if (!alive_seh(a)) continue;   // ore actors are not in the rock lists: actor_ok would always fail
             double p[3] = {0, 0, 0};
             std::wstring why;
             if (!actor_vec_call(a, STR("K2_GetActorLocation"), p, why)) continue;
@@ -817,7 +817,7 @@ namespace
         UObjectGlobals::FindAllOf(STR("BP_FloatingOre_C"), v);
         for (UObject* a : v)
         {
-            if (!actor_ok(a)) continue;
+            if (!alive_seh(a)) continue;   // ore actors are not in the rock lists: actor_ok would always fail
             SwOre o;
             o.a = a;
             std::wstring why;
@@ -891,7 +891,7 @@ namespace
             if (!m.sw_back && m.sw_list.empty())
             {
                 sweep_scan(ship, sid, m);
-                mlog(sid, STR("Collect: ") + std::to_wstring(m.sw_list.size()) + STR(" ore found"));
+                mlog(sid, STR("Collect: ") + std::to_wstring(m.sw_list.size()) + STR(" ore found (of ") + std::to_wstring(m.sw_found) + STR(")"));
             }
             return;
         }
@@ -1003,7 +1003,7 @@ namespace
                 const SwOre& o = m.sw_list[i];
                 const double dv[3] = {o.p[0] - f.loc[0], o.p[1] - f.loc[1], o.p[2] - f.loc[2]};
                 d[i] = norm3(dv);
-                done[i] = o.done || !actor_ok(o.a);
+                done[i] = o.done || !alive_seh(o.a);
             }
             const int i = sweep_nearest(d, done);
             if (i < 0)
@@ -1043,7 +1043,7 @@ namespace
         case SW_PULL:
         {
             m.sw_t += dt;
-            const bool gone = !actor_ok(m.sw_ore);
+            const bool gone = !alive_seh(m.sw_ore);
             std::wstring w;
             UObject* item = item_c(c.resource, w);
             const bool full = (alive(item) && cargo_full(ship, item)) || m.cargo_pct >= 100;
@@ -1580,7 +1580,7 @@ namespace
         sweep_scan(ship, sid, m);
         log_line(STR("SWEEP cmd ship=") + std::to_wstring(sid) + STR(" docked=") + (docked ? STR("1") : STR("0")) + STR(" found=") + std::to_wstring(m.sw_found) +
                  STR(" ok=") + std::to_wstring(m.sw_list.size()) + STR(" frame=") + (m.sw_frame ? STR("1") : STR("0")));
-        mlog(sid, STR("Collect: ") + std::to_wstring(m.sw_list.size()) + STR(" ore found"));
+        mlog(sid, STR("Collect: ") + std::to_wstring(m.sw_list.size()) + STR(" ore found (of ") + std::to_wstring(m.sw_found) + STR(")"));
         sw_phase(ship, sid, m, SW_UNDOCK);
         mset(sid, m, STR("collecting ore"), STR("Collecting ore"));
         mlog(sid, STR("Action: collect ore"));
