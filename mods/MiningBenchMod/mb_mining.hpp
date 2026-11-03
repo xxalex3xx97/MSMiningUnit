@@ -35,10 +35,10 @@ namespace
     constexpr double MINE_FLEE_GRACE_S = 10.0;   // after STOP ALL no flee for this long (s)
     constexpr double MINE_DOCK_RETRY_WAIT_S = 30.0; // dock time limit: wait after the undock before docking again (s)
 
-    enum MineState { MS_OFF = 0, MS_CHECK, MS_UNDOCK, MS_SEEK, MS_MINE, MS_TRIP, MS_HOLD, MS_HALT, MS_WARP, MS_DLWAIT };
+    enum MineState { MS_OFF = 0, MS_CHECK, MS_UNDOCK, MS_SEEK, MS_MINE, MS_TRIP, MS_HOLD, MS_HALT, MS_WARP, MS_DLWAIT, MS_COLLECT };
     const TCHAR* mine_state_name(int s)
     {
-        static const TCHAR* n[] = {STR("idle"), STR("checking"), STR("undocking"), STR("approaching rock"), STR("mining"), STR("flying to dock"), STR("at dock"), STR("stopped"), STR("warping"), STR("waiting to dock again")};
+        static const TCHAR* n[] = {STR("idle"), STR("checking"), STR("undocking"), STR("approaching rock"), STR("mining"), STR("flying to dock"), STR("at dock"), STR("stopped"), STR("warping"), STR("waiting to dock again"), STR("collecting ore")};
         return n[s];
     }
 
@@ -84,6 +84,11 @@ namespace
         double scan_t = 0.0;                   // ROCKSCAN diagnostic: seconds since the last SEEK line
         int scan_n = 0;                        // ROCKSCAN diagnostic: SEEK lines logged this arrival (max 8)
         double empty_t = 0.0;                  // CHECK: sum of check periods with no rock in range in a row (belt hop at MINE_BELT_EMPTY_S); reset on rock found / loop start / stop
+        int col_rock = 0;                      // MS_COLLECT: rock id to return to after a cargo-full trip (0 = none)
+        int col_next = 0;                      // MS_COLLECT end: 0 seek next rock, 1 go home (queue done)
+        std::wstring col_why;                  // MS_COLLECT: reason it started (text shown at the end)
+        double col_t = 0.0, col_stall = 0.0, col_scan_t = 0.0;   // MS_COLLECT: seconds total / since ore count dropped / since the last scan
+        int col_last = -1;                     // MS_COLLECT: floating ore count at the last scan (-1 none, 0 scan failed)
     };
     std::map<int, MineSt> g_mine;
 
@@ -313,6 +318,27 @@ namespace
         return (buf[rp->GetOffset_Internal()] & rb->GetFieldMask()) == 0;
     }
 
+    // WHAT: floating ore actors (BP_FloatingOre_C) within range_m of the ship. -1 = ship frame unreadable.
+    // WHY: the collect state waits while dropped ore still floats near the ship. FindAllOf walks every actor (slow): callers throttle to COLLECT_SCAN_S.
+    int ore_near(UObject* ship, double range_m)
+    {
+        ActFrame f;
+        if (!act_frame(ship, f)) return -1;
+        std::vector<UObject*> v;
+        UObjectGlobals::FindAllOf(STR("BP_FloatingOre_C"), v);
+        int n = 0;
+        for (UObject* a : v)
+        {
+            if (!actor_ok(a)) continue;
+            double p[3] = {0, 0, 0};
+            std::wstring why;
+            if (!actor_vec_call(a, STR("K2_GetActorLocation"), p, why)) continue;
+            double d[3] = {p[0] - f.loc[0], p[1] - f.loc[1], p[2] - f.loc[2]};
+            if (norm3(d) / MV_UU_PER_M <= range_m) ++n;
+        }
+        return n;
+    }
+
     // enter SEEK: next step scans for a rock at once
     void enter_seek(MineSt& m)
     {
@@ -373,6 +399,19 @@ namespace
         trip_begin(ship, sid, m, why);
     }
 
+    // WHAT: start MS_COLLECT: laser off, tractor on, ship holds still while floating ore is pulled in. kind: col_next (0 seek next rock, 1 go home).
+    // WHY: ore dropped by the laser must be pulled in before the loop leaves the rock or docks, else it is lost.
+    void begin_collect(UObject* ship, int sid, MineSt& m, int kind, const std::wstring& text)
+    {
+        run_cmd(-1, sid, "laser_off");
+        run_cmd(-1, sid, "tractor_on");
+        mv_cancel(sid);
+        zero_all(ship);
+        m.st = MS_COLLECT; m.t = 0.0; m.col_t = 0.0; m.col_stall = 0.0; m.col_scan_t = COLLECT_SCAN_S; m.col_last = -1;
+        m.col_next = kind; m.col_why = text;
+        mset(sid, m, STR("collecting leftover ore"), STR("Collecting leftover ore"));
+    }
+
     // 0 = nothing to do (belt off / already in target sector / unreadable), 1 = warp started (MS_WARP), -1 = HALT set
     // mark_cur: the current sector has no rock left, so it is skipped when choosing the next one
     int belt_go(UObject* ship, int sid, MineSt& m, const Config& c, UObject* item, bool mark_cur)
@@ -389,6 +428,7 @@ namespace
         const std::wstring r = warp_real_cmd(sid, std::to_string(tg));
         if (!ok_res(r)) { m.tried.insert(tg); mine_stop_work(ship, sid); m.st = MS_HALT; m.err = true; mset(sid, m, STR("ERROR: warp failed: ") + r, STR("ERROR: warp failed: ") + r); return -1; }
         mine_stop_work(ship, sid);
+        m.col_rock = 0;   // a belt warp leaves the rock behind: no return to it
         m.warp_to = tg; m.warp_t = 0.0; m.chk_t = 0.0; m.st = MS_WARP;
         mset(sid, m, STR("warping to sector ") + std::to_wstring(tg), STR("Warping to ") + nm + STR(" (") + std::to_wstring(tg) + STR(")"));
         return 1;
@@ -463,12 +503,12 @@ namespace
         {
             if (m.st == MS_HALT) return true;   // keep the stop reason; Start resets it
             if (m.st == MS_OFF || m.st == MS_CHECK) { chunk_hold_release(sid); m.st = MS_OFF; m.leave = false; m.empty_t = 0.0; mset(sid, m, m.run ? STR("idle: Enabled is off") : STR("idle")); return true; }
-            if (m.st == MS_SEEK || m.st == MS_MINE || m.st == MS_WARP) { m.leave = true; go_home(ship, sid, m, STR("mining switched off")); return true; }
+            if (m.st == MS_SEEK || m.st == MS_MINE || m.st == MS_WARP || m.st == MS_COLLECT) { m.leave = true; go_home(ship, sid, m, STR("mining switched off")); return true; }
             m.leave = true;   // UNDOCK / TRIP / HOLD: let them end, then park
         }
         else m.leave = false;
         // 1b. hull hit while flying / mining / warping: stop work, dock trip (flee), trip_end halts with the red ERROR
-        if (m.st == MS_SEEK || m.st == MS_MINE || m.st == MS_WARP)
+        if (m.st == MS_SEEK || m.st == MS_MINE || m.st == MS_WARP || m.st == MS_COLLECT)
         {
             int32_t h = 0;
             if (get_int_prop(ship, STR("Health"), h))
@@ -480,7 +520,7 @@ namespace
         }
         else if (m.st != MS_OFF && m.st != MS_HALT) m.hull = -1;
         // 2. fuel check while flying out / mining
-        if (m.st == MS_SEEK || m.st == MS_MINE)
+        if (m.st == MS_SEEK || m.st == MS_MINE || m.st == MS_COLLECT)
         {
             m.fuel_t += dt;
             if (m.fuel_t >= MINE_FUEL_CHECK_S)
@@ -595,9 +635,15 @@ namespace
             {
                 m.fails = 0; m.unl_chk = 0;
                 m.tried.clear();   // a rock is being mined: every sector may be searched again later
-                m.st = MS_MINE; m.t = 0.0; m.idle_t = 0.0; m.chk_t = 0.0;
-                chunk_hold_target_clear(sid); save_rock_picks().erase(sid);   // mining: hold the ship's own chunks again
+                chunk_hold_target_clear(sid); save_rock_picks().erase(sid);   // at the rock: hold the ship's own chunks again
                 m.last_ore = inv_total(ship, item);
+                if (m.col_rock > 0)   // back at the rock left for cargo full: collect the floating ore before mining
+                {
+                    m.col_rock = 0; g_sel_rocks.erase(sid);
+                    begin_collect(ship, sid, m, 0, STR("leftovers collected, seeking next rock"));
+                    return;
+                }
+                m.st = MS_MINE; m.t = 0.0; m.idle_t = 0.0; m.chk_t = 0.0;
                 mine_fire(sid, true);
                 mset(sid, m, STR("mining rock ") + std::to_wstring(m.rock), STR("Mining ") + item_name(c.resource) + STR(" (rock ") + std::to_wstring(m.rock) + STR(")"));
                 return;
@@ -606,6 +652,8 @@ namespace
             if (r.find(STR("rock lost")) == std::wstring::npos && ++m.fails >= std::max(1, c.max_attempts)) { mine_stop_work(ship, sid); m.st = MS_HALT; mset(sid, m, STR("approach failed ") + std::to_wstring(m.fails) + STR("x: ") + r); return; }
             mset(sid, m, STR("approach ended: ") + r + STR(", retrying"));
         }
+        // cargo full with ore still floating: the next seek returns to that rock first (set in st_mine)
+        if (m.col_rock > 0) { if (actor_ok(rock_actor_by_id(m.col_rock))) g_sel_rocks[sid] = m.col_rock; else m.col_rock = 0; }
         if (m.no_rock && !chunk_hold_settling(sid)) m.rng_t += dt;   // the belt counter starts 4 s after the hold was set
         m.chk_t += dt;
         if (m.chk_t >= MINE_ROCK_CHECK_S)
@@ -641,7 +689,10 @@ namespace
             if (g_debug && m.scan_t >= 2.0 && m.scan_n < 8) { m.scan_t = 0.0; ++m.scan_n; rockscan_log(ship, sid, m, c, item, false); }
         }
         if (m.no_rock && c.idle_seconds > 0 && m.rng_t >= c.idle_seconds)
+        {
+            m.col_rock = 0; g_sel_rocks.erase(sid);
             go_home(ship, sid, m, STR("nothing in range for ") + std::to_wstring(c.idle_seconds) + STR(" s"));
+        }
         return;
     }
     // WHAT: MS_MINE: mining progress, row target, cargo full / idle / rock gone.
@@ -678,18 +729,48 @@ namespace
             const std::wstring from = item_name(c.resource);
             item_advance(sid, wrapped);
             m.got = 0;
-            if (wrapped && !c.repeat) { m.fin = true; go_home(ship, sid, m, c.has_items ? STR("queue done") : STR("amount reached")); return; }
-            if (wrapped) { go_home(ship, sid, m, STR("queue done, repeat")); return; }   // repeat loop = mine, dock + unload, mine again
-            mine_fire(sid, false);
-            enter_seek(m);
-            mset(sid, m, STR("row done, next item"), c.has_items ? STR("Row done: ") + from + STR(" -> ") + item_name(eff_cfg(sid).resource) : std::wstring());
+            if (wrapped && !c.repeat) { m.fin = true; begin_collect(ship, sid, m, 1, c.has_items ? STR("queue done") : STR("amount reached")); return; }
+            if (wrapped) { begin_collect(ship, sid, m, 1, STR("queue done, repeat")); return; }   // repeat loop = mine, dock + unload, mine again
+            if (c.has_items) mlog(sid, STR("Row done: ") + from + STR(" -> ") + item_name(eff_cfg(sid).resource));
+            begin_collect(ship, sid, m, 0, STR("row done, next item"));
             return;
         }
-        if (full) { go_home(ship, sid, m, STR("cargo full")); return; }
+        if (full)
+        {
+            // ore still floating: remember the rock, the next seek returns to it after the unload
+            if (ore_near(ship, COLLECT_RANGE_M) > 0) { m.col_rock = m.rock; mlog(sid, STR("Cargo full, ore left: returning after unload")); }
+            go_home(ship, sid, m, STR("cargo full"));
+            return;
+        }
         // no gain = rock spent/destroyed, not a reason to dock: look for another rock (SEEK goes home itself when none is in range)
-        if (c.idle_seconds > 0 && m.idle_t >= c.idle_seconds) { mine_fire(sid, false); enter_seek(m); mset(sid, m, STR("no ore gained for ") + std::to_wstring(c.idle_seconds) + STR(" s, seeking next rock")); return; }
-        if (m.rock > 0 && !actor_ok(rock_actor_by_id(m.rock))) { mine_fire(sid, false); enter_seek(m); mset(sid, m, STR("rock gone, seeking next rock")); return; }
+        if (c.idle_seconds > 0 && m.idle_t >= c.idle_seconds) { begin_collect(ship, sid, m, 0, STR("no ore gained for ") + std::to_wstring(c.idle_seconds) + STR(" s, seeking next rock")); return; }
+        if (m.rock > 0 && !actor_ok(rock_actor_by_id(m.rock))) { begin_collect(ship, sid, m, 0, STR("rock gone, seeking next rock")); return; }
         return;
+    }
+    // WHAT: MS_COLLECT: ship holds still with the tractor on until no floating ore is within COLLECT_RANGE_M, then seeks the next rock (col_next 0) or goes home (1).
+    // WHY: ore the laser dropped is lost if the loop leaves now. Caps: COLLECT_MAX_S total, COLLECT_STALL_S with no drop in the count.
+    void st_collect(UObject* ship, int sid, MineSt& m, double dt, const Config& c)
+    {
+        if (chunk_hold_settling(sid)) return;
+        std::wstring why;
+        UObject* item = item_c(c.resource, why);
+        const int64_t inv = alive(item) ? inv_total(ship, item) : -1;
+        if (inv >= 0) { if (m.last_ore >= 0 && inv > m.last_ore) m.got += got_delta(inv, m.last_ore); m.last_ore = inv; }
+        m.col_t += dt; m.col_stall += dt; m.col_scan_t += dt;
+        if (m.col_scan_t < COLLECT_SCAN_S) return;
+        m.col_scan_t = 0.0;
+        const int n = ore_near(ship, COLLECT_RANGE_M);
+        if (n < 0) m.col_last = 0;
+        else { if (m.col_last < 0 || n < m.col_last) m.col_stall = 0.0; m.col_last = n; }
+        const int cnt = n < 0 ? 0 : n;
+        const CollectVerdict v = collect_verdict(cnt, m.col_t, m.col_stall);
+        if (v == COL_WAIT) return;
+        mine_fire(sid, false);
+        log_line(STR("COLLECT ship=") + std::to_wstring(sid) + STR(" end=") + (v == COL_GIVEUP ? STR("gave up") : STR("done")) + STR(" left=") + std::to_wstring(cnt) + STR(" t=") + std::to_wstring(m.col_t));
+        mlog(sid, v == COL_GIVEUP ? STR("Gave up collecting ") + std::to_wstring(cnt) + STR(" ore (timeout)") : STR("Leftover ore collected"));
+        if (m.col_next == 1) { go_home(ship, sid, m, m.col_why); return; }
+        enter_seek(m);
+        mset(sid, m, m.col_why);
     }
     // WHAT: MS_TRIP: dock trip (dock busy retry backoff, job result).
     void st_trip(UObject* ship, int sid, MineSt& m, double dt, const Config& c)
@@ -854,7 +935,7 @@ namespace
         m.t += dt;
         // chunk hold: SEEK/MINE keep the cube of the ship's chunk (update also drops it when the player flies the ship). OFF, CHECK and UNDOCK
         // keep what is there (CHECK sets it for an undocked ship with nothing in range); the other states release it. Forced rock passes: chunk_hold_tick.
-        if ((m.st == MS_SEEK || m.st == MS_MINE) && on) chunk_hold_update(sid, ship);
+        if ((m.st == MS_SEEK || m.st == MS_MINE || m.st == MS_COLLECT) && on) chunk_hold_update(sid, ship);
         else if (m.st != MS_OFF && m.st != MS_CHECK && m.st != MS_UNDOCK) chunk_hold_release(sid);
         chunk_hold_tick(sid);
         if (step_pre(ship, sid, m, dt, on)) return;
@@ -865,6 +946,7 @@ namespace
         case MS_UNDOCK: st_undock(ship, sid, m, dt, c); return;
         case MS_SEEK: st_seek(ship, sid, m, dt, c); return;
         case MS_MINE: st_mine(ship, sid, m, dt, c); return;
+        case MS_COLLECT: st_collect(ship, sid, m, dt, c); return;
         case MS_TRIP: st_trip(ship, sid, m, dt, c); return;
         case MS_HOLD: st_hold(ship, sid, m, dt, c); return;
         case MS_WARP: st_warp(ship, sid, m, dt, c); return;
@@ -881,7 +963,7 @@ namespace
         if (m.st == MS_TRIP && m.dwait) return "waiting";
         switch (m.st)
         {
-        case MS_UNDOCK: case MS_SEEK: case MS_MINE: return "mining";
+        case MS_UNDOCK: case MS_SEEK: case MS_MINE: case MS_COLLECT: return "mining";
         case MS_TRIP: case MS_WARP: return "traveling";
         case MS_DLWAIT: return "waiting";
         case MS_HOLD: return is_refuel(m) ? "refueling" : "unloading";
@@ -915,6 +997,7 @@ namespace
         case MS_TRIP: return "Wait at dock";
         case MS_HOLD: return "Check/Stop";
         case MS_WARP: return "Seek rock";
+        case MS_COLLECT: return "Seek rock";
         case MS_DLWAIT: return "Dock again";
         default: return "-";
         }
@@ -1133,7 +1216,7 @@ namespace
         auto it = g_mine.find(sid);
         if (it == g_mine.end()) return;
         it->second.btn = false;
-        it->second.flee = false; it->second.warp_to = 0;
+        it->second.flee = false; it->second.warp_to = 0; it->second.col_rock = 0;
         it->second.st = MS_HALT;
         it->second.run = false;
         it->second.since_stop = 0.0;

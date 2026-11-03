@@ -361,6 +361,22 @@ namespace
         return amount > 0 && got >= amount;
     }
 
+    // WHAT: leftover-ore collect (MS_COLLECT) caps: total seconds and seconds with no ore count drop.
+    // WHY: the tractor pulls floating ore in; a stuck or unreachable piece must not hold the ship forever.
+    constexpr double COLLECT_MAX_S = 30.0;      // collect timeout (s)
+    constexpr double COLLECT_STALL_S = 8.0;     // seconds with no drop in the nearby ore count -> give up (s)
+    constexpr double COLLECT_SCAN_S = 2.0;      // ore count scan period (s): the scan is slow, see ore_near
+    constexpr double COLLECT_RANGE_M = 300.0;   // floating ore within this range counts as leftover (m)
+    enum CollectVerdict { COL_WAIT = 0, COL_DONE, COL_GIVEUP };
+
+    // WHAT: collect step verdict from the floating ore count n, elapsed seconds and stall seconds. n <= 0 = done; timeout or stall = give up; else wait.
+    CollectVerdict collect_verdict(int n, double elapsed, double stall)
+    {
+        if (n <= 0) return COL_DONE;
+        if (elapsed >= COLLECT_MAX_S || stall >= COLLECT_STALL_S) return COL_GIVEUP;
+        return COL_WAIT;
+    }
+
     // WHAT: next queue row index after idx for n rows. wrapped = true when it passed the last row (result 0).
     int item_next(int idx, int n, bool& wrapped)
     {
