@@ -333,23 +333,54 @@ namespace
         return (buf[rp->GetOffset_Internal()] & rb->GetFieldMask()) == 0;
     }
 
-    // WHAT: floating ore actors (BP_FloatingOre_C) within range_m of the ship. -1 = ship frame unreadable.
-    // WHY: the collect state waits while dropped ore still floats near the ship. FindAllOf walks every actor (slow): callers throttle to COLLECT_SCAN_S.
+    // WHAT: shared floating ore scan (all ships): BP_FloatingOre_C actors with their positions (uu) at scan time.
+    // WHY: FindAllOf plus one K2 read per actor is the expensive part (about 9000 actors). Done at most every ORE_SCAN_MS
+    //      (or forced: sweep start and rescans), once for all ships, not per ship every 2 s.
+    struct OreEnt { UObject* a = nullptr; double p[3] = {0, 0, 0}; };
+    struct OreScan { ULONGLONG ms = 0; int found = 0; std::vector<OreEnt> list; };
+    OreScan g_ore_scan;
+    constexpr ULONGLONG ORE_SCAN_MS = 10000;
+
+    // WHAT: the shared scan. Refreshed when forced, never run, or older than ORE_SCAN_MS. Returns the cache (valid until the next call).
+    OreScan& ore_scan(bool force)
+    {
+        const ULONGLONG now = GetTickCount64();
+        if (!force && g_ore_scan.ms != 0 && now - g_ore_scan.ms < ORE_SCAN_MS) return g_ore_scan;
+        std::vector<UObject*> v;
+        UObjectGlobals::FindAllOf(STR("BP_FloatingOre_C"), v);
+        g_ore_scan.list.clear();
+        for (UObject* a : v)
+        {
+            if (!alive_seh(a)) continue;   // ore actors are not in the rock lists: actor_ok would always fail
+            OreEnt e;
+            e.a = a;
+            std::wstring why;
+            if (!actor_vec_call(a, STR("K2_GetActorLocation"), e.p, why)) continue;
+            g_ore_scan.list.push_back(e);
+        }
+        g_ore_scan.found = (int)v.size();
+        g_ore_scan.ms = now;
+        return g_ore_scan;
+    }
+
+    // WHAT: floating ore actors (BP_FloatingOre_C) within range_m of the ship, from the shared scan. -1 = ship frame unreadable.
+    // WHY: the collect state waits while dropped ore still floats near the ship. Cached positions; alive_seh only on entries in range.
     int ore_near(UObject* ship, double range_m)
     {
         ActFrame f;
         if (!act_frame(ship, f)) return -1;
-        std::vector<UObject*> v;
-        UObjectGlobals::FindAllOf(STR("BP_FloatingOre_C"), v);
+        OreScan& sc = ore_scan(false);
         int n = 0;
-        for (UObject* a : v)
+        for (size_t i = 0; i < sc.list.size();)
         {
-            if (!alive_seh(a)) continue;   // ore actors are not in the rock lists: actor_ok would always fail
-            double p[3] = {0, 0, 0};
-            std::wstring why;
-            if (!actor_vec_call(a, STR("K2_GetActorLocation"), p, why)) continue;
-            double d[3] = {p[0] - f.loc[0], p[1] - f.loc[1], p[2] - f.loc[2]};
-            if (norm3(d) / MV_UU_PER_M <= range_m) ++n;
+            const OreEnt& e = sc.list[i];
+            double d[3] = {e.p[0] - f.loc[0], e.p[1] - f.loc[1], e.p[2] - f.loc[2]};
+            if (norm3(d) / MV_UU_PER_M <= range_m)
+            {
+                if (!alive_seh(e.a)) { sc.list.erase(sc.list.begin() + (std::ptrdiff_t)i); continue; }   // picked up / gone
+                ++n;
+            }
+            ++i;
         }
         return n;
     }
@@ -810,22 +841,19 @@ namespace
     // WHY: does not need the ship frame (a docked ship may not have one): only the nearest-first sort in SW_PICK needs it.
     void sweep_scan(UObject* ship, int sid, MineSt& m)
     {
-        m.sw_list.clear();
         ActFrame f;
         m.sw_frame = act_frame(ship, f);
-        std::vector<UObject*> v;
-        UObjectGlobals::FindAllOf(STR("BP_FloatingOre_C"), v);
-        for (UObject* a : v)
+        const OreScan& sc = ore_scan(true);   // the sweep always takes a fresh scan (start, rescans)
+        m.sw_list.clear();
+        for (const OreEnt& e : sc.list)
         {
-            if (!alive_seh(a)) continue;   // ore actors are not in the rock lists: actor_ok would always fail
             SwOre o;
-            o.a = a;
-            std::wstring why;
-            if (!actor_vec_call(a, STR("K2_GetActorLocation"), o.p, why)) continue;
+            o.a = e.a;
+            std::copy(e.p, e.p + 3, o.p);
             m.sw_list.push_back(o);
         }
-        m.sw_found = (int)v.size();
-        log_line(STR("SWEEP scan ship=") + std::to_wstring(sid) + STR(" found=") + std::to_wstring(v.size()) + STR(" ok=") + std::to_wstring(m.sw_list.size()) +
+        m.sw_found = sc.found;
+        log_line(STR("SWEEP scan ship=") + std::to_wstring(sid) + STR(" found=") + std::to_wstring(sc.found) + STR(" ok=") + std::to_wstring(m.sw_list.size()) +
                  STR(" frame=") + (m.sw_frame ? STR("1") : STR("0")));
     }
 
