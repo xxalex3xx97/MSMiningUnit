@@ -18,6 +18,33 @@ namespace
     std::map<int, NetDock> g_net_docks;   // dock id -> reservation, occupant, queue
     std::map<int, NetShip> g_net_ships;   // ship id -> intent, wait state (rows exist while a ship has a net_pick)
     long g_net_ticket = 0;                // global FIFO ticket counter
+    std::map<int, std::string> g_net_dock_names;   // dock id -> in-game name (refreshed in net_tick; missing = not readable)
+    std::map<int, std::string> g_net_ship_names;   // ship id -> display name (refreshed in net_tick; missing = not readable)
+
+    // WHAT: text cleaned for the '|' separated files and one-line logs.
+    std::string net_clean(std::string s)
+    {
+        for (char& c : s) if (c == '|' || c == '\r' || c == '\n') c = ' ';
+        return s;
+    }
+
+    // WHAT: ship sid holds dock d (reserved for it, or docked there). Its own dock job at d is never "busy" (dock_busy is only a fallback).
+    bool net_owns(int d, int sid)
+    {
+        const auto it = g_net_docks.find(d);
+        return it != g_net_docks.end() && (it->second.resv == sid || it->second.occ == sid);
+    }
+
+    // WHAT: name for a file column: the name, or "" when it is not readable.
+    std::string net_name(const std::map<int, std::string>& names, int id)
+    {
+        const auto it = names.find(id);
+        return it == names.end() ? std::string() : it->second;
+    }
+
+    // WHAT: name for a status / log text: the name, else the id (only when the name can't be read).
+    std::string net_dock_label(int id) { const std::string n = net_name(g_net_dock_names, id); return n.empty() ? std::to_string(id) : n; }
+    std::string net_ship_label(int sid) { const std::string n = net_name(g_net_ship_names, sid); return n.empty() ? std::to_string(sid) : n; }
     std::set<int> g_flee_pick;            // ships whose dock trip is a hull flee (purpose P_FLEE until the job starts)
     constexpr double NET_FULL_S = 300.0;  // a FULL mark clears after this long (s), or earlier when the ore cargo shrinks there
 
@@ -112,7 +139,7 @@ namespace
         {
             const NetDock& d = kv.second;
             dk += std::to_string(d.id) + "|" + net_status_text(d) + "|" + std::to_string(d.occ) + "|" + net_purpose_text(d.why) + "|" +
-                  std::to_string(net_age(d.since)) + "|" + net_join(d.queue) + "|" + (d.full ? "1" : "0") + "\n";
+                  std::to_string(net_age(d.since)) + "|" + net_join(d.queue) + "|" + (d.full ? "1" : "0") + "|" + net_name(g_net_dock_names, d.id) + "\n";
             const int who = d.occ != 0 ? d.occ : d.resv;
             if (who != 0) busy += std::to_string(d.id) + "|" + std::to_string(who) + "\n";
         }
@@ -122,7 +149,8 @@ namespace
             sh += std::to_string(s.sid) + "|" + net_purpose_text(s.intent) + "|" + net_join(s.wanted) + "|" + std::to_string(s.waits_dock) + "|" +
                   std::to_string(s.blocked_by) + "|" + std::to_string(net_age(s.wait_since)) + "|" + net_reason_text(s.reason) + "|" +
                   std::to_string(static_cast<long long>(net_hold_s(s.sid))) + "|" + std::to_string(eff_cfg(s.sid).dock_hold_limit) + "|" +
-                  std::to_string(net_queue_pos(s)) + "\n";
+                  std::to_string(net_queue_pos(s)) + "|" + net_name(g_net_ship_names, s.sid) + "|" + net_name(g_net_dock_names, s.waits_dock) + "|" +
+                  net_name(g_net_ship_names, s.blocked_by) + "\n";
         }
         static std::string last_dk, last_sh, last_busy;
         try
@@ -146,6 +174,8 @@ namespace
             if (!alive(sh)) continue;
             const int sid = obj_id(sh);
             heading[sid] = 0;
+            const std::string sname = net_clean(u8(obj_display(sh)));
+            if (sname.empty()) g_net_ship_names.erase(sid); else g_net_ship_names[sid] = sname;
             int32_t did = 0;
             get_int_prop(sh, STR("DockID"), did);
             UObject* d = get_obj_prop(sh, STR("Dock"));
@@ -161,7 +191,14 @@ namespace
         std::set<int> known, existing;
         for (const auto& kv : g_net_docks) known.insert(kv.first);
         for (const auto& kv : occupant) known.insert(kv.first);
-        for (int d : known) if (alive(find_by_id(STR("Dock"), d))) existing.insert(d);
+        for (int d : known)
+        {
+            UObject* dobj = find_by_id(STR("Dock"), d);
+            if (!alive(dobj)) continue;
+            existing.insert(d);
+            const std::string dname = net_clean(u8(dock_name(dobj)));
+            if (dname.empty()) g_net_dock_names.erase(d); else g_net_dock_names[d] = dname;
+        }
         for (auto& kv : g_net_docks)
             if (kv.second.full && g_now - kv.second.full_since >= NET_FULL_S) kv.second.full = false;
         net_reconcile(g_net_docks, g_net_ships, occupant, heading, existing);
@@ -176,14 +213,14 @@ namespace
             occ_prev[kv.first] = d.occ;
         }
         net_grant_tick(g_net_docks, g_net_ships, g_now);
-        // log lines (once per change): GRANT when a ship gets a free dock, WAIT when its dock, holder or reason changes
+        // server log (throttled like the Log tab): GRANT once per grant; WAIT once when the dock/holder/reason changes, then a reminder every 60 s
         static std::set<int> granted_seen;
-        static std::map<int, std::string> wait_seen;
-        std::set<int> granted_now;
-        std::map<int, std::string> wait_now;
+        static std::map<int, LogGate> wait_gate;
+        std::set<int> granted_now, waiting_now;
         for (const auto& kv : g_net_ships)
         {
             const NetShip& s = kv.second;
+            const std::string sn = net_ship_label(kv.first);
             if (s.granted)
             {
                 granted_now.insert(kv.first);
@@ -191,20 +228,20 @@ namespace
                 {
                     for (const auto& dk : g_net_docks)
                         if (dk.second.resv == kv.first)
-                            log_line(STR("NET ship=") + std::to_wstring(kv.first) + STR(" GRANT dock=") + std::to_wstring(dk.first));
+                            log_line(widen("NET ship=" + std::to_string(kv.first) + " (" + sn + ") GRANT dock=" + std::to_string(dk.first) + " (" + net_dock_label(dk.first) + ")"));
                 }
             }
-            if (s.waits_dock != 0)
-            {
-                const std::string key = std::to_string(s.waits_dock) + "|" + std::to_string(s.blocked_by) + "|" + net_reason_text(s.reason);
-                wait_now[kv.first] = key;
-                if (wait_seen.count(kv.first) == 0 || wait_seen[kv.first] != key)
-                    log_line(STR("NET ship=") + std::to_wstring(kv.first) + STR(" WAIT dock=") + std::to_wstring(s.waits_dock) + STR(" holder=") +
-                             std::to_wstring(s.blocked_by) + STR(" why=") + widen(net_reason_text(s.reason)) + STR(" t=") + std::to_wstring(net_age(s.wait_since)));
-            }
+            if (s.waits_dock == 0) continue;
+            waiting_now.insert(kv.first);
+            const std::string key = std::to_string(s.waits_dock) + "|" + std::to_string(s.blocked_by) + "|" + net_reason_text(s.reason);
+            const GateAct act = log_gate(wait_gate[kv.first], key, g_now, 0.0, 60.0);
+            if (act != GATE_NONE)
+                log_line(widen("NET ship=" + std::to_string(kv.first) + " (" + sn + ") " + (act == GATE_REMIND ? "STILL WAIT" : "WAIT") +
+                               " dock=" + std::to_string(s.waits_dock) + " (" + net_dock_label(s.waits_dock) + ") holder=" + std::to_string(s.blocked_by) +
+                               " (" + net_ship_label(s.blocked_by) + ") why=" + net_reason_text(s.reason) + " t=" + std::to_string(net_age(s.wait_since)) + "s"));
         }
         granted_seen = granted_now;
-        wait_seen = wait_now;
+        for (auto it = wait_gate.begin(); it != wait_gate.end();) it = waiting_now.count(it->first) ? std::next(it) : wait_gate.erase(it);
         net_write();
     }
 }

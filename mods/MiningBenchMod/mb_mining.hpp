@@ -72,6 +72,7 @@ namespace
         double clog_t = 30.0;                  // seconds since the last "MINE cargo" debug line (first sample logs)
         int64_t eta_left = -1;                 // items still to move while MS_HOLD; -1 = unknown / not holding
         double prog_t = 0.0;                   // seconds mining since the last "Mined" log line
+        LogGate wait_gate, q_gate;             // dock wait Log tab gates (dock_wait_text); reset per trip
         bool dwait = false, err = false;       // dwait: waiting for a dock (queued in the dock network) / err: stopped by an error (red ERROR)
         double dwait_t = 0.0;                  // seconds since the last safety retry (60 s)
         double dwait_shown = -1.0;             // dwait: the second the wait text was last written (-1 = write now)
@@ -449,15 +450,30 @@ namespace
             qn = static_cast<int>(dit->second.queue.size());
             for (size_t i = 0; i < dit->second.queue.size(); ++i) if (dit->second.queue[i] == sid) qpos = static_cast<int>(i) + 1;
         }
-        return widen(net_ship_text(s.reason, std::to_string(s.waits_dock), s.blocked_by ? std::to_string(s.blocked_by) : std::string(),
+        return widen(net_ship_text(s.reason, net_dock_label(s.waits_dock), s.blocked_by ? net_ship_label(s.blocked_by) : std::string(),
                                    g_now - s.wait_since, qpos, qn));
     }
 
-    // WHAT: writes the wait text of a queued dock trip (status + shown text).
+    // WHAT: wait of a queued dock trip, every call (once a second). Status (m.result) is set directly: mset would log each changed second.
+    // WHAT: Log tab only: one line at the wait start or when dock / holder / reason change, "Still waiting" every 60 s, and the queue
+    //       place when it changes (at most every 10 s, only with more than one waiter). No elapsed time in those lines.
     void dock_wait_text(int sid, MineSt& m)
     {
-        const std::wstring t = net_wait_text(sid, g_flee_pick.count(sid) != 0);
-        mset(sid, m, t, t);
+        m.result = net_wait_text(sid, g_flee_pick.count(sid) != 0);
+        const auto it = g_net_ships.find(sid);
+        if (it == g_net_ships.end() || it->second.waits_dock == 0) return;
+        const NetShip& s = it->second;
+        const std::string key = std::to_string(s.waits_dock) + "|" + std::to_string(s.blocked_by) + "|" + net_reason_text(s.reason);
+        const GateAct wa = log_gate(m.wait_gate, key, g_now, 0.0, 60.0);
+        if (wa != GATE_NONE)
+            mlog(sid, widen(net_wait_log(s.reason, net_dock_label(s.waits_dock), s.blocked_by ? net_ship_label(s.blocked_by) : std::string(),
+                                         g_now - s.wait_since, wa == GATE_REMIND)));
+        const auto dit = g_net_docks.find(s.waits_dock);
+        const int qn = dit == g_net_docks.end() ? 0 : static_cast<int>(dit->second.queue.size());
+        const int qpos = net_queue_pos(s);
+        const std::string qk = qn > 1 ? std::to_string(qpos) + "/" + std::to_string(qn) : std::string();
+        if (log_gate(m.q_gate, qk, g_now, 10.0, 1e18) == GATE_NEW && qn > 1)
+            mlog(sid, widen("Queue " + std::to_string(qpos) + " of " + std::to_string(qn)));
     }
 
     // WHAT: dock id the ship is docked at (DockID, else the Dock object). 0 = none.
@@ -482,7 +498,7 @@ namespace
     {
         const int did = dock_of(ship);
         if (did > 0) { NetDock& nd = g_net_docks[did]; nd.id = did; nd.full = true; nd.full_since = g_now; }
-        mlog(sid, STR("Dock ") + std::to_wstring(did) + STR(" is full, undocking to try the next dock"));
+        mlog(sid, STR("Dock ") + widen(net_dock_label(did)) + STR(" is full, undocking to try the next dock"));
         log_line(STR("NET dock=") + std::to_wstring(did) + STR(" FULL by=") + std::to_wstring(sid));
         cancel_dock_job(ship, sid);
         g_job_res.erase(sid);
@@ -505,6 +521,7 @@ namespace
         const std::wstring r = job_start(sid, m.trip, -1);
         m.t = 0.0; m.seek_started = false; m.no_rock = false;
         m.err = false; m.dwait = false; m.warp_to = 0;
+        m.wait_gate = LogGate(); m.q_gate = LogGate();   // a new trip starts its own wait lines
         if (r == STR("waiting dock")) { m.st = MS_TRIP; m.dwait = true; m.dwait_t = 0.0; m.dwait_shown = -1.0; dock_wait_text(sid, m); return; }
         if (r == STR("nothing to unload")) { g_flee_pick.erase(sid); m.st = MS_HALT; mset(sid, m, STR("Nothing to unload")); return; }
         if (net_real_error(r)) { g_flee_pick.erase(sid); m.st = MS_HALT; m.err = true; mset(sid, m, STR("ERROR: ") + r.substr(7), STR("ERROR: ") + r.substr(7)); return; }
@@ -1260,6 +1277,7 @@ namespace
             const std::wstring r = job_start(sid, m.trip, -1);
             if (r == STR("waiting dock")) { dock_wait_text(sid, m); return; }
             m.dwait = false;
+            m.wait_gate = LogGate(); m.q_gate = LogGate();
             if (r == STR("nothing to unload")) { g_flee_pick.erase(sid); m.st = MS_HALT; mset(sid, m, STR("Nothing to unload")); return; }
             if (net_real_error(r)) { g_flee_pick.erase(sid); m.st = MS_HALT; m.err = true; mset(sid, m, STR("ERROR: ") + r.substr(7), STR("ERROR: ") + r.substr(7)); return; }
             if (r != STR("waiting")) { g_flee_pick.erase(sid); m.st = MS_HALT; mset(sid, m, STR("dock trip failed: ") + r); return; }
@@ -1876,7 +1894,7 @@ namespace
                 for (int q : d.queue) { auto it = g_net_ships.find(q); if (it != g_net_ships.end()) { it->second.reason = NR_WAIT_PARKED; it->second.blocked_by = h; } }
                 continue;
             }
-            const std::wstring who = STR("Leaving dock for ship ") + std::to_wstring(d.queue.front());
+            const std::wstring who = STR("Leaving dock for ship ") + widen(net_ship_label(d.queue.front()));
             mset(h, g_mine[h], who, who);
             log_line(STR("NET dock=") + std::to_wstring(d.id) + STR(" UNDOCK holder=") + std::to_wstring(h) + STR(" for=") + std::to_wstring(d.queue.front()));
         }

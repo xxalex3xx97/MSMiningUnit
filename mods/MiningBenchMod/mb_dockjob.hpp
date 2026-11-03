@@ -182,7 +182,7 @@ namespace
             return v;
         }
         const NetVerdict v = net_pick(g_net_docks, g_net_ships, g_net_ticket, sid, g_flee_pick.count(sid) ? P_FLEE : P_UNLOAD, cands, 0, g_now);
-        if (v.k == NetVerdict::ERR) { subject = std::to_string(cands.front()); return v; }
+        if (v.k == NetVerdict::ERR) { subject = net_dock_label(cands.front()); return v; }
         // ores unloaded at the chosen dock: cargo ores first, then (picker dock only) the other ores that list it
         std::vector<int> pool;
         for (int i = 0; i < N_ORE; ++i) if (has_docks[i] && in_cargo[i]) pool.push_back(i);
@@ -249,7 +249,7 @@ namespace
             if (cands.empty()) return STR("error: need a second configured dock to leave");
             // an undock never waits: when every candidate is taken, take the first one (old behaviour); it is not a hold
             const NetVerdict v = net_pick(g_net_docks, g_net_ships, g_net_ticket, sid, P_UNDOCK_TARGET, cands, 0, g_now);
-            if (v.k == NetVerdict::ERR) return net_refusal(v, std::to_string(cands.front()));
+            if (v.k == NetVerdict::ERR) return net_refusal(v, net_dock_label(cands.front()));
             if (v.k == NetVerdict::WAIT) net_drop_wait(g_net_docks, g_net_ships[sid]);
             dk = v.dock;
             g_undock_state = STR("docked");
@@ -262,7 +262,7 @@ namespace
             const std::vector<int> cands = (pk != g_dock_pick.end() && pk->second > 0) ? std::vector<int>{pk->second} : refuel_candidates(c, why);
             if (cands.empty()) return why == STR("no dock configured") ? why : STR("error: ") + why;
             const NetVerdict v = net_pick(g_net_docks, g_net_ships, g_net_ticket, sid, P_REFUEL, cands, 0, g_now);
-            if (v.k == NetVerdict::ERR) return net_refusal(v, std::to_string(cands.front()));
+            if (v.k == NetVerdict::ERR) return net_refusal(v, net_dock_label(cands.front()));
             if (v.k == NetVerdict::WAIT) { tlog(STR("refuel docks busy, ship ") + std::to_wstring(sid) + STR(" waits")); return STR("waiting dock"); }
             dk = v.dock;
         }
@@ -508,7 +508,8 @@ namespace
                      STR(" order DockID=") + prop_int(ord, STR("DockID")));
             }
             // dock busy (another ship there or heading there) after 30 s of not arriving: end with "waiting dock", the caller retries
-            if (!at_target && j.t >= 30.0 && dock_busy(j.dock, j.sid)) { job_finish(i, STR("waiting dock")); continue; }
+            // a dock this ship holds (reserved for it, or docked there) is never busy: ending the job here restarted the same dock trip every 34 s (live log 15:16-15:18)
+            if (!at_target && j.t >= 30.0 && dock_busy(j.dock, j.sid) && !net_owns(j.dock, j.sid)) { job_finish(i, STR("waiting dock")); continue; }
             if (at_target) { tlog(STR("docked at t=") + std::to_wstring(j.t)); job_finish(i, STR("ok")); continue; }
             if (j.t >= CMD_WATCH_S) { job_finish(i, STR("error: dock timeout after 180 s")); continue; }
             // stall retry: autopilot on but the ship does not move for 10 s (Miner 3 case: thrust 0) -> autopilot off/on + SkipToOrder again, same job and orders

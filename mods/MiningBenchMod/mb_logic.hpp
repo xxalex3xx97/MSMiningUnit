@@ -659,19 +659,55 @@ namespace
         return !done && idle_s > 0 && t >= wait_s && hold_idle >= idle_s;
     }
 
+    // WHAT: log gate for a status that changes often (wait text, queue place). key = what is shown in the log.
+    // WHY: the Log tab (20 lines per ship) and the server log must not get a line per second.
+    //       GATE_NEW = key changed (only when min_gap s passed since the last line); GATE_REMIND = same key for remind_s s.
+    struct LogGate { std::string key; double last = -1e18; };
+    enum GateAct { GATE_NONE, GATE_NEW, GATE_REMIND };
+    inline GateAct log_gate(LogGate& g, const std::string& key, double now, double min_gap, double remind_s)
+    {
+        if (key != g.key)
+        {
+            if (now - g.last < min_gap) return GATE_NONE;   // too soon: the key stays old, the change logs later
+            g.key = key; g.last = now;
+            return GATE_NEW;
+        }
+        if (now - g.last >= remind_s) { g.last = now; return GATE_REMIND; }
+        return GATE_NONE;
+    }
+
+    // WHAT: m:ss for a wait time: no leading zero on the minutes ("2:09", "0:45", "12:03").
+    inline std::string net_mmss(double wait_s)
+    {
+        const long long total = wait_s > 0 ? static_cast<long long>(wait_s) : 0;
+        const long long sec = total % 60;
+        return std::to_string(total / 60) + ":" + (sec < 10 ? "0" : "") + std::to_string(sec);
+    }
+
+    // WHAT: Log tab text of a dock wait. No elapsed time in the start/change line; remind = the "Still waiting" reminder (with m:ss).
+    inline std::string net_wait_log(NetReason r, const std::string& dock, const std::string& holder, double wait_s, bool remind)
+    {
+        if (remind) return "Still waiting for " + dock + " (" + net_mmss(wait_s) + (holder.empty() ? std::string() : " occupied by " + holder) + ")";
+        if (r == NR_WAIT_UNMANAGED) return "Waiting for " + dock + " (held by ship " + holder + ", not managed)";
+        if (r == NR_WAIT_FULL) return "Dock full (" + dock + "), waiting for space";
+        if (r == NR_WAIT_QUEUE || holder.empty()) return "Waiting for " + dock;
+        return "Waiting for " + dock + " (occupied by " + holder + ")";
+    }
+
     // WHAT: status text for a ship's wait / refusal. Format is fixed here so the UI and tests see the same words.
-    // subject = dock name (or ore name for NR_NOT_CONFIGURED); holder = name of the ship using the dock; qpos/qn = queue place (shown when qn > 0).
+    // subject = dock name (or ore name for NR_NOT_CONFIGURED); holder = name of the ship at the dock; wait_s = seconds waited;
+    // qpos/qn = queue place, shown as " - queue p/n" only when more than one ship waits (qn > 1).
     inline std::string net_ship_text(NetReason r, const std::string& subject, const std::string& holder, double wait_s, int qpos, int qn)
     {
-        const std::string secs = std::to_string(static_cast<long long>(wait_s)) + " s";
-        const std::string q = qn > 0 ? ", queue " + std::to_string(qpos) + "/" + std::to_string(qn) : "";
+        const std::string q = qn > 1 ? " - queue " + std::to_string(qpos) + "/" + std::to_string(qn) : "";
+        const std::string wt = net_mmss(wait_s);
         switch (r)
         {
-        case NR_WAIT_BUSY: return "Waiting for dock " + subject + " (used by " + holder + ", " + secs + q + ")";
-        case NR_WAIT_QUEUE: return "Waiting for dock " + subject + " (" + secs + q + ")";
-        case NR_WAIT_FULL: return "Dock full (" + subject + "), waiting for space";
+        case NR_WAIT_BUSY: return "Waiting for " + subject + " (" + wt + " occupied by " + holder + ")" + q;
+        case NR_WAIT_QUEUE: return "Waiting for " + subject + " (" + wt + ")" + q;
+        case NR_WAIT_FULL: return "Dock full (" + subject + "), waiting for space" + q;
         case NR_WAIT_PARKED: return "Dock " + subject + " held by idle ship " + holder + ", no second dock to leave to";
-        case NR_WAIT_UNMANAGED: return "Waiting for dock " + subject + " (held by ship " + holder + ", not managed)";
+        case NR_WAIT_UNMANAGED: return "Waiting for " + subject + " (held by ship " + holder + ", not managed)" + q;
         case NR_NOT_CONFIGURED: return "No unload dock configured for " + subject;
         case NR_DOCK_GONE: return "Unload dock " + subject + " no longer exists";
         case NR_NOTHING_TO_UNLOAD: return "Nothing to unload";

@@ -731,10 +731,31 @@ static void t_net_release()
 
 static void t_net_text()
 {
-    CHECK(net_ship_text(NR_WAIT_BUSY, "X", "S", 12, 2, 3) == "Waiting for dock X (used by S, 12 s, queue 2/3)");
+    CHECK(net_ship_text(NR_WAIT_BUSY, "Unload Silica 1", "Cleaner", 129, 1, 3) == "Waiting for Unload Silica 1 (2:09 occupied by Cleaner) - queue 1/3");
+    CHECK(net_ship_text(NR_WAIT_BUSY, "Unload Silica 1", "Cleaner", 9, 1, 1) == "Waiting for Unload Silica 1 (0:09 occupied by Cleaner)");   // one waiter: no queue text
+    CHECK(net_ship_text(NR_WAIT_QUEUE, "Unload Silica 1", "", 65, 2, 2) == "Waiting for Unload Silica 1 (1:05) - queue 2/2");
     CHECK(net_ship_text(NR_WAIT_FULL, "X", "", 0, 0, 0) == "Dock full (X), waiting for space");
     CHECK(net_ship_text(NR_WAIT_PARKED, "X", "S", 0, 0, 0) == "Dock X held by idle ship S, no second dock to leave to");
     CHECK(net_ship_text(NR_NOTHING_TO_UNLOAD, "", "", 0, 0, 0) == "Nothing to unload");
+    CHECK(net_mmss(0) == "0:00" && net_mmss(59.9) == "0:59" && net_mmss(600) == "10:00" && net_mmss(-3) == "0:00");
+    CHECK(net_wait_log(NR_WAIT_BUSY, "Unload Silica 1", "Cleaner", 0, false) == "Waiting for Unload Silica 1 (occupied by Cleaner)");
+    CHECK(net_wait_log(NR_WAIT_BUSY, "Unload Silica 1", "Cleaner", 129, true) == "Still waiting for Unload Silica 1 (2:09 occupied by Cleaner)");
+    CHECK(net_wait_log(NR_WAIT_QUEUE, "Unload Silica 1", "", 0, false) == "Waiting for Unload Silica 1");
+}
+
+static void t_net_log_gate()
+{
+    LogGate g;
+    CHECK(log_gate(g, "a|5|busy", 100.0, 0.0, 60.0) == GATE_NEW);      // first wait line
+    CHECK(log_gate(g, "a|5|busy", 101.0, 0.0, 60.0) == GATE_NONE);     // same key, every second: nothing
+    CHECK(log_gate(g, "a|5|busy", 159.0, 0.0, 60.0) == GATE_NONE);
+    CHECK(log_gate(g, "a|5|busy", 160.0, 0.0, 60.0) == GATE_REMIND);   // reminder once per 60 s
+    CHECK(log_gate(g, "a|7|busy", 161.0, 0.0, 60.0) == GATE_NEW);      // holder changed: new line at once
+    LogGate q;
+    CHECK(log_gate(q, "2/3", 0.0, 10.0, 1e18) == GATE_NEW);
+    CHECK(log_gate(q, "1/3", 4.0, 10.0, 1e18) == GATE_NONE);           // queue changed < 10 s after last line: later
+    CHECK(log_gate(q, "1/3", 11.0, 10.0, 1e18) == GATE_NEW);           // logged once 10 s passed
+    CHECK(log_gate(q, "1/3", 500.0, 10.0, 1e18) == GATE_NONE);         // no reminder for queue
 }
 
 // ---------- runner ----------
@@ -760,7 +781,7 @@ int main()
         {"net_free_go", t_net_free_go}, {"net_busy_wait", t_net_busy_wait}, {"net_second_dock", t_net_second_dock},
         {"net_fifo", t_net_fifo}, {"net_go_drops_other_grant", t_net_go_drops_other_grant}, {"net_not_configured", t_net_not_configured}, {"net_dock_gone", t_net_dock_gone},
         {"net_full", t_net_full}, {"net_bad_holder", t_net_bad_holder}, {"unload_stalled", t_unload_stalled},
-        {"net_self_occupant", t_net_self_occupant}, {"net_queue_never_occupant", t_net_queue_never_occupant}, {"net_blocked_by_never_self", t_net_blocked_by_never_self},
+        {"net_log_gate", t_net_log_gate}, {"net_self_occupant", t_net_self_occupant}, {"net_queue_never_occupant", t_net_queue_never_occupant}, {"net_blocked_by_never_self", t_net_blocked_by_never_self},
         {"net_reconcile", t_net_reconcile}, {"net_release", t_net_release}, {"net_text", t_net_text},
     };
     for (const Case& c : cases)
