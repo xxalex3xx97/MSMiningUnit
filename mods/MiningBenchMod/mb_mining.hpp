@@ -561,7 +561,7 @@ namespace
         if (m.no_rock && !belt_off(c.belt))
         {
             m.scan_t += dt;
-            if (m.scan_t >= 2.0 && m.scan_n < 8) { m.scan_t = 0.0; ++m.scan_n; rockscan_log(ship, sid, m, c, item, false); }
+            if (g_debug && m.scan_t >= 2.0 && m.scan_n < 8) { m.scan_t = 0.0; ++m.scan_n; rockscan_log(ship, sid, m, c, item, false); }
         }
         if (m.no_rock && c.idle_seconds > 0 && m.rng_t >= c.idle_seconds)
             go_home(ship, sid, m, STR("nothing in range for ") + std::to_wstring(c.idle_seconds) + STR(" s"));
@@ -746,7 +746,7 @@ namespace
             chunk_hold_update(sid, ship);   // chunk hold at once: the rock list (fallback pass) sees the belt rocks
             mset(sid, m, STR("arrived, seeking rock"), STR("Arrived, seeking rock"));
             std::wstring iwhy;
-            rockscan_log(ship, sid, m, c, item_c(c.resource, iwhy), true);   // DIAGNOSTIC (ROCKSCAN) arrival line
+            if (g_debug) rockscan_log(ship, sid, m, c, item_c(c.resource, iwhy), true);   // DIAGNOSTIC (ROCKSCAN) arrival line
             return;
         }
         if (m.warp_t >= MINE_WARP_TIMEOUT_S) { m.st = MS_HALT; m.err = true; mset(sid, m, STR("ERROR: warp to sector ") + std::to_wstring(m.warp_to) + STR(" timed out"), STR("ERROR: warp timed out")); }
@@ -1011,7 +1011,8 @@ namespace
             const std::string where = alive(ship) && ship_pos(ship, sys, ch) ? std::to_string(sys) + "," + std::to_string(ch[0]) + "," + std::to_string(ch[1]) + "," + std::to_string(ch[2]) : std::string("-");
             s += std::to_string(sid) + "|" + (m.run ? "1" : "0") + "|" + std::to_string(m.cargo_pct) + "|" + std::to_string(m.spd) + "|" + mine_next(m) + "|" + std::to_string(m.eta_left) + "|" + job + "|" + phase + "|" + (res.empty() ? std::string("-") : res) + "|" + where + "|" + have + "|" + std::to_string(eff_cfg(sid).amount) + "\n";
         }
-        try { write_atomic(get_dll_dir() / "MiningStatusX.txt", s); } catch (...) {}
+        static std::string last;   // unchanged: no file write
+        if (s != last) { try { write_atomic(get_dll_dir() / "MiningStatusX.txt", s); last = s; } catch (...) {} }
         dock_occ_write();
     }
 

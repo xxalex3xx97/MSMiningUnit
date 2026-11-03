@@ -78,7 +78,11 @@ namespace
         {
             g_actor_set_frame = g_actor_frame;
             g_actor_set.clear();
-            UObject* ctrl = first_of(STR("DMSPlayerController"));
+            // WHY: first_of is a full UObject walk and this runs every tick while ships move; cache the controller (revalidated by cached_ok, SEH-safe).
+            static UObject* c_ctrl = nullptr;
+            static int c_cid = 0;
+            if (!(c_ctrl && cached_ok(c_ctrl, c_cid))) { c_ctrl = first_of(STR("DMSPlayerController")); c_cid = alive(c_ctrl) ? obj_id(c_ctrl) : 0; }
+            UObject* ctrl = c_ctrl;
             if (alive(ctrl) && prop_is(ctrl, STR("ScannableHUDMarkers"), STR("ArrayProperty")))
             {
                 auto* arr = ctrl->GetValuePtrByPropertyNameInChain<TArray<FScriptInterface>>(STR("ScannableHUDMarkers"));
@@ -289,7 +293,9 @@ namespace
     //      throttle their own calls.
     bool rock_list_due()
     {
-        return g_rock_actors.empty() || static_cast<double>(GetTickCount64() - g_rock_list_ms) >= ROCK_PASS_S * 1000.0;
+        // WHY: an empty list used to be due on every call (full re-walk each tick for a ship with no rocks); min 2 s between passes.
+        const double age = static_cast<double>(GetTickCount64() - g_rock_list_ms);
+        return age >= (g_rock_actors.empty() ? 2000.0 : ROCK_PASS_S * 1000.0);
     }
 
     // WHAT: refresh the rock list if it is due.

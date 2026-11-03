@@ -1310,6 +1310,7 @@ function M.isOpen() return ok(S.frame) and inVp(S.frame) end
 
 function M.close()
   S.gen = S.gen + 1  -- stops the status loop
+  if BIND and BIND.clear then BIND.clear() end  -- drop button callbacks + global layout hook
   S.sid = nil
   S.mode = nil
   S.all = false

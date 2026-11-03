@@ -611,6 +611,8 @@ local function tick()
     if not (live(table.unpack(R.controller))
             and live(table.unpack(R.player))) then
         open = false
+        -- WHY: dropping the refs left the old panels in the viewport (leak, rebuilt on every map change)
+        for _, r in ipairs({ UI.root, UI.btnRoot }) do pcall(function() if r and r:IsValid() then r:RemoveFromParent() end end) end
         UI.root = nil
         UI.btnRoot = nil
         UI.shown = false

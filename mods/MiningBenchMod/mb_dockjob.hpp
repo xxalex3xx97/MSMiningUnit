@@ -200,7 +200,9 @@ namespace
             if (did <= 0 && alive(d)) did = obj_id(d);
             if (did > 0) s += std::to_string(did) + "|" + std::to_string(obj_id(sh)) + "\n";
         }
-        try { write_atomic(get_dll_dir() / "DockBusy.txt", s); } catch (...) {}
+        static std::string last;   // unchanged: no file write
+        if (s == last) return;
+        try { write_atomic(get_dll_dir() / "DockBusy.txt", s); last = s; } catch (...) {}
     }
 
     // WHAT: start a dock_mining, dock_refuel or undock job for ship sid. Returns "waiting" when started, else the error text.
