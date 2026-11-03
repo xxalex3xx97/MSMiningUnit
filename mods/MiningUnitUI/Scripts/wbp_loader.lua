@@ -145,9 +145,8 @@ function M.setText(name, s)
   S.tc = S.tc or {}
   if S.tc[name] == s then return end
   local tb = w(name); if not tb then return end
-  S.tc[name] = s
-  if try("SetText " .. name, function() tb:SetText(FText(s)) end) then return end
-  if try("Text " .. name, function() tb.Text = FText(s) end) then return end
+  if try("SetText " .. name, function() tb:SetText(FText(s)) end) then S.tc[name] = s; return end
+  if try("Text " .. name, function() tb.Text = FText(s) end) then S.tc[name] = s; return end
   L("setText " .. name .. " both failed, class=" .. nm(tb, true))
 end
 

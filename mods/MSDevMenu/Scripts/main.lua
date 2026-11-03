@@ -75,7 +75,7 @@ local function invOpen()
         local okv, vp = pcall(function() return w:IsInViewport() == true end)
         if not okv then info.inViewport = "ERR" return false end
         info.inViewport = tostring(vp)
-        if not vp then return false end
+        if not vp then invW = nil; return false end   -- valid but not shown: may be a stale widget after a map change, look it up again (throttled)
         local okb, b = pcall(function() return w:IsVisible() end)
         if okb then info.vis = "IsVisible=" .. tostring(b) return b == true end
         local okg, g = pcall(function() return w:GetVisibility() end)

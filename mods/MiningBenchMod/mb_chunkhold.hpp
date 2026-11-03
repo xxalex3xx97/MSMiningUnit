@@ -323,6 +323,8 @@ namespace
         for (int i = 0; i < 3; ++i) t.c[i] = c[i];
     }
 
+    void chunk_hold_target_clear(int sid) { g_ch_target.erase(sid); }
+
     void chunk_hold_update(int sid, UObject* ship)
     {
         if (g_ch.disabled || !g_compat.usable(F_CHUNKHOLD) || !alive(ship)) return;
