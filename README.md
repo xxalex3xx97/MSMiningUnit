@@ -1,6 +1,6 @@
 # MSDemoMods — Main Sequence Demo Mining Unit
 
-Current version: **0.0.1** (`mods/MiningBenchMod/mb_version.hpp`).
+Current version: **0.2.0** (`mods/MiningBenchMod/mb_version.hpp`).
 
 **Ownership notice.** All game assets, textures, names, code, binaries and data belong to the game's developer and publisher. This is an unofficial fan mod; no ownership is claimed. Game-derived files in this repo are included only to build the mod (see `docs/ASSETS.md`). They are not covered by the MIT license.
 
