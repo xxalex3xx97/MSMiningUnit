@@ -383,6 +383,7 @@ namespace
     constexpr double SWEEP_FLY_MAX_M = 4096.0;
     constexpr double SWEEP_FLY_TIMEOUT_S = 120.0;
     constexpr double SWEEP_WARP_WAIT_S = 15.0;
+    constexpr double SWEEP_RESCAN_S = 2.0;   // wait before each rescan of the ore list (s)
 
     // WHAT: fly back by tractor flight only when same system and within SWEEP_FLY_MAX_M; else warp.
     inline bool sweep_fly_back(bool same_sys, double dist_m)

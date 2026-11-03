@@ -101,6 +101,9 @@ namespace
         double sw_t = 0.0;                     // MS_SWEEP: seconds in the current phase
         UObject* sw_ore = nullptr;             // MS_SWEEP: ore actor being picked up
         std::vector<SwOre> sw_list;            // MS_SWEEP: floating ore cache (nearest first when picking)
+        int sw_found = -1;                     // MS_SWEEP: BP_FloatingOre_C count of the last scan (-1 none yet)
+        bool sw_frame = false;                 // MS_SWEEP: ship frame readable at the last scan
+        int sw_undock_n = 0;                   // MS_SWEEP: undock tries while docked and position unreadable (guard)
     };
     std::map<int, MineSt> g_mine;
 
@@ -463,7 +466,14 @@ namespace
         // hull hit: fled to dock, the trip is over for good
         if (m.flee) { m.flee = false; m.fin = false; m.err = true; m.st = MS_HALT; mset(sid, m, STR("ERROR: hull damaged, fled to dock, stopped"), STR("ERROR: ship was attacked, fled to dock, stopped")); return; }
         // sweep: unloaded, back to the sweep (undock, return to the field)
-        if (m.sweep) { m.sw_ph = SW_UNDOCK; m.sw_nofly = false; m.st = MS_SWEEP; m.leave = false; m.t = 0.0; mset(sid, m, STR("unloaded, returning to sweep"), STR("Collecting ore")); return; }
+        if (m.sweep)
+        {
+            g_job_res.erase(sid);   // the dock trip result must not count as the undock result
+            m.sw_ph = SW_UNDOCK; m.sw_nofly = false; m.st = MS_SWEEP; m.leave = false; m.t = 0.0;
+            log_line(STR("SWEEP ship=") + std::to_wstring(sid) + STR(" ph=0 after dock trip"));
+            mset(sid, m, STR("unloaded, returning to sweep"), STR("Collecting ore"));
+            return;
+        }
         const bool refuel = is_refuel(m);
         m.t = 0.0;
         if (m.leave) { m.st = MS_HALT; mset(sid, m, STR("switched off, parked at dock")); return; }
@@ -788,12 +798,21 @@ namespace
         mset(sid, m, m.col_why);
     }
 
-    // WHAT: MS_SWEEP helper: cache the floating ore actors (BP_FloatingOre_C) and their positions (uu) into m.sw_list.
-    void sweep_scan(UObject* ship, MineSt& m)
+    // WHAT: MS_SWEEP phase change: set the phase, reset the phase timer, log it (phase number, docked state, back flag).
+    void sw_phase(UObject* ship, int sid, MineSt& m, int ph)
+    {
+        m.sw_ph = ph; m.sw_t = 0.0;
+        log_line(STR("SWEEP ship=") + std::to_wstring(sid) + STR(" ph=") + std::to_wstring(ph) + STR(" docked=") + (ship_docked(ship) ? STR("1") : STR("0")) +
+                 STR(" back=") + (m.sw_back ? STR("1") : STR("0")));
+    }
+
+    // WHAT: MS_SWEEP helper: cache the floating ore actors (BP_FloatingOre_C) and their positions (uu) into m.sw_list. Logs found / kept / frame.
+    // WHY: does not need the ship frame (a docked ship may not have one): only the nearest-first sort in SW_PICK needs it.
+    void sweep_scan(UObject* ship, int sid, MineSt& m)
     {
         m.sw_list.clear();
         ActFrame f;
-        if (!act_frame(ship, f)) return;
+        m.sw_frame = act_frame(ship, f);
         std::vector<UObject*> v;
         UObjectGlobals::FindAllOf(STR("BP_FloatingOre_C"), v);
         for (UObject* a : v)
@@ -805,6 +824,9 @@ namespace
             if (!actor_vec_call(a, STR("K2_GetActorLocation"), o.p, why)) continue;
             m.sw_list.push_back(o);
         }
+        m.sw_found = (int)v.size();
+        log_line(STR("SWEEP scan ship=") + std::to_wstring(sid) + STR(" found=") + std::to_wstring(v.size()) + STR(" ok=") + std::to_wstring(m.sw_list.size()) +
+                 STR(" frame=") + (m.sw_frame ? STR("1") : STR("0")));
     }
 
     // WHAT: MS_SWEEP helper: distance (m) from the ship to the saved return point, and whether the ship is in the saved system. false when unreadable.
@@ -827,11 +849,12 @@ namespace
     // WHAT: MS_SWEEP helper: back at the ore field: rescan, pick from the top.
     void sw_arrived(UObject* ship, int sid, MineSt& m)
     {
-        m.sw_ph = SW_PICK; m.sw_back = false; m.sw_t = 0.0;
+        m.sw_back = false;
         chunk_hold_target_clear(sid);
-        sweep_scan(ship, m);
+        sweep_scan(ship, sid, m);
         m.sw_rescans = 0;
         mlog(sid, STR("Collect: back at the ore field"));
+        sw_phase(ship, sid, m, SW_PICK);
     }
 
     // WHAT: MS_SWEEP: undock after a dock trip, return to the ore field, pick floating ore nearest first, dock when cargo is full.
@@ -843,25 +866,33 @@ namespace
         case SW_UNDOCK:
         {
             for (const DockJob& j : g_jobs) if (j.sid == sid) return;   // undock job running
-            if (g_job_res[sid].empty() && ship_docked(ship))             // first tick while docked: start the undock
+            if (g_job_res[sid].empty())   // not started yet (sweep_cmd, trip_end and the docked fallback clear the result): start it as st_undock does
             {
+                const bool docked = ship_docked(ship);
+                cancel_dock_job(ship, sid);
                 g_job_res.erase(sid);
                 const std::wstring r = job_start(sid, "undock", -1);
+                log_line(STR("SWEEP undock start ship=") + std::to_wstring(sid) + STR(" docked=") + (docked ? STR("1") : STR("0")) + STR(" r=") + r);
                 if (r == STR("waiting")) return;
-                g_job_res[sid] = r;
+                g_job_res[sid] = r.empty() ? STR("ok") : r;
             }
             const std::wstring r = g_job_res[sid];
-            if (!r.empty() && !ok_res(r))
+            log_line(STR("SWEEP undock ship=") + std::to_wstring(sid) + STR(" res=") + r + STR(" docked=") + (ship_docked(ship) ? STR("1") : STR("0")));
+            if (!ok_res(r))
             {
                 m.sweep = false; m.st = MS_HALT; m.err = true;
                 mset(sid, m, STR("ERROR: undock failed: ") + r, STR("ERROR: undock failed: ") + r);
                 return;
             }
             // undocked (or was not docked)
-            m.sw_ph = m.sw_back ? SW_RETURN : SW_PICK; m.sw_t = 0.0;
+            sw_phase(ship, sid, m, m.sw_back ? SW_RETURN : SW_PICK);
             run_cmd(-1, sid, "tractor_on");
             run_cmd(-1, sid, "laser_off");
-            if (!m.sw_back && m.sw_list.empty()) sweep_scan(ship, m);
+            if (!m.sw_back && m.sw_list.empty())
+            {
+                sweep_scan(ship, sid, m);
+                mlog(sid, STR("Collect: ") + std::to_wstring(m.sw_list.size()) + STR(" ore found"));
+            }
             return;
         }
         case SW_RETURN:
@@ -875,7 +906,7 @@ namespace
                 std::copy(m.sw_ch, m.sw_ch + 3, t.ch);
                 std::copy(m.sw_loc, m.sw_loc + 3, t.loc);
                 const std::wstring r = move_start(sid, "approach_rock", -1, nullptr, &t);
-                if (r == STR("waiting")) { m.sw_ph = SW_FLY; m.sw_t = 0.0; mlog(sid, STR("Collect: flying back")); return; }
+                if (r == STR("waiting")) { sw_phase(ship, sid, m, SW_FLY); mlog(sid, STR("Collect: flying back")); return; }
             }
             chunk_hold_target(sid, m.sw_sys, m.sw_ch);
             const int64_t arr[3] = {(int64_t)m.sw_loc[0], (int64_t)m.sw_loc[1], (int64_t)m.sw_loc[2]};
@@ -886,7 +917,7 @@ namespace
                 mset(sid, m, STR("ERROR: return warp failed: ") + e, STR("ERROR: return warp failed: ") + e);
                 return;
             }
-            m.sw_ph = SW_WARP; m.sw_t = 0.0;
+            sw_phase(ship, sid, m, SW_WARP);
             mlog(sid, STR("Collect: warping back"));
             return;
         }
@@ -897,7 +928,8 @@ namespace
             if (mv_active(sid))
             {
                 mv_cancel(sid); zero_all(ship);
-                m.sw_nofly = true; m.sw_ph = SW_RETURN;
+                m.sw_nofly = true;
+                sw_phase(ship, sid, m, SW_RETURN);
                 return;
             }
             sw_arrived(ship, sid, m);
@@ -918,6 +950,7 @@ namespace
         }
         case SW_PICK:
         {
+            m.sw_t += dt;
             if (chunk_hold_settling(sid)) return;
             std::wstring w;
             UObject* item = item_c(c.resource, w);
@@ -947,7 +980,22 @@ namespace
             }
             m.unl_chk = 0;   // room in cargo: the unload worked, the retry counter restarts
             ActFrame f;
-            if (!act_frame(ship, f)) return;
+            if (!act_frame(ship, f))
+            {
+                // the distance sort needs the ship position: a docked ship is undocked first (guarded), else stop with an error
+                if (ship_docked(ship) && m.sw_undock_n < 2)
+                {
+                    ++m.sw_undock_n;
+                    g_job_res.erase(sid);
+                    mlog(sid, STR("Collect: position unreadable while docked, undocking"));
+                    sw_phase(ship, sid, m, SW_UNDOCK);
+                    return;
+                }
+                m.sweep = false; m.st = MS_HALT; m.err = true;
+                mlog(sid, STR("ERROR: cannot read ship position"));
+                mset(sid, m, STR("ERROR: cannot read ship position"), STR("ERROR: cannot read ship position"));
+                return;
+            }
             std::vector<double> d(m.sw_list.size(), 0.0);
             std::vector<char> done(m.sw_list.size(), 0);
             for (size_t i = 0; i < m.sw_list.size(); ++i)
@@ -960,22 +1008,34 @@ namespace
             const int i = sweep_nearest(d, done);
             if (i < 0)
             {
-                if (m.sw_rescans < SWEEP_RESCANS) { ++m.sw_rescans; sweep_scan(ship, m); return; }
+                if (m.sw_rescans < SWEEP_RESCANS)
+                {
+                    if (m.sw_t < SWEEP_RESCAN_S) return;   // wait before the rescan
+                    ++m.sw_rescans; m.sw_t = 0.0;
+                    sweep_scan(ship, sid, m);
+                    return;
+                }
                 mine_stop_work(ship, sid);
                 m.sweep = false; m.st = MS_HALT;
-                mset(sid, m, STR("Collect done"), STR("Collect done"));
+                if (m.sw_found == 0)
+                {
+                    mset(sid, m, STR("Collect done"), STR("Collect done"));
+                    return;
+                }
+                m.err = true;
+                mset(sid, m, STR("ERROR: ") + std::to_wstring(m.sw_found) + STR(" ore still floating, none reachable"), STR("ERROR: ore still floating, none reachable"));
                 return;
             }
             m.sw_ore = m.sw_list[(size_t)i].a;
             const std::wstring r = move_start(sid, "approach_rock", -1, m.sw_ore, nullptr);
-            if (r == STR("waiting")) m.sw_ph = SW_APPROACH;
+            if (r == STR("waiting")) sw_phase(ship, sid, m, SW_APPROACH);
             else m.sw_list[(size_t)i].done = true;
             return;
         }
         case SW_APPROACH:
         {
             if (mv_active(sid)) return;   // any result: a rock lost here means the tractor already took it
-            m.sw_ph = SW_PULL; m.sw_t = 0.0;
+            sw_phase(ship, sid, m, SW_PULL);
             run_cmd(-1, sid, "tractor_on");
             run_cmd(-1, sid, "laser_off");
             return;
@@ -992,7 +1052,7 @@ namespace
                 for (SwOre& o : m.sw_list) if (o.a == m.sw_ore) o.done = true;
                 if (gone) mlog(sid, STR("Collect: ore picked up"));
                 m.sw_ore = nullptr;
-                m.sw_ph = SW_PICK;
+                sw_phase(ship, sid, m, SW_PICK);
             }
             return;
         }
@@ -1509,13 +1569,19 @@ namespace
         if (!g_compat.ok(F_MINING)) return STR("error: COMPAT: mining disabled");
         MineSt& m = g_mine[sid];
         m.run = false; m.leave = false; m.fin = false; m.btn = true; m.err = false;
-        m.sweep = true; m.sw_ph = SW_UNDOCK; m.sw_rescans = 0; m.sw_back = false; m.sw_nofly = false; m.sw_ore = nullptr; m.unl_chk = 0;
+        m.sweep = true; m.sw_rescans = 0; m.sw_back = false; m.sw_nofly = false; m.sw_ore = nullptr; m.unl_chk = 0;
+        m.sw_undock_n = 0; m.sw_found = -1; m.sw_frame = false;
         m.st = MS_SWEEP; m.t = 0.0;
         mv_cancel(sid);   // a leftover move job of the mining loop must not block the sweep's own moves
         g_job_res.erase(sid);
         run_cmd(-1, sid, "tractor_on");
         run_cmd(-1, sid, "laser_off");
-        if (!ship_docked(ship)) sweep_scan(ship, m);
+        const bool docked = ship_docked(ship);
+        sweep_scan(ship, sid, m);
+        log_line(STR("SWEEP cmd ship=") + std::to_wstring(sid) + STR(" docked=") + (docked ? STR("1") : STR("0")) + STR(" found=") + std::to_wstring(m.sw_found) +
+                 STR(" ok=") + std::to_wstring(m.sw_list.size()) + STR(" frame=") + (m.sw_frame ? STR("1") : STR("0")));
+        mlog(sid, STR("Collect: ") + std::to_wstring(m.sw_list.size()) + STR(" ore found"));
+        sw_phase(ship, sid, m, SW_UNDOCK);
         mset(sid, m, STR("collecting ore"), STR("Collecting ore"));
         mlog(sid, STR("Action: collect ore"));
         return STR("ok");
