@@ -84,6 +84,16 @@ namespace
         return s;
     }
 
+    // WHAT: 1-based place of the ship in the queue of the dock it waits for (0 = not queued).
+    int net_queue_pos(const NetShip& s)
+    {
+        const auto it = g_net_docks.find(s.waits_dock);
+        if (it == g_net_docks.end()) return 0;
+        const auto& q = it->second.queue;
+        const auto f = std::find(q.begin(), q.end(), s.sid);
+        return f == q.end() ? 0 : static_cast<int>(f - q.begin()) + 1;
+    }
+
     // WHAT: dock status for NetDocks.txt: GONE, FULL, WORKING / PARKED (occupant working or parked), RESERVED, FREE.
     const char* net_status_text(const NetDock& d)
     {
@@ -111,7 +121,8 @@ namespace
             const NetShip& s = kv.second;
             sh += std::to_string(s.sid) + "|" + net_purpose_text(s.intent) + "|" + net_join(s.wanted) + "|" + std::to_string(s.waits_dock) + "|" +
                   std::to_string(s.blocked_by) + "|" + std::to_string(net_age(s.wait_since)) + "|" + net_reason_text(s.reason) + "|" +
-                  std::to_string(static_cast<long long>(net_hold_s(s.sid))) + "|" + std::to_string(eff_cfg(s.sid).dock_hold_limit) + "\n";
+                  std::to_string(static_cast<long long>(net_hold_s(s.sid))) + "|" + std::to_string(eff_cfg(s.sid).dock_hold_limit) + "|" +
+                  std::to_string(net_queue_pos(s)) + "\n";
         }
         static std::string last_dk, last_sh, last_busy;
         try
@@ -154,6 +165,16 @@ namespace
         for (auto& kv : g_net_docks)
             if (kv.second.full && g_now - kv.second.full_since >= NET_FULL_S) kv.second.full = false;
         net_reconcile(g_net_docks, g_net_ships, occupant, heading, existing);
+        // dock arrival time: set when the occupant of a dock changes (dwell rule in net_bad_holder)
+        static std::map<int, int> occ_prev;
+        for (auto& kv : g_net_docks)
+        {
+            NetDock& d = kv.second;
+            const auto p = occ_prev.find(kv.first);
+            if (d.occ == 0) d.occ_since = 0;
+            else if (p == occ_prev.end() || p->second != d.occ) d.occ_since = g_now;
+            occ_prev[kv.first] = d.occ;
+        }
         net_grant_tick(g_net_docks, g_net_ships, g_now);
         // log lines (once per change): GRANT when a ship gets a free dock, WAIT when its dock, holder or reason changes
         static std::set<int> granted_seen;

@@ -489,7 +489,8 @@ namespace
     enum Purpose { P_NONE, P_UNLOAD, P_REFUEL, P_UNDOCK_TARGET, P_PICK, P_FLEE };
     enum HolderState { HS_WORKING, HS_PARKED, HS_IDLE };
 
-    struct NetDock { int id = 0; bool exists = true; int occ = 0; int resv = 0; Purpose why = P_NONE; double since = 0; bool full = false; double full_since = 0; std::vector<int> queue; };
+    constexpr double NET_DWELL_S = 20.0;   // a working holder gets this long to unload before a waiter can send it away (s)
+    struct NetDock { int id = 0; bool exists = true; int occ = 0; int resv = 0; Purpose why = P_NONE; double since = 0; bool full = false; double full_since = 0; double occ_since = 0; std::vector<int> queue; };
     struct NetShip { int sid = 0; Purpose intent = P_NONE; std::vector<int> wanted; int waits_dock = 0; int blocked_by = 0; long ticket = 0; double wait_since = 0; NetReason reason = NR_OK; bool granted = false; };
     struct NetVerdict { enum K { GO, WAIT, ERR } k = GO; int dock = 0; int holder = 0; NetReason reason = NR_OK; };
 
@@ -561,7 +562,7 @@ namespace
         net_unqueue(docks, sid);
         for (int d : tg) net_queue_add(docks, ships, d, sid);
         const NetDock& w = docks[tg[0]];
-        const int holder = w.occ != 0 ? w.occ : w.resv;
+        const int holder = w.occ;   // the ship that sits at (or claims) this dock; a waiter is never the holder
         v.reason = open.empty() ? NR_WAIT_FULL : (w.occ != 0 ? NR_WAIT_BUSY : NR_WAIT_QUEUE);
         s.waits_dock = tg[0]; s.blocked_by = holder; s.reason = v.reason;
         v.k = NetVerdict::WAIT; v.dock = tg[0]; v.holder = holder;
@@ -626,11 +627,15 @@ namespace
         for (auto& kv : ships) if (kv.second.waits_dock == 0) kv.second.ticket = 0;
     }
 
-    // WHAT: holder of a dock is bad: someone waits for it and the holder is parked/idle (not working), has no ore of this dock in cargo, or the dock is full.
-    // WHY: only then the holder is sent away (undock). With no waiter nothing is touched.
-    inline bool net_bad_holder(HolderState st, bool has_ore, bool full, int waiters)
+    // WHAT: holder of a dock is bad (send it away) only when a ship waits for it and: the dock is FULL, or the holder is parked (HALT/OFF),
+    //       or after the dwell (docked_s >= NET_DWELL_S) the holder is not working or has no ore of this dock in cargo.
+    // WHY: a holder that is unloading (working, ore still in cargo) is never sent away; a just-docked ship gets its dwell first.
+    inline bool net_bad_holder(HolderState st, bool has_ore, bool full, int waiters, double docked_s)
     {
-        return waiters > 0 && (st != HS_WORKING || !has_ore || full);
+        if (waiters <= 0) return false;
+        if (full || st == HS_PARKED) return true;
+        if (docked_s < NET_DWELL_S) return false;
+        return st != HS_WORKING || !has_ore;
     }
 
     // WHAT: unload stalled: items not all delivered, t >= wait_s, and the ore cargo has not grown for idle_s (idle_s 0 = off). Same rule as refuel_stalled.

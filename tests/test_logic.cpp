@@ -569,7 +569,7 @@ static void t_net_second_dock()
     const NetVerdict v = net_pick(d, s, t, 12, P_UNLOAD, {1, 2}, 0, 0);
     CHECK(v.k == NetVerdict::GO && v.dock == 2 && d[2].resv == 12);
     const NetVerdict f = net_pick(d, s, t, 13, P_PICK, {1}, 2, 0);   // fixed dock 2 is busy now
-    CHECK(f.k == NetVerdict::WAIT && f.dock == 2 && f.holder == 12);
+    CHECK(f.k == NetVerdict::WAIT && f.dock == 2 && f.holder == 0 && f.reason == NR_WAIT_QUEUE);   // holder = occupant only; 12 holds a reservation
 }
 
 static void t_net_fifo()
@@ -637,12 +637,15 @@ static void t_net_full()
 
 static void t_net_bad_holder()
 {
-    CHECK(net_bad_holder(HS_PARKED, true, false, 1));
-    CHECK(!net_bad_holder(HS_PARKED, true, false, 0));
-    CHECK(net_bad_holder(HS_WORKING, false, false, 1));   // empty of this dock's ores
-    CHECK(net_bad_holder(HS_WORKING, true, true, 1));     // dock full
-    CHECK(!net_bad_holder(HS_WORKING, true, false, 1));
-    CHECK(!net_bad_holder(HS_WORKING, false, true, 0));
+    CHECK(net_bad_holder(HS_PARKED, true, false, 1, 0.0));     // parked: no dwell
+    CHECK(!net_bad_holder(HS_PARKED, true, false, 0, 0.0));    // no waiter
+    CHECK(net_bad_holder(HS_WORKING, false, false, 1, 25.0));  // empty of this dock's ores, dwell passed
+    CHECK(net_bad_holder(HS_WORKING, true, true, 1, 0.0));     // dock full: no dwell
+    CHECK(!net_bad_holder(HS_WORKING, true, false, 1, 500.0)); // unloading (ore left): never
+    CHECK(!net_bad_holder(HS_WORKING, false, true, 0, 500.0)); // no waiter
+    CHECK(!net_bad_holder(HS_WORKING, false, false, 1, 5.0));  // empty, but still in the dwell
+    CHECK(!net_bad_holder(HS_WORKING, false, false, 1, NET_DWELL_S - 0.5));
+    CHECK(net_bad_holder(HS_PARKED, false, false, 1, 0.0));    // halted and empty
 }
 
 static void t_unload_stalled()

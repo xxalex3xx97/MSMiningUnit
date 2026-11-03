@@ -1669,12 +1669,13 @@ namespace
         return m.st == MS_HOLD ? m.t : 0.0;
     }
 
-    // WHAT: mb_net.hpp hook. The ship counts as working when it has a dock job or its loop runs (not off/halted). Else it is parked.
+    // WHAT: mb_net.hpp hook. Working = a dock job runs, or the ship is in any state but OFF/HALT (loop, button trip, hold, undock, sweep).
+    //       Parked = OFF/HALT (switched off, queue done, error, trip ended). Not tied to m.run: button and Unload ships run with run=false.
     bool net_holder_working(int sid)
     {
         if (job_running(sid)) return true;
         const MineSt& m = g_mine[sid];
-        return m.run && m.st != MS_OFF && m.st != MS_HALT;
+        return m.st != MS_OFF && m.st != MS_HALT;
     }
 
     // WHAT: MiningLog.txt, one line per Log tab entry: "<ship id>|<hh:mm:ss>|<text>", ships in bench order, oldest first. Written only when changed.
@@ -1868,7 +1869,7 @@ namespace
                 if (alive(it) && inv_total(ship, it) > 0) has_ore = true;
             }
             const HolderState st = net_holder_working(h) ? HS_WORKING : HS_PARKED;
-            if (!net_bad_holder(st, has_ore, d.full, static_cast<int>(d.queue.size()))) continue;
+            if (!net_bad_holder(st, has_ore, d.full, static_cast<int>(d.queue.size()), g_now - d.occ_since)) continue;
             const std::wstring ur = job_start(h, "undock", -1);
             if (undock_failed(ur))
             {
