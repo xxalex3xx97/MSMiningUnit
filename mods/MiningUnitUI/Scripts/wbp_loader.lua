@@ -915,6 +915,7 @@ local OPS = {
   { w = "Edt_IdleSeconds", k = "idle_seconds", sc = "ship", kind = "int", msg = "idle seconds must be an integer >= 0" },
   { w = "Edt_WaitSeconds", k = "wait_seconds", sc = "global", kind = "int", def = "10", msg = "wait must be an integer >= 0" },
   { w = "Edt_DockHoldLimit", k = "dock_hold_limit", sc = "ship", kind = "int", def = "300", msg = "dock time limit must be an integer >= 0" },
+  { w = "Edt_WarpTripKm", k = "warp_trip_km", sc = "ship", kind = "int", def = "5", msg = "warp trip distance must be an integer >= 0" },
   { w = "Chk_Enabled", k = "enabled", sc = "ship", kind = "chk", def = "1" },
   { w = "Chk_Repeat", k = "repeat", sc = "ship", kind = "chk", def = "0" },
 }
