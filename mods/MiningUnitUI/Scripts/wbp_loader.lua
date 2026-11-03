@@ -9,9 +9,7 @@ local function ok(o) if o == nil or type(o) ~= "userdata" then return false end 
 local function rd(o, p) local s, v = pcall(function() return o[p] end) if s then return v end return nil end
 local function inVp(o) local s, v = pcall(function() return o:IsInViewport() end) return s and v == true end
 local function try(tag, f, ...) local s, r = pcall(f, ...) if not s then L("FAIL " .. tag .. ": " .. tostring(r)) end return s end
-local USE_SLOT_SETTERS = false
 local function nm(o, cls) if not ok(o) then return "invalid" end local s, r = pcall(function() if cls then return o:GetClass():GetFName():ToString() end return o:GetFName():ToString() end) return s and tostring(r) or "?" end
-local function v2(v) if type(v) ~= "userdata" then return tostring(v) end return tostring(rd(v, "X")) .. "x" .. tostring(rd(v, "Y")) end
 
 local LIB = "/Script/UMG.Default__WidgetBlueprintLibrary"
 local LIB_LAYOUT = "/Script/UMG.Default__WidgetLayoutLibrary"
@@ -116,14 +114,13 @@ end
 local WALK_NAMES = { Btn_TabDocks = true, Txt_TabDocks = true, Pnl_PageDocks = true, Txt_DocksHdr = true, Row_DocksScroll = true,
   Dyn_Docks = true, Btn_Collect = true, Txt_Collect = true }
 local WALK_NODES = 1500   -- hard cap of one index walk
--- ONE bounded walk per window open (S.wc = name -> widget for WALK_NAMES). Stops early when all are found. Logs time + nodes;
--- when a name is missing, also logs the Dock/Tab/Page widget names (max 40 lines) once.
+-- ONE bounded walk per window open (S.wc = name -> widget for WALK_NAMES). Stops early when all are found. Logs time + nodes.
 local function buildIndex()
   local t0 = os.clock()
   S.wc, S.wbuilt = {}, true
   local root = rootW()
   if not root then L("WBP index: no root"); return end
-  local nWant, found, nodes, maxd, diag = 0, 0, 0, 0, {}
+  local nWant, found, nodes, maxd = 0, 0, 0, 0
   for _ in pairs(WALK_NAMES) do nWant = nWant + 1 end
   local function rec(o, d)
     if d > maxd then maxd = d end
@@ -131,9 +128,6 @@ local function buildIndex()
     nodes = nodes + 1
     local nmv = nm(o)
     if WALK_NAMES[nmv] and S.wc[nmv] == nil then S.wc[nmv] = o; found = found + 1 end
-    if #diag < 40 and (nmv:find("Dock") or nmv:find("Tab") or nmv:find("Page")) then
-      diag[#diag + 1] = string.rep(" ", d) .. nmv .. " [" .. nm(o, true) .. "]"
-    end
     local s, c = pcall(function() return o:GetChildrenCount() end)
     if s and type(c) == "number" and c > 0 then
       for i = 0, c - 1 do
@@ -147,9 +141,6 @@ local function buildIndex()
   end
   rec(root, 0)
   L(string.format("WBP index walk ms=%.1f nodes=%d maxdepth=%d found=%d/%d", (os.clock() - t0) * 1000, nodes, maxd, found, nWant))
-  if found < nWant then
-    for _, l in ipairs(diag) do L("DIAG " .. l) end
-  end
 end
 local function w(name)
   if not ok(S.w) then return nil end
@@ -162,33 +153,6 @@ local function w(name)
   if s3 and ok(f) then return f end
   if not S.wbuilt then buildIndex() end
   return S.wc[name]
-end
-
--- walk the real widget tree from RootWidget (GetChildrenCount/GetChildAt are UFUNCTIONs on panels)
-local function walk(o, depth, out)
-  if depth > 6 or #out >= 60 then return end
-  out[#out + 1] = string.rep(" ", depth) .. nm(o) .. " [" .. nm(o, true) .. "]"
-  local s, c = pcall(function() return o:GetChildrenCount() end)
-  if s and type(c) == "number" then
-    for i = 0, c - 1 do
-      local s2, ch = pcall(function() return o:GetChildAt(i) end)
-      if s2 and ok(ch) then walk(ch, depth + 1, out) end
-    end
-  end
-end
-
-local function dumpTree()
-  L("instance " .. nm(S.w) .. " [" .. nm(S.w, true) .. "] class=" .. nm(S.w, true))
-  local tree = rd(S.w, "WidgetTree")
-  L("WidgetTree valid=" .. tostring(ok(tree)))
-  if not ok(tree) then return end
-  local root = rd(tree, "RootWidget")
-  L("RootWidget valid=" .. tostring(ok(root)))
-  if not ok(root) then return end
-  local out = {}
-  walk(root, 0, out)
-  L("tree (" .. #out .. " shown):")
-  for _, line in ipairs(out) do L(line) end
 end
 
 -- SetText(FText) on the real TextBlock; fallback .Text property; log widget class if both fail
@@ -226,8 +190,6 @@ M.DATA = SRC and (SRC .. "../../MiningBenchMod/dlls/") or "ue4ss/Mods/MiningBenc
 -- UMG linear = (sRGB channel / 255) ^ 2.2
 local function lin(c) return (c / 255) ^ 2.2 end
 local function rgb(r, g, b) return { R = lin(r), G = lin(g), B = lin(b), A = 1.0 } end
-local BTN_GREEN = rgb(0x42, 0xDA, 0x41)  -- Start button when loop running
-local BTN_RED = rgb(0x9C, 0x22, 0x22)    -- Stop button when loop stopped
 local BTN_NORMAL = rgb(0x4A, 0x4A, 0x4A)
 local BTN_AMBER = rgb(0xE6, 0x9A, 0x00)
 local WARN_YEL = rgb(0xF2, 0xD2, 0x1E)     -- Txt_ShipWarn + Txt_StatusAction tint when a loaded ore has no unload dock
@@ -1459,7 +1421,7 @@ function M.close()
   S.pend, S.arm, S.estop, S.etaS, S.etaKind = nil, nil, nil, nil, nil
   S.req, S.simple = nil, nil
   S.fleet, S.holoOut, S.tc = nil, nil, nil
-  S.ud, S.rd, S.warn, S.dyn, S.dynDiag, S.dynWarn = nil, nil, nil, nil, nil, nil
+  S.ud, S.rd, S.warn, S.dyn, S.dynWarn = nil, nil, nil, nil, nil
   if not (S.root or S.p or S.frame) then return end
   local root, p = S.root, S.p
   S.root, S.p, S.w, S.frame = nil, nil, nil, nil
