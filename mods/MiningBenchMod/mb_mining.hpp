@@ -494,6 +494,45 @@ namespace
                 std::wstring h;
                 for (const auto& kv : hist) h += kv.first + STR("=") + std::to_wstring(kv.second) + STR(" ");
                 log_line(STR("ROCKSCAN items ship=") + std::to_wstring(sid) + STR(" ") + h);
+                {   // PROBE (once a minute): save objects whose ResourceItems holds the wanted ore, vs how many have a live actor in the list
+                    static ULONGLONG last_probe = 0;
+                    const ULONGLONG nowp = GetTickCount64();
+                    if (alive(item) && nowp - last_probe >= 60000)
+                    {
+                        last_probe = nowp;
+                        std::vector<UObject*> saves;
+                        UObjectGlobals::FindAllOf(STR("SmallResourceAsteroidObject"), saves);
+                        int tot = 0, ore = 0, ore_alive = 0, ore_listed = 0, ore_actor = 0, ore_same_sys = 0;
+                        int sys0 = 0; int64_t ch0[3] = {0, 0, 0};
+                        const bool have_ship = ship_pos(ship, sys0, ch0);
+                        int64_t best_cheb = -1;
+                        for (UObject* o2 : saves)
+                        {
+                            if (!alive(o2)) continue;
+                            ++tot;
+                            auto* arr = o2->GetValuePtrByPropertyNameInChain<TArray<UObject*>>(STR("ResourceItems"));
+                            bool has = false;
+                            for (int32_t i = 0; arr && i < arr->Num(); ++i) if ((*arr)[i] == item) has = true;
+                            if (!has) continue;
+                            ++ore;
+                            bool al = true; get_bool_prop(o2, STR("bAlive"), al);
+                            if (al) ++ore_alive;
+                            if (g_rock_by_id.count(obj_id(o2))) ++ore_listed;
+                            if (alive(get_obj_prop(o2, STR("Actor")))) ++ore_actor;
+                            int64_t c2[3] = {0, 0, 0};
+                            if (have_ship && sys_id(o2) == sys0 && get_chunk(o2, c2)) { ++ore_same_sys; const int64_t d = std::max({std::llabs(c2[0] - ch0[0]), std::llabs(c2[1] - ch0[1]), std::llabs(c2[2] - ch0[2])}); if (best_cheb < 0 || d < best_cheb) best_cheb = d; }
+                        }
+                        std::wstring cc;   // live actors per asteroid actor class name
+                        for (const TCHAR* cn : {STR("BP_SmallAsteroid_Silica_C"), STR("BP_LargeAsteroid_Silica_02_C"), STR("BP_LargeAsteroid_Titanium_02_C"), STR("BP_SmallAsteroid_Titanium_C"), STR("BP_ResourceAsteroid_C"), STR("BP_ResourceAsteroid_02_C"), STR("BP_ResourceAsteroid_03_C"), STR("BP_GenericResourceAsteroid_C"), STR("BP_Asteroid_C")})
+                        {
+                            std::vector<UObject*> v; UObjectGlobals::FindAllOf(cn, v);
+                            int n = 0; for (UObject* x : v) if (alive(x)) ++n;
+                            cc += std::wstring(cn) + STR("=") + std::to_wstring(n) + STR(" ");
+                        }
+                        log_line(STR("ROCKSCAN classes ") + cc);
+                        log_line(STR("ROCKSCAN probe saves=") + std::to_wstring(tot) + STR(" with_wanted_ore=") + std::to_wstring(ore) + STR(" alive=") + std::to_wstring(ore_alive) + STR(" has_actor_in_list=") + std::to_wstring(ore_listed) + STR(" actor_loaded=") + std::to_wstring(ore_actor) + STR(" same_system=") + std::to_wstring(ore_same_sys) + STR(" nearest_chunks=") + std::to_wstring(best_cheb));
+                    }
+                }
             }
             m.st = MS_OFF; m.chk_t = 0.0; mset(sid, m, STR("nothing in range")); return;   // Update 15: do not undock
         }

@@ -65,11 +65,14 @@ namespace
 
     // WHAT: engine delete notifications. A freed UObject is queued here (any thread) and removed from every shared rock container on the next drain (game thread).
     // WHY: the rock lists are shared by all ships; instead of re-scanning to find out which rocks died, the engine tells us the moment one is destroyed.
-    std::mutex g_dead_mx;
-    std::unordered_set<const void*> g_dead;
+    // WHY heap + never freed: the engine keeps calling the listener while the game shuts down, after this DLL's statics are destroyed (crash on game close).
+    struct RockDeadState { std::mutex mx; std::unordered_set<const void*> dead; };
+    struct RockDeleteListener;
+    RockDeleteListener* g_rock_listener = nullptr;
+    RockDeadState& dead_state() { static RockDeadState* s = new RockDeadState; return *s; }
     struct RockDeleteListener : FUObjectDeleteListener
     {
-        void NotifyUObjectDeleted(const UObjectBase* o, int32_t) override { std::lock_guard<std::mutex> l(g_dead_mx); g_dead.insert(o); }
+        void NotifyUObjectDeleted(const UObjectBase* o, int32_t) override { RockDeadState& d = dead_state(); std::lock_guard<std::mutex> l(d.mx); d.dead.insert(o); }
         void OnUObjectArrayShutdown() override {}
     };
 
@@ -207,14 +210,20 @@ namespace
 
     // ---------------- list refresh ----------------
 
+    // WHAT: unregisters the delete listener. Called from the mod destructor: the listener's code lives in this DLL, which is unloaded at game exit (crash if the engine still calls it).
+    void rock_listener_release()
+    {
+        if (!g_rock_listener) return;
+        UObjectArray::RemoveUObjectDeleteListener(g_rock_listener);
+        g_rock_listener = nullptr;   // not deleted: the engine may be iterating its listener list right now; a tiny one-off leak at exit is safe
+    }
+
     // WHAT: removes every destroyed actor (queued by RockDeleteListener) from the shared rock containers. First call registers the listener.
     void rock_drain_dead()
     {
-        static RockDeleteListener lst;
-        static bool reg = false;
-        if (!reg) { reg = true; UObjectArray::AddUObjectDeleteListener(&lst); }
+        if (!g_rock_listener) { g_rock_listener = new RockDeleteListener; UObjectArray::AddUObjectDeleteListener(g_rock_listener); }
         std::unordered_set<const void*> dead;
-        { std::lock_guard<std::mutex> l(g_dead_mx); if (g_dead.empty()) return; dead.swap(g_dead); }
+        { RockDeadState& d = dead_state(); std::lock_guard<std::mutex> l(d.mx); if (d.dead.empty()) return; dead.swap(d.dead); }
         auto gone = [&](UObject* a) { return dead.count(a) != 0; };
         g_rock_actors.erase(std::remove_if(g_rock_actors.begin(), g_rock_actors.end(), gone), g_rock_actors.end());
         g_fb_list.erase(std::remove_if(g_fb_list.begin(), g_fb_list.end(), gone), g_fb_list.end());
