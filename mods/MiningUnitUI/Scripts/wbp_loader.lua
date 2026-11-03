@@ -106,6 +106,38 @@ end
 -- widget by name: GetWidgetFromName first, then the is-variable UProperty on the instance, then a tree walk from Root
 -- WHY: python-built widgets (add_docks_tab.py, add_btn_collect.py) are not Is Variable, so the first two miss them. Walk result cached per window (S.wc, reset on open).
 local deepFind -- defined with the dynamic list helpers below
+-- the real root of the window's own tree (not a named widget: GetWidgetFromName("Root") is not reliable for the paste tree)
+local function rootW()
+  if not ok(S.w) then return nil end
+  local s, r = pcall(function() return S.w.WidgetTree.RootWidget end)
+  return (s and ok(r)) and r or nil
+end
+-- DIAG (once per window open, from w()): names + classes of Dock/Tab/Page/Switch widgets with depth, max depth reached
+local function diagDump(root)
+  local lines, maxd, n = {}, 0, 0
+  local function rec(o, d)
+    if d > maxd then maxd = d end
+    if d > 48 or n > 3000 then return end
+    n = n + 1
+    local nmv = nm(o)
+    if nmv:find("Dock") or nmv:find("Tab") or nmv:find("Page") or nmv:find("Switch") or nmv == "Root" then
+      if #lines < 80 then lines[#lines + 1] = string.rep(" ", d) .. nmv .. " [" .. nm(o, true) .. "]" end
+    end
+    local s, c = pcall(function() return o:GetChildrenCount() end)
+    if s and type(c) == "number" and c > 0 then
+      for i = 0, c - 1 do
+        local s2, ch = pcall(function() return o:GetChildAt(i) end)
+        if s2 and ok(ch) then rec(ch, d + 1) end
+      end
+    else
+      local s3, ct = pcall(function() return o:GetContent() end)
+      if s3 and ok(ct) then rec(ct, d + 1) end
+    end
+  end
+  rec(root, 0)
+  L("DIAG widget tree: nodes=" .. n .. " maxdepth=" .. maxd .. " matching=" .. #lines)
+  for _, l in ipairs(lines) do L("DIAG " .. l) end
+end
 local function w(name)
   if not ok(S.w) then return nil end
   local s, x = pcall(function() return S.w:GetWidgetFromName(FName(name)) end)
@@ -115,9 +147,13 @@ local function w(name)
   S.wc = S.wc or {}
   local c = S.wc[name]
   if c == nil then
-    local s3, root = pcall(function() return S.w:GetWidgetFromName(FName("Root")) end)
-    c = (s3 and ok(root) and deepFind(root, name)) or false
+    local root = rootW()
+    c = (root and deepFind(root, name)) or false
     S.wc[name] = c
+    if not c and root and not S.diagged and (name == "Row_DocksScroll" or name == "Btn_TabDocks") then
+      S.diagged = true
+      diagDump(root)
+    end
   end
   return c or nil
 end
@@ -648,7 +684,7 @@ end
 -- paint(e, find, i) for every row on every call. Entries live in S.dyn[key].ents[i] = { w = entry, find = fn(name) }.
 function deepFind(node, name, depth)   -- assigns the forward-declared local above
   depth = depth or 0
-  if depth > 16 or not ok(node) then return nil end
+  if depth > 48 or not ok(node) then return nil end
   if nm(node) == name then return node end
   local okc, cnt = pcall(function() return node:GetChildrenCount() end)
   if okc and type(cnt) == "number" then
@@ -1706,7 +1742,7 @@ function M.open(ship)
     S.mode, S.t0 = mode, os.clock()
     S.logKey = nil   -- new widgets: repaint the Log tab on the first tick
     S.docksKey = nil
-    S.wc = nil   -- new window: walk-found widgets are looked up again
+    S.wc, S.diagged = nil, nil   -- new window: walk-found widgets are looked up again; DIAG dump allowed once more
     -- ship list = bench ships; sid = block's ship if listed, else last picked (F4), else first; empty list = nil
     local list = benchShips()
     local function inList(id) for _, o in ipairs(list) do if o.id == id then return true end end return false end
