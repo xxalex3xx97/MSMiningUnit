@@ -181,7 +181,7 @@ namespace
             for (int i = 0; i < N_ORE; ++i) if (in_cargo[i] && !has_docks[i]) { v.reason = NR_NOT_CONFIGURED; subject = ORE_KEY[i]; break; }
             return v;
         }
-        const NetVerdict v = net_pick(g_net_docks, g_net_ships, g_net_ticket, sid, P_UNLOAD, cands, 0, g_now);
+        const NetVerdict v = net_pick(g_net_docks, g_net_ships, g_net_ticket, sid, g_flee_pick.count(sid) ? P_FLEE : P_UNLOAD, cands, 0, g_now);
         if (v.k == NetVerdict::ERR) { subject = std::to_string(cands.front()); return v; }
         // ores unloaded at the chosen dock: cargo ores first, then (picker dock only) the other ores that list it
         std::vector<int> pool;
@@ -197,6 +197,12 @@ namespace
     {
         const std::wstring t = widen(net_ship_text(v.reason, subject, std::string(), 0.0, 0, 0));
         return v.reason == NR_NOTHING_TO_UNLOAD ? STR("nothing to unload") : STR("error: ") + t;
+    }
+
+    // WHAT: a job_start result that is a real dock error (NOT_CONFIGURED / DOCK_GONE): red ERROR in the trip, not a plain failure.
+    bool net_real_error(const std::wstring& r)
+    {
+        return r.find(STR("No unload dock configured")) != std::wstring::npos || r.find(STR("no longer exists")) != std::wstring::npos;
     }
 
     // WHAT: true when a dock job runs for ship sid.

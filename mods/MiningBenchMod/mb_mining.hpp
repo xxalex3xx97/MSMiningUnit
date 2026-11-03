@@ -72,9 +72,9 @@ namespace
         double clog_t = 30.0;                  // seconds since the last "MINE cargo" debug line (first sample logs)
         int64_t eta_left = -1;                 // items still to move while MS_HOLD; -1 = unknown / not holding
         double prog_t = 0.0;                   // seconds mining since the last "Mined" log line
-        bool dwait = false, err = false;       // dwait: waiting for a busy dock (retry with backoff) / err: stopped by an error (red ERROR)
-        double dwait_t = 0.0;                  // seconds since the last dock retry
-        int dwait_n = 0;                       // dock retries so far (backoff step)
+        bool dwait = false, err = false;       // dwait: waiting for a dock (queued in the dock network) / err: stopped by an error (red ERROR)
+        double dwait_t = 0.0;                  // seconds since the last safety retry (60 s)
+        double dwait_shown = -1.0;             // dwait: the second the wait text was last written (-1 = write now)
         int dl_n = 0;                          // dock time limit: undock/wait/redock rounds used (reset on normal finish, STOP ALL, Start)
         double dl_wait_t = 0.0;                // MS_DLWAIT: seconds waited after the undock
         bool btn = false;                      // trip started by a Dock/Unload/Refuel button: m.leave is set on purpose, must not abort the dock wait
@@ -418,6 +418,7 @@ namespace
     void cancel_dock_job(UObject* ship, int sid)
     {
         warp_cancel(sid);   // a warp waiting for this undock / aiming is cancelled too (a charging one finishes)
+        net_leave(sid);     // a new dock pick follows: the old queue place and reservation go
         g_unl_ores.erase(sid);
         bool any = false;
         for (size_t i = 0; i < g_jobs.size();)
@@ -434,6 +435,63 @@ namespace
         zero_all(ship);
     }
 
+    // WHAT: wait text of a ship queued for a dock (dock network verdict + elapsed time). A flee shows "Fleeing: waiting for dock".
+    std::wstring net_wait_text(int sid, bool fleeing)
+    {
+        const auto it = g_net_ships.find(sid);
+        if (it == g_net_ships.end() || it->second.waits_dock == 0) return STR("Waiting for dock");
+        const NetShip& s = it->second;
+        if (fleeing && (s.reason == NR_WAIT_BUSY || s.reason == NR_WAIT_QUEUE)) return STR("Fleeing: waiting for dock");
+        int qpos = 0, qn = 0;
+        const auto dit = g_net_docks.find(s.waits_dock);
+        if (dit != g_net_docks.end())
+        {
+            qn = static_cast<int>(dit->second.queue.size());
+            for (size_t i = 0; i < dit->second.queue.size(); ++i) if (dit->second.queue[i] == sid) qpos = static_cast<int>(i) + 1;
+        }
+        return widen(net_ship_text(s.reason, std::to_string(s.waits_dock), s.blocked_by ? std::to_string(s.blocked_by) : std::string(),
+                                   g_now - s.wait_since, qpos, qn));
+    }
+
+    // WHAT: writes the wait text of a queued dock trip (status + shown text).
+    void dock_wait_text(int sid, MineSt& m)
+    {
+        const std::wstring t = net_wait_text(sid, g_flee_pick.count(sid) != 0);
+        mset(sid, m, t, t);
+    }
+
+    // WHAT: dock id the ship is docked at (DockID, else the Dock object). 0 = none.
+    int dock_of(UObject* ship)
+    {
+        int32_t did = 0;
+        get_int_prop(ship, STR("DockID"), did);
+        if (did <= 0) { UObject* d = get_obj_prop(ship, STR("Dock")); if (alive(d)) did = obj_id(d); }
+        return did > 0 ? did : 0;
+    }
+
+    // WHAT: the ore cargo of the dock trip shrank at this dock: it takes ore, so the FULL mark goes.
+    void net_full_clear(int did)
+    {
+        const auto it = g_net_docks.find(did);
+        if (it != g_net_docks.end()) it->second.full = false;
+    }
+
+    // WHAT: MS_HOLD unload stalled (ore cargo not shrinking for idle_seconds): mark the dock FULL, undock at once (no 30 s wait), then the
+    //       trip re-picks: the FULL dock is skipped, the next dock of the ore's list is used (net_pick).
+    void dock_full_leave(UObject* ship, int sid, MineSt& m)
+    {
+        const int did = dock_of(ship);
+        if (did > 0) { NetDock& nd = g_net_docks[did]; nd.id = did; nd.full = true; nd.full_since = g_now; }
+        mlog(sid, STR("Dock ") + std::to_wstring(did) + STR(" is full, undocking to try the next dock"));
+        log_line(STR("NET dock=") + std::to_wstring(did) + STR(" FULL by=") + std::to_wstring(sid));
+        cancel_dock_job(ship, sid);
+        g_job_res.erase(sid);
+        const std::wstring ur = job_start(sid, "undock", -1);
+        if (undock_failed(ur)) { m.st = MS_HALT; m.err = true; mset(sid, m, STR("ERROR: undock failed: ") + ur, STR("ERROR: undock failed: ") + ur); return; }
+        m.st = MS_DLWAIT; m.dl_wait_t = MINE_DOCK_RETRY_WAIT_S; m.left_last.clear();   // MS_DLWAIT: undock finishes, then the dock trip runs again at once
+        mset(sid, m, STR("Dock full, undocking to try the next dock"), STR("Dock full, next dock"));
+    }
+
     // start a dock trip chosen by the auto rule. Failure -> HALT with the reason.
     void trip_begin(UObject* ship, int sid, MineSt& m, const std::wstring& why, const std::string& force = "")
     {
@@ -447,8 +505,11 @@ namespace
         const std::wstring r = job_start(sid, m.trip, -1);
         m.t = 0.0; m.seek_started = false; m.no_rock = false;
         m.err = false; m.dwait = false; m.warp_to = 0;
-        if (r == STR("waiting dock")) { m.st = MS_TRIP; m.dwait = true; m.dwait_t = 0.0; m.dwait_n = 0; mset(sid, m, STR("Waiting for dock"), STR("Waiting for dock")); return; }
-        if (r != STR("waiting")) { m.st = MS_HALT; mset(sid, m, STR("dock trip failed: ") + r); return; }
+        if (r == STR("waiting dock")) { m.st = MS_TRIP; m.dwait = true; m.dwait_t = 0.0; m.dwait_shown = -1.0; dock_wait_text(sid, m); return; }
+        if (r == STR("nothing to unload")) { g_flee_pick.erase(sid); m.st = MS_HALT; mset(sid, m, STR("Nothing to unload")); return; }
+        if (net_real_error(r)) { g_flee_pick.erase(sid); m.st = MS_HALT; m.err = true; mset(sid, m, STR("ERROR: ") + r.substr(7), STR("ERROR: ") + r.substr(7)); return; }
+        if (r != STR("waiting")) { g_flee_pick.erase(sid); m.st = MS_HALT; mset(sid, m, STR("dock trip failed: ") + r); return; }
+        g_flee_pick.erase(sid);   // the flee pick is used up once its job runs
         m.st = MS_TRIP;
         const std::wstring shown = is_refuel(m) ? STR("Refueling: ") + w : STR("Docking to unload: ") + why;
         mset(sid, m, STR("going to ") + std::wstring(is_refuel(m) ? STR("refuel dock") : STR("mining dock")) + STR(" (") + why + STR("; ") + w + STR(")"), shown);
@@ -585,6 +646,7 @@ namespace
         mine_stop_work(ship, sid);
         m.flee = true; m.leave = false;
         mlog(sid, STR("ERROR: hull hit (") + std::to_wstring(was) + STR(" -> ") + std::to_wstring(h) + STR("), fleeing to dock"));
+        g_flee_pick.insert(sid);   // dock pick purpose P_FLEE (mb_net.hpp)
         trip_begin(ship, sid, m, STR("hull hit ") + std::to_wstring(was) + STR(" -> ") + std::to_wstring(h), "dock_mining");
         if (m.st == MS_HALT) { m.err = true; m.flee = false; }
     }
@@ -1180,18 +1242,28 @@ namespace
     // WHAT: MS_TRIP: dock trip (dock busy retry backoff, job result).
     void st_trip(UObject* ship, int sid, MineSt& m, double dt, const Config& c)
     {
-        // dock busy: no job runs; retry the same dock with backoff 2,5,10,20,40,60 s (repeats at 60 s) until it frees up
+        // dock busy: no job runs; the ship waits in the dock queue (mb_net.hpp). The grant starts the job; a 60 s poll is the safety net.
         if (m.dwait)
         {
-            if (m.leave && !m.btn) { m.dwait = false; m.st = MS_HALT; mset(sid, m, STR("stopped while waiting for dock")); return; }
+            if (m.leave && !m.btn) { net_leave(sid); m.dwait = false; m.st = MS_HALT; mset(sid, m, STR("stopped while waiting for dock")); return; }
             m.dwait_t += dt;
-            if (m.dwait_t < dock_backoff_s(m.dwait_n)) return;
-            m.dwait_t = 0.0; ++m.dwait_n;
+            const auto gi = g_net_ships.find(sid);
+            const bool granted = gi != g_net_ships.end() && gi->second.granted;
+            if (!granted && m.dwait_t < 60.0)
+            {
+                // wait text once a second: dock, holder, queue place, elapsed time
+                if (m.dwait_shown < 0.0 || m.dwait_t - m.dwait_shown >= 1.0) { m.dwait_shown = m.dwait_t; dock_wait_text(sid, m); }
+                return;
+            }
+            m.dwait_t = 0.0; m.dwait_shown = -1.0;
             g_job_res.erase(sid);
             const std::wstring r = job_start(sid, m.trip, -1);
-            if (r == STR("waiting dock")) return;
+            if (r == STR("waiting dock")) { dock_wait_text(sid, m); return; }
             m.dwait = false;
-            if (r != STR("waiting")) { m.st = MS_HALT; mset(sid, m, STR("dock trip failed: ") + r); return; }
+            if (r == STR("nothing to unload")) { g_flee_pick.erase(sid); m.st = MS_HALT; mset(sid, m, STR("Nothing to unload")); return; }
+            if (net_real_error(r)) { g_flee_pick.erase(sid); m.st = MS_HALT; m.err = true; mset(sid, m, STR("ERROR: ") + r.substr(7), STR("ERROR: ") + r.substr(7)); return; }
+            if (r != STR("waiting")) { g_flee_pick.erase(sid); m.st = MS_HALT; mset(sid, m, STR("dock trip failed: ") + r); return; }
+            g_flee_pick.erase(sid);
             mset(sid, m, STR("dock free, going to dock"), STR("Dock free, going"));
             return;
         }
@@ -1204,8 +1276,8 @@ namespace
             std::wstring e;
             set_autopilot(sid, false, e);
             zero_all(ship);
-            m.dwait = true; m.dwait_t = 0.0; m.dwait_n = 0;
-            mset(sid, m, STR("Waiting for dock"), STR("Waiting for dock"));
+            m.dwait = true; m.dwait_t = 60.0; m.dwait_shown = -1.0;   // 60 s = the next tick asks the dock network again (joins the queue)
+            dock_wait_text(sid, m);
             return;
         }
         if (ok_res(r)) { m.st = MS_HOLD; m.t = 0.0; m.hold_idle = 0.0; m.hold_last = -1; m.chk_t = MINE_HOLD_CHECK_S; m.hold_seen = false; m.left_last.clear(); mset(sid, m, STR("docked, waiting for orders to finish"), is_refuel(m) ? STR("Docked, refueling") : STR("Docked, unloading")); }
@@ -1249,14 +1321,21 @@ namespace
         }
         else
         {
+            int64_t sum = 0;   // ore of this trip still in cargo
             for (int i = 0; i < N_ORE; ++i)
             {
                 if (!unl_ore(sid, i, c)) continue;
                 std::wstring w;
                 UObject* it = item_c(ORE_ITEM[i], w);
                 const int64_t have = alive(it) ? inv_total(ship, it) : -1;
-                if (have > 0) { done = false; left += widen(ORE_KEY[i]) + STR(" ") + i64w(have) + STR(" "); }
+                if (have > 0) { done = false; sum += have; left += widen(ORE_KEY[i]) + STR(" ") + i64w(have) + STR(" "); }
             }
+            // stall: the ore cargo not shrinking (idle_seconds after wait_seconds, 0 = off) -> dock full. A shrink proves the dock takes ore.
+            const bool shrank = m.hold_last >= 0 && sum < m.hold_last;
+            if (shrank) { m.hold_idle = 0.0; net_full_clear(dock_of(ship)); }
+            else if (m.hold_last >= 0) m.hold_idle += MINE_HOLD_CHECK_S;
+            m.hold_last = sum;
+            if (unload_stalled(done, c.idle_seconds, m.t, c.wait_seconds, m.hold_idle)) { dock_full_leave(ship, sid, m); return; }
         }
         // dock time limit (not an error): items still left after dock_hold_limit s -> undock, wait MINE_DOCK_RETRY_WAIT_S, dock again (same trip).
         // After MINE_DOCK_RETRIES rounds the next limit hit undocks and goes idle. 0 = no limit.
@@ -1333,7 +1412,7 @@ namespace
     {
         if (!g_compat.ok(F_MINING) && m.run) { m.st = MS_HALT; m.run = false; m.result = STR("COMPAT: mining disabled"); return; }
         UObject* ship = find_by_id(STR("DMSPlayerShipObject"), sid);
-        if (!alive(ship)) { chunk_hold_release(sid); m.st = MS_OFF; mset(sid, m, STR("ship not found")); return; }
+        if (!alive(ship)) { chunk_hold_release(sid); net_leave(sid); m.st = MS_OFF; mset(sid, m, STR("ship not found")); return; }
         const Config c = eff_cfg(sid);
         const bool on = m.run && g_cfg.enabled == 1 && c.enabled == 1;
         m.t += dt;
@@ -1635,6 +1714,8 @@ namespace
     {
         warp_cancel(sid);   // before the early return: ships without a MineSt too
         chunk_hold_release(sid);
+        net_leave(sid);     // leaves the dock queue (STOP ALL on a waiter)
+        g_flee_pick.erase(sid);
         auto it = g_mine.find(sid);
         if (it == g_mine.end()) return;
         it->second.btn = false;
@@ -1656,6 +1737,7 @@ namespace
         MineSt& m = g_mine[sid];
         if (start)   // stopping is always allowed
         {
+            net_leave(sid);   // a new loop starts with no old queue place
             if (!g_compat.done) return STR("error: COMPAT self-test pending, try again in a few seconds");
             if (!g_compat.ok(F_MINING))
             {
@@ -1751,6 +1833,54 @@ namespace
         return r;
     }
 
+    // WHAT: once a second, after net_tick: a docked holder that blocks a waiter is sent away when net_bad_holder says so (parked/idle, no ore of
+    //       this dock in cargo, or the dock is full): undock job, status "Leaving dock". The waiter keeps its queue place.
+    //       No second dock to leave to: waiters show NR_WAIT_PARKED. Holder not a bench ship: waiters show NR_WAIT_UNMANAGED (log once a minute).
+    void net_holder_orders()
+    {
+        static std::map<int, double> unmanaged_log;   // holder id -> time of its last log line
+        for (auto& kv : g_net_docks)
+        {
+            NetDock& d = kv.second;
+            if (!d.exists || d.occ == 0 || d.queue.empty()) continue;
+            const int h = d.occ;
+            if (std::find(g_bench_ids.begin(), g_bench_ids.end(), h) == g_bench_ids.end())
+            {
+                for (int q : d.queue) { auto it = g_net_ships.find(q); if (it != g_net_ships.end()) { it->second.reason = NR_WAIT_UNMANAGED; it->second.blocked_by = h; } }
+                const auto ul = unmanaged_log.find(h);
+                if (ul == unmanaged_log.end() || g_now - ul->second >= 60.0)
+                {
+                    unmanaged_log[h] = g_now;
+                    log_line(STR("NET dock=") + std::to_wstring(d.id) + STR(" held by ship ") + std::to_wstring(h) + STR(", not managed"));
+                }
+                continue;
+            }
+            if (job_running(h)) continue;   // the holder's own dock job runs: let it finish
+            UObject* ship = find_by_id(STR("DMSPlayerShipObject"), h);
+            if (!alive(ship)) continue;
+            const Config c = eff_cfg(h);
+            bool has_ore = false;
+            for (int i = 0; i < N_ORE && !has_ore; ++i)
+            {
+                if (std::find(c.ore_docks[i].begin(), c.ore_docks[i].end(), d.id) == c.ore_docks[i].end()) continue;
+                std::wstring w;
+                UObject* it = item_c(ORE_ITEM[i], w);
+                if (alive(it) && inv_total(ship, it) > 0) has_ore = true;
+            }
+            const HolderState st = net_holder_working(h) ? HS_WORKING : HS_PARKED;
+            if (!net_bad_holder(st, has_ore, d.full, static_cast<int>(d.queue.size()))) continue;
+            const std::wstring ur = job_start(h, "undock", -1);
+            if (undock_failed(ur))
+            {
+                for (int q : d.queue) { auto it = g_net_ships.find(q); if (it != g_net_ships.end()) { it->second.reason = NR_WAIT_PARKED; it->second.blocked_by = h; } }
+                continue;
+            }
+            const std::wstring who = STR("Leaving dock for ship ") + std::to_wstring(d.queue.front());
+            mset(h, g_mine[h], who, who);
+            log_line(STR("NET dock=") + std::to_wstring(d.id) + STR(" UNDOCK holder=") + std::to_wstring(h) + STR(" for=") + std::to_wstring(d.queue.front()));
+        }
+    }
+
     void mining_tick(double dt)
     {
         for (int sid : g_bench_ids)
@@ -1766,6 +1896,7 @@ namespace
             g_mine_status_acc = 0.0;
             mine_sample(el);
             net_tick();
+            net_holder_orders();
             mine_status_write();
             mine_status_x_write();
             mine_log_write();

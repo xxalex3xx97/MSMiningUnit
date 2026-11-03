@@ -96,6 +96,9 @@ namespace
         if (cmd == "stop_all")
         {
             mine_halt(sid);
+            net_leave(sid);             // queue place and dock reservation go (mb_net.hpp)
+            g_unl_ores.erase(sid);
+            g_dock_pick.erase(sid);     // a Dock picker choice is for the next job only
             UObject* ship = find_by_id(STR("DMSPlayerShipObject"), sid);
             if (!alive(ship)) return STR("error: ship not found");
             int f1 = 0, f2 = 0;

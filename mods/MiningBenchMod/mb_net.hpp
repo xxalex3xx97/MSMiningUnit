@@ -18,6 +18,19 @@ namespace
     std::map<int, NetDock> g_net_docks;   // dock id -> reservation, occupant, queue
     std::map<int, NetShip> g_net_ships;   // ship id -> intent, wait state (rows exist while a ship has a net_pick)
     long g_net_ticket = 0;                // global FIFO ticket counter
+    std::set<int> g_flee_pick;            // ships whose dock trip is a hull flee (purpose P_FLEE until the job starts)
+    constexpr double NET_FULL_S = 300.0;  // a FULL mark clears after this long (s), or earlier when the ore cargo shrinks there
+
+    // WHAT: ship sid leaves the dock network (stop, halt, new trip, ship gone): queue place, ticket and reservation go. Logs RELEASE.
+    void net_leave(int sid)
+    {
+        const auto si = g_net_ships.find(sid);
+        if (si != g_net_ships.end() && si->second.waits_dock != 0)
+            log_line(STR("NET dock=") + std::to_wstring(si->second.waits_dock) + STR(" RELEASE by=") + std::to_wstring(sid));
+        for (const auto& kv : g_net_docks)
+            if (kv.second.resv == sid) log_line(STR("NET dock=") + std::to_wstring(kv.first) + STR(" RELEASE by=") + std::to_wstring(sid));
+        net_release_ship(g_net_docks, g_net_ships, sid);
+    }
 
     // WHAT: a dock reservation of ship sid is dropped (failed start). The ship keeps its queue place (use net_release_ship to leave the queue).
     void net_unreserve(int sid)
@@ -138,8 +151,39 @@ namespace
         for (const auto& kv : g_net_docks) known.insert(kv.first);
         for (const auto& kv : occupant) known.insert(kv.first);
         for (int d : known) if (alive(find_by_id(STR("Dock"), d))) existing.insert(d);
+        for (auto& kv : g_net_docks)
+            if (kv.second.full && g_now - kv.second.full_since >= NET_FULL_S) kv.second.full = false;
         net_reconcile(g_net_docks, g_net_ships, occupant, heading, existing);
         net_grant_tick(g_net_docks, g_net_ships, g_now);
+        // log lines (once per change): GRANT when a ship gets a free dock, WAIT when its dock, holder or reason changes
+        static std::set<int> granted_seen;
+        static std::map<int, std::string> wait_seen;
+        std::set<int> granted_now;
+        std::map<int, std::string> wait_now;
+        for (const auto& kv : g_net_ships)
+        {
+            const NetShip& s = kv.second;
+            if (s.granted)
+            {
+                granted_now.insert(kv.first);
+                if (granted_seen.count(kv.first) == 0)
+                {
+                    for (const auto& dk : g_net_docks)
+                        if (dk.second.resv == kv.first)
+                            log_line(STR("NET ship=") + std::to_wstring(kv.first) + STR(" GRANT dock=") + std::to_wstring(dk.first));
+                }
+            }
+            if (s.waits_dock != 0)
+            {
+                const std::string key = std::to_string(s.waits_dock) + "|" + std::to_string(s.blocked_by) + "|" + net_reason_text(s.reason);
+                wait_now[kv.first] = key;
+                if (wait_seen.count(kv.first) == 0 || wait_seen[kv.first] != key)
+                    log_line(STR("NET ship=") + std::to_wstring(kv.first) + STR(" WAIT dock=") + std::to_wstring(s.waits_dock) + STR(" holder=") +
+                             std::to_wstring(s.blocked_by) + STR(" why=") + widen(net_reason_text(s.reason)) + STR(" t=") + std::to_wstring(net_age(s.wait_since)));
+            }
+        }
+        granted_seen = granted_now;
+        wait_seen = wait_now;
         net_write();
     }
 }

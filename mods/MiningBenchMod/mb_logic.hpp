@@ -556,6 +556,7 @@ namespace
         }
         // WAIT: first ticket is kept; queue on every dock the ship could use (all full docks if none is open).
         if (s.ticket == 0) { s.ticket = ++ticket; s.wait_since = now; }
+        s.granted = false;   // a grant is used up by this pick; the next grant sets it again
         const std::vector<int>& tg = open.empty() ? live : open;
         net_unqueue(docks, sid);
         for (int d : tg) net_queue_add(docks, ships, d, sid);
