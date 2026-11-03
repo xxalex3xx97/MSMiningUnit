@@ -66,6 +66,13 @@ namespace
     // WHAT: engine delete notifications. A freed UObject is queued here (any thread) and removed from every shared rock container on the next drain (game thread).
     // WHY: the rock lists are shared by all ships; instead of re-scanning to find out which rocks died, the engine tells us the moment one is destroyed.
     // WHY heap + never freed: the engine keeps calling the listener while the game shuts down, after this DLL's statics are destroyed (crash on game close).
+    constexpr bool ROCK_USE_DELETE_LISTENER = true;
+    // WHAT: alive() that survives a freed actor (access violation -> false).
+    bool alive_seh(UObject* o)
+    {
+        __try { return alive(o); }
+        __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+    }
     struct RockDeadState { std::mutex mx; std::unordered_set<const void*> dead; };
     struct RockDeleteListener;
     RockDeleteListener* g_rock_listener = nullptr;
@@ -73,7 +80,8 @@ namespace
     struct RockDeleteListener : FUObjectDeleteListener
     {
         void NotifyUObjectDeleted(const UObjectBase* o, int32_t) override { RockDeadState& d = dead_state(); std::lock_guard<std::mutex> l(d.mx); d.dead.insert(o); }
-        void OnUObjectArrayShutdown() override {}
+        // WHY: the engine asserts at shutdown (UObjectArray.cpp:559) that every delete listener removed itself inside this callback.
+        void OnUObjectArrayShutdown() override;
     };
 
     // WHAT: a belt seek with no rock in range asks for the fallback (valid for ROCK_FALLBACK_WANT_MS).
@@ -114,7 +122,7 @@ namespace
             }
         }
         // 2. a must be in the live set and still alive
-        return (g_actor_set.count(a) != 0 || (g_fb_set.count(a) != 0 && fallback_wanted())) && alive(a);
+        return (g_actor_set.count(a) != 0 || (g_fb_set.count(a) != 0 && fallback_wanted())) && alive_seh(a);
     }
 
     // WHAT: rock actors from the last list refresh. Dead entries fail alive() and callers skip them.
@@ -210,6 +218,11 @@ namespace
 
     // ---------------- list refresh ----------------
 
+    void RockDeleteListener::OnUObjectArrayShutdown()
+    {
+        if (g_rock_listener == this) { UObjectArray::RemoveUObjectDeleteListener(this); g_rock_listener = nullptr; }
+    }
+
     // WHAT: unregisters the delete listener. Called from the mod destructor: the listener's code lives in this DLL, which is unloaded at game exit (crash if the engine still calls it).
     void rock_listener_release()
     {
@@ -221,7 +234,7 @@ namespace
     // WHAT: removes every destroyed actor (queued by RockDeleteListener) from the shared rock containers. First call registers the listener.
     void rock_drain_dead()
     {
-        if (!g_rock_listener) { g_rock_listener = new RockDeleteListener; UObjectArray::AddUObjectDeleteListener(g_rock_listener); }
+        if (ROCK_USE_DELETE_LISTENER && !g_rock_listener) { g_rock_listener = new RockDeleteListener; UObjectArray::AddUObjectDeleteListener(g_rock_listener); }
         std::unordered_set<const void*> dead;
         { RockDeadState& d = dead_state(); std::lock_guard<std::mutex> l(d.mx); if (d.dead.empty()) return; dead.swap(d.dead); }
         auto gone = [&](UObject* a) { return dead.count(a) != 0; };
@@ -280,7 +293,7 @@ namespace
             g_fb_set.clear();
             for (UObject* a : found) if (alive(a)) { g_fb_list.push_back(a); g_fb_set.insert(a); }
         }
-        for (UObject* a : g_fb_list) if (alive(a) && !items.count(a)) rock_add(a, list, items, ids, by_id);
+        for (UObject* a : g_fb_list) if (alive_seh(a) && !items.count(a)) rock_add(a, list, items, ids, by_id);
         if (!ran) return;
         int with_ore = 0;
         for (UObject* a : g_fb_list) { auto it = items.find(a); if (it != items.end() && it->second) ++with_ore; }
