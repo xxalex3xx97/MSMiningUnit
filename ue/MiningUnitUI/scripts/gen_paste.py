@@ -64,7 +64,7 @@ FN = 20   # fleet card pool (must equal wbp_loader.lua FN)
 STAT_KEYS = ["idle", "mining", "docking", "undocking", "refueling", "unloading"]
 DIM = lin("000000", 0.6)
 ROW_N = 20
-UDOCK_N = 5   # dock rows per ore card / refuel list (must equal wbp_loader.lua UDN)
+UDOCK_N = 20  # dock rows per ore card / refuel list (must equal wbp_loader.lua UDN)
 UP_TXT, DN_TXT, DEL_TXT = "^", "v", "X"
 def _lin3(h): return [srgb_to_lin(int(h[i:i + 2], 16) / 255.0) for i in (0, 2, 4)]
 HOVER_T = "(R=%.6f,G=%.6f,B=%.6f,A=1.000000)" % tuple(min(1.0, a / b) for a, b in zip(_lin3("C38800"), _lin3("D9D9D9")))
@@ -610,7 +610,6 @@ def build_tree():
     warn = tb("Txt_ShipWarn", "", 15, color=lin("F2D21E"))
     warn.props += [("AutoWrapText", "True"), ("Visibility", "Collapsed")]
     ship_kids = [warn,
-                 row("Txt_ShipRefuelDockLabel", "Refuel dock", select_field("RefuelDock"), v="Top"),
                  dock_card("RDock", "", "RDock", "Refuel docks (tried in order)", ["Img_RDockFuel" + f for f in FUELS])]
     for k in reversed(ORES):
         ship_kids.append(dock_card("UDock", k, "UD" + k, "Unload docks: " + ("Water Ice" if k == "WaterIce" else k), ["Img_UDockOre_" + k]))

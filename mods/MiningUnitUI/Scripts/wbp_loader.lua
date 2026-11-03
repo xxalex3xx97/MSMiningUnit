@@ -24,7 +24,7 @@ local TAB_OFF = { R = 0.012983, G = 0.012983, B = 0.012983, A = 0.95 }
 local TXT_ON = { R = 0.010330, G = 0.010330, B = 0.010330, A = 1.0 }
 local TXT_OFF = { R = 1.0, G = 1.0, B = 1.0, A = 1.0 }
 local EST_RED_TXT = { R = 1.0, G = 0.25, B = 0.2, A = 1.0 }   -- Txt_StatusAction tint on an ERROR status
-local UDN = 5  -- max docks per unload-ore list and per refuel list (= gen_paste UDOCK_N)
+local UDN = 20 -- max docks per unload-ore list and per refuel list (= gen_paste UDOCK_N)
 -- ore key k = widget part (Pnl_UDockCard_<k>, modal key UDock_<k>_<n>); ini = INI key part (unload_docks_<ini>, ore_<ini>)
 local UD_ORES = { { k = "Cobalt", ini = "cobalt" }, { k = "Graphite", ini = "graphite" }, { k = "Iridium", ini = "iridium" },
   { k = "Nickel", ini = "nickel" }, { k = "Silica", ini = "silica" }, { k = "Titanium", ini = "titanium" }, { k = "WaterIce", ini = "waterice" } }
@@ -608,9 +608,6 @@ local function loadSectors()
   return out
 end
 local function shipFill()
-  local R = { { id = "", text = "(none)" } }
-  for _, d in ipairs(S.docks or {}) do R[#R + 1] = d end
-  selSet("RefuelDock", R, S.last.refuel)
   -- belt field text: AUTO / (none) / "<name> (<id>)"; unknown id shows the id
   local B, known = {}, false
   for _, o in ipairs(loadSectors()) do
@@ -619,6 +616,75 @@ local function shipFill()
   end
   if not known then B[#B + 1] = { id = S.last.belt, text = S.last.belt } end
   selSet("Belt", B, S.last.belt)
+end
+-- ===== generic dynamic list: a DynamicEntryBox of a Python-built row WBP. Python widgets are not Is Variable, so boxes and entry children are found by walking
+-- from a variable anchor / the entry root (deepFind). spec: key, anchor (variable widget above the box), box (name), n (row count), bind(e, find, idx) once per new entry,
+-- paint(e, find, i) for every row on every call. Entries live in S.dyn[key].ents[i] = { w = entry, find = fn(name) }.
+local function deepFind(node, name, depth)
+  depth = depth or 0
+  if depth > 12 or not ok(node) then return nil end
+  if nm(node) == name then return node end
+  local okc, cnt = pcall(function() return node:GetChildrenCount() end)
+  if okc and type(cnt) == "number" then
+    for i = 0, cnt - 1 do
+      local okk, c = pcall(function() return node:GetChildAt(i) end)
+      if okk then local r = deepFind(c, name, depth + 1); if r then return r end end
+    end
+  end
+  local okq, c = pcall(function() return node:GetContent() end)
+  if okq and ok(c) then return deepFind(c, name, depth + 1) end
+  return nil
+end
+local function dynList(sp)
+  local anchor = w(sp.anchor)
+  if not anchor then S.dynWarn = S.dynWarn or {}; if not S.dynWarn[sp.key] then S.dynWarn[sp.key] = true; L("dynList " .. sp.key .. ": anchor " .. sp.anchor .. " not found") end; return nil end
+  S.dyn = S.dyn or {}
+  local st = S.dyn[sp.key]
+  if not (st and ok(st.box)) then
+    local box = deepFind(anchor, sp.box)
+    if not ok(box) then L("dynList " .. sp.key .. ": box " .. sp.box .. " not found"); return nil end
+    st = { box = box, ents = {} }; S.dyn[sp.key] = st
+    try("dyn reset", function() box:Reset(true) end)
+  end
+  local function idxOf(e) for i, r in ipairs(st.ents) do if r.w == e then return i end end end
+  while #st.ents < sp.n do
+    local s2, e = pcall(function() return st.box:BP_CreateEntry() end)
+    if not (s2 and ok(e)) then L("dynList " .. sp.key .. " CreateEntry failed: " .. tostring(e)); break end
+    local cache = {}
+    local function find(name)
+      if cache[name] == nil then
+        local s3, root = pcall(function() return e.WidgetTree.RootWidget end)
+        cache[name] = (s3 and deepFind(root, name)) or false
+      end
+      return cache[name] or nil
+    end
+    st.ents[#st.ents + 1] = { w = e, find = find }
+    if sp.bind then sp.bind(e, find, function() return idxOf(e) end) end
+  end
+  while #st.ents > sp.n do
+    local r = table.remove(st.ents); try("RemoveEntry", function() st.box:RemoveEntry(r.w) end)
+  end
+  if sp.paint then for i, r in ipairs(st.ents) do sp.paint(r.w, r.find, i) end end
+  return st
+end
+local udSave, dynDocks   -- defined below
+-- Dock list = dynList of WBP_DockRow (Btn_Sel + Txt_Sel + Btn_Del). getList() = current ids table (S.rd / S.ud[x] are replaced on reload: never hold one).
+function dynDocks(name, getList, save, title, docks, cardName)
+  dynList{ key = name, anchor = cardName or ("Pnl_" .. name .. "Card"), box = "Dyn_" .. name, n = #getList(),
+    bind = function(_, find, idx)
+      if not (BIND and BIND.onClick) then return end
+      local bs, bd = find("Btn_Sel"), find("Btn_Del")
+      if bs then BIND.onClick(bs, function()
+        local i = idx(); if not i then return end
+        modalSelect{ title = title, options = S.docks or {}, id = getList()[i], onPick = function(id) getList()[i] = id; save() end }
+      end) end
+      if bd then BIND.onClick(bd, function() local i = idx(); if i then table.remove(getList(), i); save() end end) end
+    end,
+    paint = function(_, find, i)
+      local id = getList()[i]; local cur = id
+      for _, o in ipairs(docks) do if o.id == id then cur = o.text end end
+      local t = find("Txt_Sel"); if t then try("dock text", function() t:SetText(FText(cur or "")) end) end
+    end }
 end
 -- Ship tab dock lists. S.ud[<ini>] = unload dock ids of the ore, S.rd = refuel dock ids (this ship; All ships = first ship of the set).
 -- Ore card shown only while the global ore_<ini> flag is on (default on). Warning = ore on + empty list (not in All ships mode).
@@ -630,25 +696,17 @@ local function udRender()
     local on = (glob["ore_" .. u.ini] or "1") == "1"
     local list = S.ud[u.ini]
     setVis(w("Pnl_UDockCard_" .. u.k), on and 0 or 1)
-    for n = 1, UDN do
-      setVis(w("Pnl_UDockRow_" .. u.k .. "_" .. n), n <= #list and 0 or 1)
-      if list[n] then selSet("UDock_" .. u.k .. "_" .. n, docks, list[n]) end
-    end
-    setVis(w("Btn_UDockAdd_" .. u.k), #list < UDN and 0 or 1)
+    if on then dynDocks("UDock_" .. u.k, function() return S.ud and S.ud[u.ini] or {} end, udSave, "Unload dock", docks, "Pnl_UDockCard_" .. u.k) end
     if on and #list == 0 then warn[#warn + 1] = u.k end
   end
   setVis(w("Pnl_RDockCard"), 0)
-  for n = 1, UDN do
-    setVis(w("Pnl_RDockRow_" .. n), n <= #S.rd and 0 or 1)
-    if S.rd[n] then selSet("RDock_" .. n, docks, S.rd[n]) end
-  end
-  setVis(w("Btn_RDockAdd"), #S.rd < UDN and 0 or 1)
+  dynDocks("RDock", function() return S.rd end, udSave, "Refuel dock", docks)
   S.warn = (not S.all and #warn > 0) and ("No unload dock for: " .. table.concat(warn, ", ")) or ""
   M.setText("Txt_ShipWarn", S.warn)
   setVis(w("Txt_ShipWarn"), S.warn ~= "" and 0 or 1)
 end
 -- writes every list of the window's ship(s) to INI (empty ids never written), then reloads the dock names/tags
-local function udSave()
+function udSave()
   local vals = {}
   for _, u in ipairs(UD_ORES) do vals["unload_docks_" .. u.ini] = table.concat(S.ud[u.ini], ",") end
   vals.refuel_docks = table.concat(S.rd, ",")
@@ -747,24 +805,35 @@ function setImgIcon(img, itemId)
   if it and it.icon then try("item icon", function() img:SetBrushFromTexture(it.icon, false) end); setVis(img, 0)
   else setVis(img, 2) end
 end
-local function setIcon(r) local row = S.q.rows[r]; setImgIcon(w("Img_ItemIcon_" .. r), row and row.id) end
 local function qRender()
   holdReads()
   local rows = S.q.rows
-  for r = 1, QN do
-    local p = w("Pnl_ItemRow_" .. r)
-    if r <= #rows then
-      setVis(p, 0)
-      selSet("Item" .. r, qOpts(r), rows[r].id)
-      setIcon(r)
-      local e = w("Edt_ItemAmount_" .. r)
-      if e then try("amount set", function() e:SetText(FText(rows[r].amt)) end) end
-      S.q.shown[r] = rows[r].amt
-    else
-      setVis(p, 1)
-    end
-  end
-  setVis(w("Btn_ItemAdd"), #rows < QN and 0 or 1)
+  dynList{ key = "Items", anchor = "Page_Items", box = "Dyn_Items", n = #rows,
+    bind = function(_, find, idx)
+      local function row() local i = idx(); return i and S.q.rows[i], i end
+      local bs, bu, bd, bx = find("Btn_Sel"), find("Btn_Up"), find("Btn_Down"), find("Btn_Del")
+      if BIND and BIND.onClick then
+        if bs then BIND.onClick(bs, function()
+          local rw, i = row(); if not rw then return end
+          modalSelect{ title = "Resource", options = qOpts(i), id = rw.id, onPick = function(id) rw.id = id; qSave(); qRender() end }
+        end) end
+        if bu then BIND.onClick(bu, function() local _, i = row(); local rs = S.q.rows
+          if i and i > 1 then rs[i - 1], rs[i] = rs[i], rs[i - 1]; qSave(); qRender() end end) end
+        if bd then BIND.onClick(bd, function() local _, i = row(); local rs = S.q.rows
+          if i and i < #rs then rs[i], rs[i + 1] = rs[i + 1], rs[i]; qSave(); qRender() end end) end
+        if bx then BIND.onClick(bx, function() local _, i = row(); if i then table.remove(S.q.rows, i); qSave(); qRender() end end) end
+      end
+    end,
+    paint = function(_, find, i)
+      local rw = rows[i]
+      local cur = rw.id
+      for _, o in ipairs(qOpts(i)) do if o.id == rw.id then cur = o.text end end
+      local t = find("Txt_Sel"); if t then try("item text", function() t:SetText(FText(cur or "")) end) end
+      setImgIcon(find("Img_Icon"), rw.id)
+      local e = find("Edt_Amount")
+      if e and S.q.shown[i] ~= rw.amt then try("amount set", function() e:SetText(FText(rw.amt)) end) end
+      S.q.shown[i] = rw.amt
+    end }
 end
 local function itemsLoad()
   if not S.sid or not S.q then return end
@@ -788,7 +857,8 @@ local function itemsTick()
   if not S.sid or not S.q or M.lastTab ~= 2 then return end
   local rows = S.q.rows
   for r = 1, #rows do
-    local e = w("Edt_ItemAmount_" .. r)
+    local rec = S.dyn and S.dyn.Items and S.dyn.Items.ents[r]
+    local e = rec and rec.find("Edt_Amount")
     local s, v = false, nil
     if e and reading() then s, v = pcall(function() return e:GetText() end) end
     if s then
@@ -1125,10 +1195,11 @@ local function logPaint()
   local key = "S" .. table.concat(rows, "\n")
   if key == S.logKey then return end
   S.logKey = key
-  for k = 1, LOGN do
-    setVis(w("Txt_Log_" .. k), k <= #rows and 0 or 1)
-    if k <= #rows then M.setText("Txt_Log_" .. k, rows[k]) end
-  end
+  L("logPaint rows=" .. #rows .. " sid=" .. tostring(S.sid))
+  dynList{ key = "Log", anchor = "Row_LogScroll", box = "Dyn_Log", n = #rows, paint = function(e, _, i)
+    local s2, t = pcall(function() return e.WidgetTree.RootWidget end)   -- the row's root widget is the TextBlock itself
+    if s2 and ok(t) then try("log text", function() t:SetText(FText(rows[i])) end) end
+  end }
   M.setText("Txt_LogHint", "No log yet")
   setVis(w("Txt_LogHint"), #rows == 0 and 0 or 1)
 end
@@ -1246,7 +1317,7 @@ function M.close()
   S.pend, S.arm, S.estop, S.etaS, S.etaKind = nil, nil, nil, nil, nil
   S.req, S.simple = nil, nil
   S.fleet, S.holoOut = nil, nil
-  S.ud, S.rd, S.warn = nil, nil, nil
+  S.ud, S.rd, S.warn, S.dyn, S.dynDiag, S.dynWarn = nil, nil, nil, nil, nil, nil
   if not (S.root or S.p or S.frame) then return end
   local root, p = S.root, S.p
   S.root, S.p, S.w, S.frame = nil, nil, nil, nil
@@ -1597,24 +1668,13 @@ function M.open(ship)
       bind("Sel_Remote", openMulti)
       S.last = S.last or {}
       for _, u in ipairs(UD_ORES) do
-        for n = 1, UDN do
-          selInit("UDock_" .. u.k .. "_" .. n, bind, function(id) S.ud[u.ini][n] = id; udSave() end, "Unload dock")
-          bind("Btn_UDockDel_" .. u.k .. "_" .. n, function() table.remove(S.ud[u.ini], n); udSave() end)
-        end
         bind("Btn_UDockAdd_" .. u.k, function()
-          if #S.ud[u.ini] >= UDN then return end
           modalSelect{ title = "Unload dock", options = S.docks or {}, onPick = function(id) table.insert(S.ud[u.ini], id); udSave() end }
         end)
       end
-      for n = 1, UDN do
-        selInit("RDock_" .. n, bind, function(id) S.rd[n] = id; udSave() end, "Refuel dock")
-        bind("Btn_RDockDel_" .. n, function() table.remove(S.rd, n); udSave() end)
-      end
       bind("Btn_RDockAdd", function()
-        if #S.rd >= UDN then return end
         modalSelect{ title = "Refuel dock", options = S.docks or {}, onPick = function(id) table.insert(S.rd, id); udSave() end }
       end)
-      selInit("RefuelDock", bind, function(id) S.last.refuel = id; iniSave({ refuel_dock_id = id }); S.docks = loadDocks(); shipFill() end, "Refuel dock")
       selInit("Belt", bind, function(id) S.last.belt = id; iniSave({ belt_sector = id }); shipFill() end, "Sector Selector", function(o) return { cols = o.cols, ores = o.ores } end, loadSectors, function() return { "Sector", "ID", "Distance" } end)
       bind("Btn_BeltPinned", function()
         local p = rdlines(M.DATA .. "MiningPinned.txt")
@@ -1624,27 +1684,9 @@ function M.open(ship)
       end)
       bind("Btn_BeltWarp", function() sendCmd("warp_belt") end)  -- single ship (S.sid), not sendSeq: All-ships must not fan out
       M.setBtnText("Btn_BeltWarp", "Warp to sector")
-      for r = 1, QN do
-        selInit("Item" .. r, bind, function(id)
-          local row = S.q.rows[r]; if not row then return end
-          row.id = id; setIcon(r); qSave()
-        end, "Resource")
-        bind("Btn_ItemUp_" .. r, function()
-          local rows = S.q.rows
-          if r > 1 and r <= #rows then rows[r - 1], rows[r] = rows[r], rows[r - 1]; qSave(); qRender() end
-        end)
-        bind("Btn_ItemDown_" .. r, function()
-          local rows = S.q.rows
-          if r < #rows then rows[r], rows[r + 1] = rows[r + 1], rows[r]; qSave(); qRender() end
-        end)
-        bind("Btn_ItemDel_" .. r, function()
-          local rows = S.q.rows
-          if r <= #rows then table.remove(rows, r); qSave(); qRender() end
-        end)
-      end
       bind("Btn_ItemAdd", function()
         local rows = S.q.rows
-        if #rows < QN then rows[#rows + 1] = { id = "", amt = "" }; qSave(); qRender() end
+        rows[#rows + 1] = { id = "", amt = "" }; qSave(); qRender()
       end)
       bind("Btn_ApplyGlobal", opDefault)
     else

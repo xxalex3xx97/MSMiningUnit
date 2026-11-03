@@ -42,7 +42,7 @@ The tree is now THREE side-by-side native-style windows (Control | Mining Unit |
 ## Notes
 
 - Panel canvas slot: anchors 0.15/0.15 to 0.85/0.85, offsets 0 (centered 70%). Lua sizes the user widget only.
-- Sel_Dock / Sel_RefuelDock / Sel_Item<r> are buttons that open the shared Pnl_Modal (one widget set, 40 plain rows + 20 ship cards). Items page = pool of 20 rows (Pnl_ItemRow_1..20) + Btn_ItemAdd; about 2100 widgets after this change (ship cards add about 400 more), the paste may take a while.
+- Sel_Dock / Sel_Item<r> are buttons that open the shared Pnl_Modal (one widget set, 40 plain rows + 20 ship cards). Items page = pool of 20 rows (Pnl_ItemRow_1..20) + Btn_ItemAdd; about 2100 widgets after this change (ship cards add about 400 more), the paste may take a while.
 - If Edt_ look unstyled after paste, WidgetStyle was ignored; set Font size 11 and black text by hand in Details.
 - No Items action button (SPEC open item). Btn_Apply removed; Btn_ApplyGlobal relabelled "Set as default" (M6, Operation tab functional).
 

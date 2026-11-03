@@ -66,7 +66,6 @@ Ship select = key Remote in the Fleet Control box (Sel_Remote, Txt_SelRemote). L
 Page_Ship (select fields, keys: dock_id, refuel_dock_id; dock_name_filter key is not touched):
 - Single Unload dock row removed. Txt_ShipWarn (yellow F2D21E, Collapsed; Lua text). Per ore <ok> (7 ore keys): card Pnl_UDockCard_<ok> (Collapsed), rows m=1..5: Pnl_UDockRow_<ok>_<m> (Collapsed) = select field Sel_UDock_<ok>_<m>, Txt_SelUDock_<ok>_<m> + trash Btn_UDockDel_<ok>_<m>; Btn_UDockAdd_<ok>. Refuel list: Pnl_RDockCard (Collapsed), Pnl_RDockRow_<m> = Sel_RDock_<m>, Txt_SelRDock_<m> + Btn_RDockDel_<m>; Btn_RDockAdd.
 - Operation tab "Warp management" card (Lbl_HdrWarp): Txt_OpBeltLabel "Sector Selector" / select field "Belt": Sel_Belt (Button), Txt_SelBelt; Btn_BeltPinned "Use pinned sector"; Btn_BeltWarp "Warp to belt"
-- Txt_ShipRefuelDockLabel "Refuel dock" / select field "RefuelDock": Sel_RefuelDock, Txt_SelRefuelDock; first option "(none)"
 - Select field = Sel_<key> (Button, shows the current choice in Txt_Sel<key>). Click opens the shared modal Pnl_Modal (no panel or options per field). Click a row = select + close + save to MiningBench.ini.
 - Edt_* style: black text, font size 11, light grey bg kept (WidgetStyle).
 
@@ -143,3 +142,8 @@ Pnl_Modal = Overlay, Is Variable, Collapsed, 2nd child of Root (anchors like Pan
 - CN = 40 now (FN stays 20). Modal card list Row_ModalCardScroll interleaves per slot: Row_CardHdr_<c> (HorizontalBox, Is Variable, Collapsed) > Btn_CardHdr_<c> > Txt_CardHdr_<c> (fleet/All header, gold-or-grey bg by Lua) + Btn_CardFold_<c> > Txt_CardFold_<c> (">"/"v", Collapsed), then Opt_Card_<c>.
 - Btn_ModalDone > Txt_ModalDone (Done button, Collapsed, below Row_ModalCardScroll; multi mode only).
 - Dock card header icons (Image, Hidden, 24x24, Is Variable, Lua sets brush): Img_UDockOre_<ok> (ore icon) in each unload card; Img_RDockFuelDeuterium, Img_RDockFuelHydrogen, Img_RDockFuelWarp in the refuel card. Unload cards are ordered Water Ice, Titanium, Silica, Nickel, Iridium, Graphite, Cobalt.
+
+## Lists (all dynamic, 2026-11-03)
+Every variable-length list is a `DynamicEntryBox` `Dyn_<name>` of a small row Widget Blueprint, built headless by `scripts/build_lists.py` (helpers in `scripts/uew.py`: `dyn_list`). No row limits; rows exist only as the data needs.
+Row WBPs: `WBP_DockRow` (refuel + 7 unload lists), `WBP_ItemRow` (Items queue), `WBP_LogLine` (Log). Select-style rows share one child-naming convention (see build_lists.py); this file is parsed for widget names, so none are listed here.
+Lua side: one function `dynList{key, anchor, box, n, bind, paint}` in `wbp_loader.lua` (`dynDocks` is a thin wrapper). Python-built widgets are not Is Variable, so Lua finds them by walking from a variable anchor. Never delete a widget from Python (cook fails on stale variable GUIDs): collapse a stub instead.
