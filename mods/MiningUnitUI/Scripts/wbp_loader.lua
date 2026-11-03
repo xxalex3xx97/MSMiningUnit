@@ -152,11 +152,14 @@ end
 
 -- Button label: the pak still says "Warp to belt"; set the button's text child (TextBlock) at runtime instead of a pak rebuild
 function M.setBtnText(name, s)
+  -- WHY: same unchanged-write guard as M.setText (S.tc = last text per name)
+  S.tc = S.tc or {}
+  if S.tc[name] == s then return end
   local b = w(name); if not ok(b) then return end
   local s1, c = pcall(function() return b:GetChildAt(0) end)
   if not (s1 and ok(c)) then L("setBtnText " .. name .. " no child"); return end
   if not nm(c, true):find("TextBlock") then L("setBtnText " .. name .. " child is " .. nm(c, true)); return end
-  try("setBtnText " .. name, function() c:SetText(FText(s)) end)
+  if try("setBtnText " .. name, function() c:SetText(FText(s)) end) then S.tc[name] = s end
 end
 
 local function setPercent(name, v)
@@ -1287,7 +1290,7 @@ local function refresh()
   do
     local ol = rdcached(M.DATA .. "MiningOre.txt")
     local on = ol and ol[1] and tonumber(ol[1]:match("^(%d+)")) or 0
-    M.setText("Txt_Collect", on > 0 and ("Collect " .. on .. " ores") or "Collect ore")
+    M.setBtnText("Btn_Collect", on > 0 and ("Collect " .. on .. " ores") or "Collect ore")
   end
   S.simple = st.simple
   try("itemsTick", itemsTick)
