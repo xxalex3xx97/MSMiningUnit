@@ -603,6 +603,46 @@ static void t_net_go_drops_other_grant()
     CHECK(d[1].resv == 10 && d[2].resv == 0);
 }
 
+static void t_net_self_occupant()
+{
+    std::map<int, NetDock> d; std::map<int, NetShip> s; long t = 0;
+    d[1].occ = 5;                                                   // ship 5 is docked at dock 1
+    const NetVerdict v = net_pick(d, s, t, 5, P_UNLOAD, {1}, 0, 0);
+    CHECK(v.k == NetVerdict::GO && v.dock == 1 && d[1].resv == 5);
+    CHECK(d[1].queue.empty() && s[5].waits_dock == 0 && s[5].ticket == 0);
+
+    // full dock the ship sits at: not a candidate, so it waits but never queues for its own dock
+    std::map<int, NetDock> d2; std::map<int, NetShip> s2; long t2 = 0;
+    d2[1].occ = 7; d2[1].full = true;
+    const NetVerdict w = net_pick(d2, s2, t2, 7, P_UNLOAD, {1}, 0, 0);
+    CHECK(w.k == NetVerdict::WAIT && w.holder == 0 && w.holder != 7);
+    CHECK(d2[1].queue.empty());
+}
+
+static void t_net_queue_never_occupant()
+{
+    // ship 9 occupies dock 1 but is still in its queue (stale): reconcile removes it and clears its wait
+    std::map<int, NetDock> d; std::map<int, NetShip> s; long t = 0;
+    d[1].occ = 9; d[1].queue = {9, 11};
+    s[9].sid = 9; s[9].wanted = {1}; s[9].ticket = 1; s[9].waits_dock = 1; s[9].blocked_by = 9;
+    s[11].sid = 11; s[11].wanted = {1}; s[11].ticket = 2; s[11].waits_dock = 1; s[11].blocked_by = 9;
+    net_reconcile(d, s, std::map<int, int>{{1, 9}}, std::map<int, int>{{9, 1}, {11, 0}}, std::set<int>{1});
+    CHECK(d[1].queue.size() == 1 && d[1].queue[0] == 11);
+    CHECK(s[9].waits_dock == 0 && s[9].ticket == 0 && s[9].blocked_by == 0);
+    CHECK(s[11].blocked_by == 9);                                   // holder of 11's dock is 9, not 11
+    CHECK(s[9].blocked_by != 9 && s[11].blocked_by != 11);
+}
+
+static void t_net_blocked_by_never_self()
+{
+    // a stored self-block (stale) is cleared by reconcile
+    std::map<int, NetDock> d; std::map<int, NetShip> s;
+    d[1].exists = true;
+    s[11].sid = 11; s[11].blocked_by = 11; s[11].waits_dock = 0;
+    net_reconcile(d, s, std::map<int, int>{}, std::map<int, int>{{11, 0}}, std::set<int>{1});
+    CHECK(s[11].blocked_by == 0);
+}
+
 static void t_net_not_configured()
 {
     std::map<int, NetDock> d; std::map<int, NetShip> s; long t = 0;
@@ -720,6 +760,7 @@ int main()
         {"net_free_go", t_net_free_go}, {"net_busy_wait", t_net_busy_wait}, {"net_second_dock", t_net_second_dock},
         {"net_fifo", t_net_fifo}, {"net_go_drops_other_grant", t_net_go_drops_other_grant}, {"net_not_configured", t_net_not_configured}, {"net_dock_gone", t_net_dock_gone},
         {"net_full", t_net_full}, {"net_bad_holder", t_net_bad_holder}, {"unload_stalled", t_unload_stalled},
+        {"net_self_occupant", t_net_self_occupant}, {"net_queue_never_occupant", t_net_queue_never_occupant}, {"net_blocked_by_never_self", t_net_blocked_by_never_self},
         {"net_reconcile", t_net_reconcile}, {"net_release", t_net_release}, {"net_text", t_net_text},
     };
     for (const Case& c : cases)

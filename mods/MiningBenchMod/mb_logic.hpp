@@ -546,8 +546,9 @@ namespace
         for (int d : open)
         {
             NetDock& nd = docks[d];
-            if (nd.occ != 0 || (nd.resv != 0 && nd.resv != sid)) continue;
-            if (nd.resv != sid && net_queue_blocks(nd, ships, s)) continue;
+            const bool mine = nd.occ == sid;   // already docked here: continue at this dock, never queue for it
+            if (!mine && (nd.occ != 0 || (nd.resv != 0 && nd.resv != sid))) continue;
+            if (!mine && nd.resv != sid && net_queue_blocks(nd, ships, s)) continue;
             nd.resv = sid; nd.why = purpose; nd.since = now;
             for (auto& kv : docks) if (kv.first != d && kv.second.resv == sid) { kv.second.resv = 0; kv.second.why = P_NONE; kv.second.since = 0; }   // a grant on another dock is given up
             net_drop_wait(docks, s);
@@ -560,9 +561,9 @@ namespace
         s.granted = false;   // a grant is used up by this pick; the next grant sets it again
         const std::vector<int>& tg = open.empty() ? live : open;
         net_unqueue(docks, sid);
-        for (int d : tg) net_queue_add(docks, ships, d, sid);
+        for (int d : tg) if (docks[d].occ != sid && docks[d].resv != sid) net_queue_add(docks, ships, d, sid);   // a dock the ship sits at or holds is never a queue
         const NetDock& w = docks[tg[0]];
-        const int holder = w.occ;   // the ship that sits at (or claims) this dock; a waiter is never the holder
+        const int holder = w.occ == sid ? 0 : w.occ;   // the ship that sits at this dock; never the waiter itself
         v.reason = open.empty() ? NR_WAIT_FULL : (w.occ != 0 ? NR_WAIT_BUSY : NR_WAIT_QUEUE);
         s.waits_dock = tg[0]; s.blocked_by = holder; s.reason = v.reason;
         v.k = NetVerdict::WAIT; v.dock = tg[0]; v.holder = holder;
@@ -618,13 +619,27 @@ namespace
                 const bool keep = nd.exists && h != heading.end() && (h->second == d || granted || nd.occ == nd.resv);
                 if (!keep) { nd.resv = 0; nd.why = P_NONE; nd.since = 0; }
             }
+            // the occupant of a dock is never in its queue: it is docked there, its wait is over
+            if (nd.occ != 0)
+            {
+                const auto os = ships.find(nd.occ);
+                if (os != ships.end() && os->second.waits_dock == d)
+                {
+                    NetShip& s = os->second;
+                    s.ticket = 0; s.waits_dock = 0; s.blocked_by = 0; s.wait_since = 0; s.reason = NR_OK;
+                }
+            }
             nd.queue.erase(std::remove_if(nd.queue.begin(), nd.queue.end(), [&](int q)
             {
                 const auto f = ships.find(q);
-                return f == ships.end() || f->second.ticket == 0 || std::find(f->second.wanted.begin(), f->second.wanted.end(), d) == f->second.wanted.end();
+                return q == nd.occ || f == ships.end() || f->second.ticket == 0 || std::find(f->second.wanted.begin(), f->second.wanted.end(), d) == f->second.wanted.end();
             }), nd.queue.end());
         }
-        for (auto& kv : ships) if (kv.second.waits_dock == 0) kv.second.ticket = 0;
+        for (auto& kv : ships)
+        {
+            if (kv.second.waits_dock == 0) kv.second.ticket = 0;
+            if (kv.second.blocked_by == kv.first) kv.second.blocked_by = 0;   // a ship is never blocked by itself
+        }
     }
 
     // WHAT: holder of a dock is bad (send it away) only when a ship waits for it and: the dock is FULL, or the holder is parked (HALT/OFF),
