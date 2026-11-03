@@ -758,6 +758,126 @@ static void t_net_log_gate()
     CHECK(log_gate(q, "1/3", 500.0, 10.0, 1e18) == GATE_NONE);         // no reminder for queue
 }
 
+static void t_net_score_order()
+{
+    NetReq full; full.cargo_pct = 98;
+    NetReq low; low.cargo_pct = 10;
+    NetReq fuel; fuel.cargo_pct = 50; fuel.fuel_low = true;
+    NetReq plain; plain.cargo_pct = 50;
+    CHECK(net_score(full, P_UNLOAD, 0, false) > net_score(low, P_UNLOAD, 500, false));   // cargo beats waiting time
+    CHECK(net_score(fuel, P_UNLOAD, 0, false) > net_score(plain, P_UNLOAD, 0, false));   // fuel low breaks a cargo tie
+    CHECK(net_score(plain, P_UNLOAD, 0, false) > net_score(low, P_UNLOAD, 599, false));  // any cargo step beats the longest wait
+    CHECK(net_score(plain, P_UNLOAD, 300, false) > net_score(plain, P_UNLOAD, 10, false));
+    CHECK(net_score(low, P_UNLOAD, 600, false) > net_score(full, P_UNLOAD, 599, false)); // aged beats everything
+    CHECK(net_score(low, P_UNLOAD, 1, true) == net_score(full, P_REFUEL, 2, true));      // aged: same tier, ticket decides
+    CHECK(net_prio_why(full, 0, false) == "cargo 98%" && net_prio_why(fuel, 0, false) == "cargo 50%");
+    NetReq ff; ff.fuel_low = true;
+    CHECK(net_prio_why(ff, 0, false) == "fuel low" && net_prio_why(plain, 0, false) == "cargo 50%");
+    CHECK(net_prio_why(NetReq(), 30, false) == "waiting" && net_prio_why(NetReq(), 600, false) == "aged");
+}
+
+static void t_net_higher_cargo_wins()
+{
+    std::map<int, NetDock> d; std::map<int, NetShip> s; long t = 0;
+    NetReq full; full.cargo_pct = 98;
+    NetReq low; low.cargo_pct = 10;
+    s[20].prio = net_score(full, P_UNLOAD, 0, false);    // full ship, waited later
+    s[21].prio = net_score(low, P_UNLOAD, 0, false);     // low ship, waited first
+    d[1].occ = 7;
+    CHECK(net_pick(d, s, t, 21, P_UNLOAD, {1}, 0, 1).k == NetVerdict::WAIT);
+    CHECK(net_pick(d, s, t, 20, P_UNLOAD, {1}, 0, 2).k == NetVerdict::WAIT);
+    d[1].occ = 0;                                         // dock free, both queued
+    CHECK(net_pick(d, s, t, 21, P_UNLOAD, {1}, 0, 3).k == NetVerdict::WAIT);   // full ship is ahead: no GO for the low ship
+    CHECK(net_pick(d, s, t, 20, P_UNLOAD, {1}, 0, 4).k == NetVerdict::GO && d[1].resv == 20);
+    net_release_ship(d, s, 20);
+    net_grant_tick(d, s, 5);
+    CHECK(d[1].resv == 21 && s[21].granted);              // next free dock goes to the waiting low ship
+}
+
+static void t_net_non_preempt()
+{
+    std::map<int, NetDock> d; std::map<int, NetShip> s; long t = 0;
+    d[1].occ = 7;
+    s[30].prio = net_score(NetReq(), P_UNLOAD, 600, false);   // aged waiter
+    CHECK(net_pick(d, s, t, 30, P_UNLOAD, {1}, 0, 1).k == NetVerdict::WAIT);
+    net_grant_tick(d, s, 2);
+    CHECK(d[1].occ == 7 && d[1].resv == 0 && !s[30].granted);   // the holder is never sent away by a grant
+}
+
+static void t_net_slots()
+{
+    NetDock nd;
+    CHECK(net_slot_assign(nd, 10) == 1 && net_slot_assign(nd, 11) == 2);
+    CHECK(net_slot_assign(nd, 10) == 1);                    // stable
+    net_slot_free(nd, 10);
+    CHECK(net_slot_assign(nd, 12) == 1);                    // freed slot reused
+    CHECK(net_slot_assign(nd, 13) == 3 && nd.line_slots == 3);
+}
+
+static void t_net_slot_pos()
+{
+    const double east[3] = {0, 1, 0};
+    double o[3];
+    net_slot_pos(east, 1, o);
+    CHECK(std::fabs(o[0]) < 1e-9 && std::fabs(o[1] - 150.0) < 1e-9 && std::fabs(o[2]) < 1e-9);
+    net_slot_pos(east, 2, o);
+    CHECK(std::fabs(o[1] - 250.0) < 1e-9);
+    const double big[3] = {5, 0, 0};                        // length not 1: still metres
+    net_slot_pos(big, 1, o);
+    CHECK(std::fabs(o[0] - 150.0) < 1e-9);
+}
+
+static void t_net_line_spacing()
+{
+    // 8 docks 80 m apart on one row, 6 slots each: every pair of slot points must stay >= 50 m apart
+    std::vector<std::array<double, 3>> pts;
+    std::vector<std::array<double, 3>> docks;
+    for (int i = 0; i < 8; ++i)
+    {
+        const std::array<double, 3> dk = {80.0 * i, 0.0, 0.0};
+        double dir[3] = {1, 0, 0};
+        CHECK(net_line_dir_fix(dk.data(), dir, 6, pts));
+        for (int k = 1; k <= 6; ++k)
+        {
+            double o[3];
+            net_slot_pos(dir, k, o);
+            pts.push_back({dk[0] + o[0], dk[1] + o[1], dk[2] + o[2]});
+        }
+        docks.push_back(dk);
+    }
+    bool ok = true;
+    for (size_t a = 0; a < pts.size(); ++a)
+        for (size_t b = a + 1; b < pts.size(); ++b)
+        {
+            const double dx = pts[a][0] - pts[b][0], dy = pts[a][1] - pts[b][1], dz = pts[a][2] - pts[b][2];
+            if (std::sqrt(dx * dx + dy * dy + dz * dz) < 50.0 - 1e-6) ok = false;
+        }
+    CHECK(ok);
+    // a dock already clear keeps its direction
+    const std::array<double, 3> far = {5000.0, 5000.0, 0.0};
+    double keep[3] = {0, 1, 0};
+    CHECK(net_line_dir_fix(far.data(), keep, 6, pts) && keep[0] == 0 && keep[1] == 1);
+}
+
+static void t_net_clear_expired()
+{
+    NetDock nd;
+    nd.resv = 10; nd.since = 0;
+    CHECK(!net_clear_expired(nd, 59.0) && nd.resv == 10);
+    CHECK(net_clear_expired(nd, 60.0) && nd.resv == 0 && nd.since == 0);
+    NetDock here;                                          // ship already docked there: never expired
+    here.resv = 10; here.occ = 10; here.since = 0;
+    CHECK(!net_clear_expired(here, 500.0) && here.resv == 10);
+}
+
+static void t_net_unload_first()
+{
+    CHECK(net_unload_first(true, P_REFUEL));
+    CHECK(!net_unload_first(true, P_UNLOAD));
+    CHECK(!net_unload_first(false, P_REFUEL));
+    CHECK(!net_unload_first(true, P_UNDOCK_TARGET));
+}
+
 // ---------- runner ----------
 
 struct Case { const char* name; void (*fn)(); };
@@ -783,6 +903,9 @@ int main()
         {"net_full", t_net_full}, {"net_bad_holder", t_net_bad_holder}, {"unload_stalled", t_unload_stalled},
         {"net_log_gate", t_net_log_gate}, {"net_self_occupant", t_net_self_occupant}, {"net_queue_never_occupant", t_net_queue_never_occupant}, {"net_blocked_by_never_self", t_net_blocked_by_never_self},
         {"net_reconcile", t_net_reconcile}, {"net_release", t_net_release}, {"net_text", t_net_text},
+        {"net_score_order", t_net_score_order}, {"net_higher_cargo_wins", t_net_higher_cargo_wins}, {"net_non_preempt", t_net_non_preempt},
+        {"net_slots", t_net_slots}, {"net_slot_pos", t_net_slot_pos}, {"net_line_spacing", t_net_line_spacing},
+        {"net_clear_expired", t_net_clear_expired}, {"net_unload_first", t_net_unload_first},
     };
     for (const Case& c : cases)
     {
