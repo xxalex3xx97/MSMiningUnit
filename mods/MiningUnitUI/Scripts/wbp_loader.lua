@@ -103,14 +103,23 @@ local function viewport(p)
   return vw / sc, vh / sc
 end
 
--- widget by name: GetWidgetFromName first, then the is-variable UProperty on the instance
+-- widget by name: GetWidgetFromName first, then the is-variable UProperty on the instance, then a tree walk from Root
+-- WHY: python-built widgets (add_docks_tab.py, add_btn_collect.py) are not Is Variable, so the first two miss them. Walk result cached per window (S.wc, reset on open).
+local deepFind -- defined with the dynamic list helpers below
 local function w(name)
   if not ok(S.w) then return nil end
   local s, x = pcall(function() return S.w:GetWidgetFromName(FName(name)) end)
   if s and ok(x) then return x end
   local s2, y = pcall(function() return S.w[name] end)
   if s2 and ok(y) then return y end
-  return nil
+  S.wc = S.wc or {}
+  local c = S.wc[name]
+  if c == nil then
+    local s3, root = pcall(function() return S.w:GetWidgetFromName(FName("Root")) end)
+    c = (s3 and ok(root) and deepFind(root, name)) or false
+    S.wc[name] = c
+  end
+  return c or nil
 end
 
 -- walk the real widget tree from RootWidget (GetChildrenCount/GetChildAt are UFUNCTIONs on panels)
@@ -637,9 +646,9 @@ end
 -- ===== generic dynamic list: a DynamicEntryBox of a Python-built row WBP. Python widgets are not Is Variable, so boxes and entry children are found by walking
 -- from a variable anchor / the entry root (deepFind). spec: key, anchor (variable widget above the box), box (name), n (row count), bind(e, find, idx) once per new entry,
 -- paint(e, find, i) for every row on every call. Entries live in S.dyn[key].ents[i] = { w = entry, find = fn(name) }.
-local function deepFind(node, name, depth)
+function deepFind(node, name, depth)   -- assigns the forward-declared local above
   depth = depth or 0
-  if depth > 12 or not ok(node) then return nil end
+  if depth > 16 or not ok(node) then return nil end
   if nm(node) == name then return node end
   local okc, cnt = pcall(function() return node:GetChildrenCount() end)
   if okc and type(cnt) == "number" then
@@ -1697,6 +1706,7 @@ function M.open(ship)
     S.mode, S.t0 = mode, os.clock()
     S.logKey = nil   -- new widgets: repaint the Log tab on the first tick
     S.docksKey = nil
+    S.wc = nil   -- new window: walk-found widgets are looked up again
     -- ship list = bench ships; sid = block's ship if listed, else last picked (F4), else first; empty list = nil
     local list = benchShips()
     local function inList(id) for _, o in ipairs(list) do if o.id == id then return true end end return false end
