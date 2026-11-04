@@ -83,6 +83,7 @@ namespace
         int record = 0;                      // no effect since 0.0.1 (recorder removed); kept so old INI files still load
         int record_interval_seconds = 2;     // global only
         bool kill_switch = false;            // 1 = the mod stops touching the game completely (hot reload). Global only. (INI: kill_switch)
+        int flee_on_target = 1;              // 1 = a ship targeted by a hostile (or in combat) flees to a dock like after a hull hit. Global only. (INI: flee_on_target)
         // text distance, e.g. 50km: belt mode only. Rocks farther than this from the ship count as none (the ship warps instead of flying there), and radius is capped by it. Empty/0/bad = 50 km. Per-ship. (INI: warp_range)
         std::string warp_range = "50km";
         std::string mining_distance = "50m";    // per-ship: mining distance from the rock, e.g. 200m / 0.2km (empty = unset)
@@ -364,6 +365,9 @@ namespace
         return (dock_dist_m >= 0.0 && dock_dist_m <= WARP_ARRIVE_M) || t >= WARP_SETTLE_MAX_S;
     }
 
+    // WHAT: mining stops (leftover collect, then unload) when the cargo fill reaches this % (was 100). Also the CHECK rule, so the ship does not undock again at once.
+    constexpr int CARGO_STOP_PCT = 90;
+
     // WHAT: cargo fill % from slot counts: other / (isz - fuel) * 100, clamped 0..100. 0 when no non-fuel slot is used, -1 when the cargo has no free slot base.
     int cargo_pct_calc(int isz, int fuel_s, int other_s)
     {
@@ -407,6 +411,14 @@ namespace
         return COL_WAIT;
     }
 
+    // WHAT: idle watchdog limit (s) for MS_MINE. idle_s 0 = off (returned as is). While the rock is alive: at least IDLE_ROCK_MIN_S.
+    // WHY: ore comes in bursts, a 5 s gap is not a spent rock; only a rock that is gone or a long silence ends the mining.
+    constexpr double IDLE_ROCK_MIN_S = 30.0;
+    inline double idle_limit(double idle_s, bool rock_alive)
+    {
+        return (idle_s > 0.0 && rock_alive) ? std::max(idle_s, IDLE_ROCK_MIN_S) : idle_s;
+    }
+
     // WHAT: sweep (MS_SWEEP) limits: pick timeout (s), rescans before giving up, fly-back max distance (m), fly timeout (s), warp wait (s).
     constexpr double SWEEP_PICK_S = 10.0;
     constexpr int SWEEP_RESCANS = 2;
@@ -448,6 +460,54 @@ namespace
     bool hull_dropped(int32_t baseline, int32_t h)
     {
         return baseline >= 0 && h < baseline;
+    }
+
+    // WHAT: destroyed-ship debounce. A scan with the destroyed signal adds 1 to the ship's count, a scan without it sets 0.
+    // WHY: one scan can read a transient value (hull 0, ship missing from the list), so a ship counts as destroyed only after SHIP_DEAD_SCANS scans in a row.
+    constexpr int SHIP_DEAD_SCANS = 2;
+    inline int dead_scan_next(int prev, bool signal)
+    {
+        return signal ? prev + 1 : 0;
+    }
+    inline bool dead_confirmed(int count)
+    {
+        return count >= SHIP_DEAD_SCANS;
+    }
+
+    // ---------- combat: target flee trigger and combat log text (mb_mining.hpp samples the game, mb_common.hpp writes the file) ----------
+
+    // WHAT: consecutive target samples with a hostile targeter (a sample with none sets 0).
+    // WHY: one read can catch a stale entry; the flee needs TARGET_FLEE_READS reads in a row (about 1 s apart, the sample cadence).
+    constexpr int TARGET_FLEE_READS = 2;
+    inline int target_streak_next(int prev, int hostile_n)
+    {
+        return hostile_n > 0 ? prev + 1 : 0;
+    }
+    // WHAT: flee trigger from a target sample: flee_on_target on, not latched by an earlier flee of this attack, and the hostile-targeter streak reached TARGET_FLEE_READS.
+    // WHY: IsShipInCombat() is not a trigger (our own lasers vs rocks may set it); it is logged only. The latch means one flee per attack.
+    inline bool target_flee_trigger(bool enabled, int streak, bool latched)
+    {
+        return enabled && !latched && streak >= TARGET_FLEE_READS;
+    }
+    // WHAT: the latch stays set only while the ship is still attacked (targeted or in combat); a sample with no attack clears it.
+    inline bool target_latch_next(bool latched, bool attacked)
+    {
+        return attacked && latched;
+    }
+    // WHAT: text of a log file after the size cap: unchanged up to cap bytes, past it the older half is dropped (cut after the first newline past the middle).
+    // WHY: MiningCombat.txt must not grow without limit in a long session.
+    inline std::string combat_log_trim(const std::string& txt, size_t cap)
+    {
+        if (txt.size() <= cap) return txt;
+        const size_t nl = txt.find('\n', txt.size() / 2);
+        return nl == std::string::npos ? std::string() : txt.substr(nl + 1);
+    }
+    // WHAT: one attacker entry of a combat line: "#idx class id=.. name='..' owner='..' dist=..m" (+ " own" for our bench ships). dist_m < 0 = n/a.
+    inline std::wstring attacker_text(int idx, const std::wstring& cls, int id, const std::wstring& name, const std::wstring& owner, double dist_m, bool own)
+    {
+        std::wstring s = L"#" + std::to_wstring(idx) + L" " + cls + L" id=" + std::to_wstring(id) + L" name='" + name + L"' owner='" + owner + L"' dist=";
+        s += dist_m < 0.0 ? std::wstring(L"n/a") : std::to_wstring(static_cast<long long>(dist_m)) + L"m";
+        return own ? s + L" own" : s;
     }
 
     // WHAT: dock time limit rounds used (n): from MINE_DOCK_RETRIES on, the next limit hit undocks and goes idle.
@@ -885,6 +945,106 @@ namespace
         case NR_DOCK_GONE: return "Unload dock " + subject + " no longer exists";
         case NR_NOTHING_TO_UNLOAD: return "Nothing to unload";
         default: return "";
+        }
+    }
+
+    // WHAT: no-yield rock: a rock whose idle-watchdog exit (no ore gained on it) happened this many times in a row is skipped by the rock search.
+    // WHY: a rock that gives nothing (spent, unreachable) would otherwise be picked again forever.
+    constexpr int NOY_SKIP_VISITS = 3;
+    inline bool noy_skip_now(int visits) { return visits >= NOY_SKIP_VISITS; }
+
+    // WHAT: "rock lost" approach results (another ship took the rock) in a row in SEEK. This many = HALT "rock lost 5x".
+    // WHY: a rock lost is a free retry, but the same rock vanishing again and again must still end the loop.
+    constexpr int ROCK_LOST_MAX = 5;
+    inline bool rock_lost_halt(int n) { return n >= ROCK_LOST_MAX; }
+
+    // WHAT: CHECK returns to OFF with nothing in range (belt off), in a row, before HALT "no rock in range". 12 checks x MINE_ROCK_CHECK_S (5 s) = about 60 s.
+    // WHY: the idle poll must not run forever with no rock anywhere near.
+    constexpr int IDLE_POLL_MAX = 12;
+    inline bool idle_poll_halt(int n) { return n >= IDLE_POLL_MAX; }
+
+    // WHAT: every rock in range is skipped: a rock exists when the skip list is ignored, but none is found with it. HALT "rocks give no ore".
+    inline bool all_rocks_skipped(bool rock_ignoring_skip, bool rock_with_skip) { return rock_ignoring_skip && !rock_with_skip; }
+
+    // WHAT: all rocks skipped -> HALT "rocks give no ore" only without a belt (belt off/none). With a belt the sector counts as empty and the belt moves on.
+    // WHY: a belt has other sectors to try; the no-sector case HALTs through the belt path ("Idle: no ore in any sector").
+    inline bool noy_all_halt(const std::string& belt) { return belt_off(belt); }
+
+    // WHAT: longest dock wait (dwait, queued or holding for a dock) in one trip before HALT "waited 15 min for a dock" (s).
+    // WHY: a dock that never frees up must not hold the loop forever (not an error).
+    constexpr double MINE_DWAIT_MAX_S = 900.0;
+    inline bool dwait_halt(double waited_s) { return waited_s > MINE_DWAIT_MAX_S; }
+
+    // WHAT: refuel amount is never below its own threshold (a refuel to amount ends at or above threshold).
+    // WHY: a refuel that stops at amount below threshold would make the next CHECK refuel again at once.
+    inline int fuel_amount_floor(int amount, int threshold) { return std::max(amount, threshold); }
+
+    // WHAT: one bounded setting. key = INI key (global or [ship.<id>]). min/max in the key's unit (s, count, km, fuel units); dist: the value is a
+    //       distance text (5km, 2500m, plain meters) and the bounds are meters. zero_ok: 0 = off, allowed and kept as is.
+    // WHY: one table for the config load and for the Lua Operation tab, so out-of-range input is clamped or rejected the same way everywhere.
+    struct SettingBound { const char* key; double min; double max; bool zero_ok; bool dist; };
+    constexpr SettingBound SETTING_BOUNDS[] = {
+        {"idle_seconds", 30, 3600, true, false},
+        {"max_attempts", 1, 10, false, false},
+        {"wait_seconds", 0, 300, false, false},
+        {"dock_hold_limit", 30, 3600, true, false},
+        {"warp_trip_km", 1, 100, true, false},
+        {"fuel_hydrogen_threshold", 0, 5000, false, false},
+        {"fuel_hydrogen_amount", 0, 5000, false, false},
+        {"fuel_warp_threshold", 0, 5000, false, false},
+        {"fuel_warp_amount", 0, 5000, false, false},
+        {"fuel_deuterium_threshold", 0, 5000, false, false},
+        {"fuel_deuterium_amount", 0, 5000, false, false},
+        {"fuel_margin", 0, 5000, false, false},
+        {"fuel_amount", 0, 5000, false, false},
+        {"radius", 100, 100000, true, true},
+        {"max_radius", 100, 100000, true, true},
+        {"warp_range", 1000, 100000, true, true},
+        {"mining_distance", 1, 5000, false, true},
+        {"flee_on_target", 0, 1, true, false},
+    };
+
+    // WHAT: the bound row for key, nullptr when the key is not bounded.
+    inline const SettingBound* find_setting_bound(const std::string& key)
+    {
+        for (const SettingBound& b : SETTING_BOUNDS) if (key == b.key) return &b;
+        return nullptr;
+    }
+
+    // WHAT: v clamped to the bound into out (zero_ok and v == 0 stays 0). true when the value changed.
+    inline bool clamp_setting(const SettingBound& b, double v, double& out)
+    {
+        out = (b.zero_ok && v == 0.0) ? 0.0 : std::min(b.max, std::max(b.min, v));
+        return out != v;
+    }
+
+    // WHAT: clamps every bounded key of one raw INI section (kv) in place. Each change adds one "key old -> new" text to msgs.
+    // WHY: runs on load only; empty and unparsable values are left alone (apply_kv keeps the old value or the default).
+    inline void clamp_kv(std::map<std::string, std::string>& kv, std::vector<std::string>& msgs)
+    {
+        for (const SettingBound& b : SETTING_BOUNDS)
+        {
+            auto it = kv.find(b.key);
+            if (it == kv.end()) continue;
+            const std::string t = trim(it->second);
+            if (t.empty()) continue;
+            double v = 0.0;
+            if (b.dist)
+            {
+                v = parse_distance(t);
+                if (v < 0.0) continue;
+            }
+            else
+            {
+                char* end = nullptr;
+                v = std::strtod(t.c_str(), &end);
+                if (end == t.c_str() || *end != '\0') continue;
+            }
+            double out = v;
+            if (!clamp_setting(b, v, out)) continue;
+            const std::string nt = std::to_string(static_cast<long long>(out)) + (b.dist ? "m" : "");
+            msgs.push_back(std::string(b.key) + " " + t + " -> " + nt);
+            it->second = nt;
         }
     }
 }

@@ -428,6 +428,14 @@ static void t_ore_scan_due()
     CHECK(ore_scan_due(false, 1000, 61000, 60000) == true);   // period passed
 }
 
+static void t_idle_limit()
+{
+    CHECK(idle_limit(5, true) == 30.0);      // rock alive: at least IDLE_ROCK_MIN_S
+    CHECK(idle_limit(45, true) == 45.0);     // longer setting kept
+    CHECK(idle_limit(5, false) == 5.0);      // rock gone: idle_seconds as set
+    CHECK(idle_limit(0, true) == 0.0);       // 0 = off
+}
+
 static void t_hull_dropped()
 {
     CHECK(!hull_dropped(-1, 0));                    // no baseline: never a drop
@@ -437,12 +445,88 @@ static void t_hull_dropped()
     CHECK(!hull_dropped(0, 0));
 }
 
+static void t_dead_scan()
+{
+    CHECK(SHIP_DEAD_SCANS == 2);
+    int n = 0;
+    n = dead_scan_next(n, true);  CHECK(n == 1 && !dead_confirmed(n));   // one signal: not destroyed yet
+    n = dead_scan_next(n, false); CHECK(n == 0 && !dead_confirmed(n));   // transient: reset
+    n = dead_scan_next(n, true);  CHECK(!dead_confirmed(n));
+    n = dead_scan_next(n, true);  CHECK(n == 2 && dead_confirmed(n));    // two in a row: destroyed
+    n = dead_scan_next(n, true);  CHECK(dead_confirmed(n));              // stays destroyed while the signal lasts
+}
+
 static void t_dock_limit_giveup()
 {
     CHECK(MINE_DOCK_RETRIES == 10);
     CHECK(!dock_limit_giveup(9));
     CHECK(dock_limit_giveup(10));
     CHECK(dock_limit_giveup(11));
+}
+
+static void t_loop_guards()
+{
+    // no-yield skip after 3 visits, rock lost HALT at 5, idle poll HALT at 12, dwait cap at 900 s, fuel floor
+    CHECK(!noy_skip_now(2));
+    CHECK(noy_skip_now(3));
+    CHECK(!rock_lost_halt(4));
+    CHECK(rock_lost_halt(5));
+    CHECK(!idle_poll_halt(11));
+    CHECK(idle_poll_halt(12));
+    CHECK(MINE_DWAIT_MAX_S == 900.0);
+    CHECK(!dwait_halt(900.0));
+    CHECK(dwait_halt(900.5));
+    // every rock in range skipped: a rock exists ignoring the skip list but none with it
+    CHECK(all_rocks_skipped(true, false));
+    CHECK(!all_rocks_skipped(true, true));
+    CHECK(!all_rocks_skipped(false, false));
+    // all skipped: HALT only without a belt (off/none/empty); a belt moves on
+    CHECK(noy_all_halt("none"));
+    CHECK(noy_all_halt(""));
+    CHECK(!noy_all_halt("auto"));
+    CHECK(!noy_all_halt("12"));
+    CHECK(fuel_amount_floor(100, 300) == 300);
+    CHECK(fuel_amount_floor(500, 300) == 500);
+    CHECK(fuel_amount_floor(0, 0) == 0);
+}
+
+static void t_setting_clamp()
+{
+    const SettingBound* idle = find_setting_bound("idle_seconds");
+    CHECK(idle != nullptr);
+    CHECK(find_setting_bound("no_such_key") == nullptr);
+    double o = -1.0;
+    CHECK(clamp_setting(*idle, 10, o) && o == 30.0);       // below min -> min
+    CHECK(clamp_setting(*idle, 9999, o) && o == 3600.0);   // above max -> max
+    CHECK(!clamp_setting(*idle, 0, o) && o == 0.0);        // 0 = off, allowed and kept
+    CHECK(!clamp_setting(*idle, 45, o) && o == 45.0);      // in range untouched
+    const SettingBound* att = find_setting_bound("max_attempts");   // no off value: 0 -> min 1
+    CHECK(att != nullptr);
+    CHECK(clamp_setting(*att, 0, o) && o == 1.0);
+    CHECK(clamp_setting(*att, 11, o) && o == 10.0);
+
+    // clamp_kv: out of range clamped (one msg each), 0 = off kept, empty and unparsable left alone
+    std::map<std::string, std::string> kv = {
+        {"idle_seconds", "10"}, {"dock_hold_limit", "0"}, {"radius", "500km"}, {"max_radius", "0"},
+        {"mining_distance", "abc"}, {"warp_range", ""}, {"fuel_warp_amount", "9000"}, {"warp_trip_km", "500"}};
+    std::vector<std::string> msgs;
+    clamp_kv(kv, msgs);
+    CHECK(kv["idle_seconds"] == "30");
+    CHECK(kv["dock_hold_limit"] == "0");
+    CHECK(kv["radius"] == "100000m");
+    CHECK(kv["max_radius"] == "0");
+    CHECK(kv["mining_distance"] == "abc");
+    CHECK(kv["warp_range"] == "");
+    CHECK(kv["fuel_warp_amount"] == "5000");
+    CHECK(kv["warp_trip_km"] == "100");
+    CHECK(msgs.size() == 4);
+    // warp_range below its min: 500 m -> 1000 m
+    std::map<std::string, std::string> kv2 = {{"warp_range", "500"}};
+    std::vector<std::string> m2;
+    clamp_kv(kv2, m2);
+    CHECK(kv2["warp_range"] == "1000m");
+    CHECK(m2.size() == 1);
+    CHECK(parse_distance(kv["radius"]) == 100000.0);
 }
 
 static void t_unload_chain_more()
@@ -893,6 +977,34 @@ static void t_dock_undock_first()
     CHECK(!dock_undock_first(1, 0));          // no target: nothing to do
 }
 
+static void t_combat_flee()
+{
+    CHECK(TARGET_FLEE_READS == 2);
+    int s = 0;
+    s = target_streak_next(s, 1); CHECK(s == 1 && !target_flee_trigger(true, s, false));   // one read: no flee yet
+    s = target_streak_next(s, 0); CHECK(s == 0);                                           // a clean read resets
+    s = target_streak_next(s, 3); s = target_streak_next(s, 1); CHECK(s == 2 && target_flee_trigger(true, s, false));   // two in a row: flee
+    CHECK(!target_flee_trigger(true, 0, false));               // IsShipInCombat alone never flees (streak 0)
+    CHECK(!target_flee_trigger(false, 5, false));              // flee_on_target = 0: never
+    CHECK(!target_flee_trigger(true, 5, true));                // latched (already fled for this attack): no second flee
+    bool l = true;
+    CHECK(target_latch_next(l, true));                         // still attacked: stays latched
+    CHECK(!target_latch_next(l, false));                       // attack over: released
+    CHECK(!target_latch_next(false, true));                    // never set without a flee
+}
+
+static void t_combat_log()
+{
+    CHECK(combat_log_trim("abc\n", 10) == "abc\n");            // under cap: unchanged
+    const std::string big = "line1\nline2\nline3\nline4\n";     // 24 bytes, cap 10: drop the older half
+    const std::string cut = combat_log_trim(big, 10);
+    CHECK(cut == "line4\n");                                   // cut after the first newline past the middle (index 12)
+    CHECK(combat_log_trim("nonewline_past_cap_xxxxxxxxxxxxxxxxxxxxxx", 10).empty());   // no newline past the middle: nothing kept
+    CHECK(attacker_text(1, L"DMSPlayerShipObject", 42, L"Raider", L"Pirates", 1234.7, false) ==
+          L"#1 DMSPlayerShipObject id=42 name='Raider' owner='Pirates' dist=1234m");
+    CHECK(attacker_text(2, L"Rock", 7, L"", L"n/a", -1.0, true) == L"#2 Rock id=7 name='' owner='n/a' dist=n/a own");
+}
+
 static void t_net_unload_first()
 {
     CHECK(net_unload_first(true, P_REFUEL));
@@ -948,8 +1060,8 @@ int main()
         {"parse_cmd_line", t_parse_cmd_line}, {"cmd_seq_is_new", t_cmd_seq_is_new},
         {"belt", t_belt}, {"csq", t_csq}, {"sector_contains", t_sector_contains}, {"warp_fuel", t_warp_fuel},
         {"cargo_pct", t_cargo_pct}, {"fuel_low", t_fuel_low}, {"got_delta", t_got_delta}, {"row_done", t_row_done},
-        {"item_next", t_item_next}, {"collect_verdict", t_collect_verdict}, {"sweep", t_sweep}, {"ore_scan_due", t_ore_scan_due}, {"hull_dropped", t_hull_dropped},
-        {"dock_limit_giveup", t_dock_limit_giveup}, {"unload_chain_more", t_unload_chain_more}, {"unload_cand", t_unload_cand}, {"refuel_stalled", t_refuel_stalled}, {"mine_radius", t_mine_radius},
+        {"item_next", t_item_next}, {"collect_verdict", t_collect_verdict}, {"sweep", t_sweep}, {"ore_scan_due", t_ore_scan_due}, {"idle_limit", t_idle_limit}, {"hull_dropped", t_hull_dropped}, {"dead_scan", t_dead_scan},
+        {"dock_limit_giveup", t_dock_limit_giveup}, {"loop_guards", t_loop_guards}, {"setting_clamp", t_setting_clamp},{"unload_chain_more", t_unload_chain_more}, {"unload_cand", t_unload_cand}, {"refuel_stalled", t_refuel_stalled}, {"mine_radius", t_mine_radius},
         {"station", t_station},
         {"net_free_go", t_net_free_go}, {"net_busy_wait", t_net_busy_wait}, {"net_second_dock", t_net_second_dock},
         {"net_fifo", t_net_fifo}, {"net_go_drops_other_grant", t_net_go_drops_other_grant}, {"net_not_configured", t_net_not_configured}, {"net_dock_gone", t_net_dock_gone},
@@ -959,6 +1071,7 @@ int main()
         {"net_score_order", t_net_score_order}, {"net_higher_cargo_wins", t_net_higher_cargo_wins}, {"net_non_preempt", t_net_non_preempt},
         {"net_flee_no_slot", t_net_flee_no_slot}, {"net_slots", t_net_slots}, {"net_slot_pos", t_net_slot_pos}, {"net_offset_carry", t_net_offset_carry}, {"net_line_spacing", t_net_line_spacing},
         {"net_clear_expired", t_net_clear_expired}, {"net_unload_first", t_net_unload_first}, {"dock_undock_first", t_dock_undock_first},
+        {"combat_flee", t_combat_flee}, {"combat_log", t_combat_log},
     };
     for (const Case& c : cases)
     {
