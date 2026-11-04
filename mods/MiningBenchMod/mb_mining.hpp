@@ -159,6 +159,9 @@ namespace
         double raw[3] = {0, 0, 0};
         double sec_clock = 0.0;                // seconds since the sector text was read (refreshed every 10 s and on each hull drop)
         std::wstring dmg_txt = STR("n/a");     // Health/DamageState struct at the last status sample (raw ints)
+        bool lp = false;                       // low power flag at the last sample (power_track)
+        double lp_t = 0.0;                     // seconds in low power (1 s samples, 0 when not in low power); response at LOWPOWER_GRACE_S
+        bool lp_trip = false;                  // a dock trip was started for low power; a dock stage still in low power then HALTs (lowpower_halt_at_dock)
     };
     std::map<int, MineSt> g_mine;
     std::map<int, int> g_mine_fault_n;   // per ship: SEH faults since its Start (mine_fault); reset by Start
@@ -1026,6 +1029,15 @@ namespace
             m.backout = false;
             trip_begin(ship, sid, m, m.flee_why, "dock_mining");
             if (m.st == MS_HALT) { m.err = true; m.flee = false; m.flee_t = -1.0; }
+            return true;
+        }
+        // 2a. low power for LOWPOWER_GRACE_S while flying out / mining: stop work, dock trip that refuels (like fuel low). low_power_return 0 = off.
+        //     A trip that is itself flying (MS_TRIP) does nothing here. The dock guard (st_hold) stops the loop when the dock does not clear it.
+        if ((m.st == MS_SEEK || m.st == MS_MINE || m.st == MS_COLLECT || m.st == MS_SWEEP) && m.lp && lowpower_due(m.lp_t) && g_cfg.low_power_return == 1)
+        {
+            m.lp_trip = true;
+            mine_stop_work(ship, sid);
+            trip_begin(ship, sid, m, STR("low power"), "dock_refuel");
             return true;
         }
         // 2. fuel check while flying out / mining
@@ -2476,6 +2488,13 @@ namespace
         }
         if (!done && left != m.left_last) { m.left_last = left; mlog(sid, std::wstring(is_refuel(m) ? STR("Refueling") : STR("Unloading")) + STR(", left: ") + left); }
         if (done && !m.hold_seen) { m.hold_seen = true; mlog(sid, std::wstring(is_refuel(m) ? STR("Refuel") : STR("Unload")) + STR(" done, waiting ") + std::to_wstring(c.wait_seconds) + STR(" s")); }
+        // loop guard: dock stage done after a low-power trip and still in low power -> HALT, no new trip (lowpower_halt_at_dock)
+        if (done && lowpower_halt_at_dock(m.lp_trip, m.lp && lowpower_due(m.lp_t)))
+        {
+            m.st = MS_HALT;
+            mset(sid, m, STR("Low power persists after ") + std::wstring(is_refuel(m) ? STR("refuel") : STR("unload")) + STR(": check generators"));
+            return;
+        }
         if (done && m.t >= c.wait_seconds) { m.dl_n = 0; trip_end(ship, sid, m, c); return; }
         mset(sid, m, STR("at dock, waiting: ") + (done ? std::wstring(STR("wait time")) : left));
         return;
@@ -2934,6 +2953,51 @@ namespace
         }
     }
 
+    // WHAT: power field text for the POWER lines: the ship's property, else FlightModel's; "absent" when neither has it.
+    std::wstring power_field(UObject* ship, const TCHAR* name)
+    {
+        if (ship->GetPropertyByNameInChain(name)) return any_prop(ship, name);
+        UObject* fm = get_obj_prop(ship, STR("FlightModel"));
+        if (alive(fm) && fm->GetPropertyByNameInChain(name)) return any_prop(fm, name);
+        return STR("absent");
+    }
+
+    // WHAT: POWER monitor, once per status second (mine_sample). lp = the low-power flag (lp_flag). Seconds in low power go to lp_t (el per sample).
+    //       On change: "POWER lost|restored" to MiningCombat.txt (combat_log) and the Log tab. The lost line carries the state, speed, Throttle,
+    //       fuel cargo and thresholds, and the power fields (PowerGenRate, PowerDraw, ThrusterPowerDraw; absent when the build has no such name).
+    // WHY: 2026-11-04: a ship crawled in low power for 12 min with no log line and never refuelled. A restore clears lp_trip (the low-power trip is over).
+    void power_track(UObject* ship, int sid, MineSt& m, double el)
+    {
+        bool lp = false;
+        if (!lp_flag(ship, lp)) return;
+        if (lp) m.lp_t += el; else m.lp_t = 0.0;
+        if (lp == m.lp) return;
+        m.lp = lp;
+        if (!lp)
+        {
+            m.lp_trip = false;
+            combat_log(STR("POWER restored ship=") + std::to_wstring(sid) + STR(" ") + g_bench_names[sid]);
+            mlog(sid, STR("Low power restored"));
+            return;
+        }
+        int32_t thr = 0;
+        get_int_prop(ship, STR("Throttle"), thr);
+        const Config c = eff_cfg(sid);
+        std::wstring fuel, th;
+        for (int i = 0; i < N_FUEL; ++i)
+        {
+            std::wstring w;
+            UObject* it = item_c(FUEL_ITEM[i], w);
+            fuel += STR(" ") + widen(FUEL_KEY[i]) + STR("=") + (alive(it) ? i64w(inv_total(ship, it)) : std::wstring(STR("n/a")));
+            th += (i ? STR("/") : STR("")) + std::to_wstring(c.fuel[i].threshold);
+        }
+        combat_log(STR("POWER lost ship=") + std::to_wstring(sid) + STR(" ") + g_bench_names[sid] + STR(" state=") + mine_state_name(m.st) +
+                   STR(" speed=") + std::to_wstring(m.spd) + STR(" throttle=") + std::to_wstring(thr) + STR(" fuel:") + fuel + STR(" thresholds=") + th +
+                   STR(" PowerGenRate=") + power_field(ship, STR("PowerGenRate")) + STR(" PowerDraw=") + power_field(ship, STR("PowerDraw")) +
+                   STR(" ThrusterPowerDraw=") + power_field(ship, STR("ThrusterPowerDraw")));
+        mlog(sid, STR("Low power: the ship lost power"));
+    }
+
     // WHAT: once per status second per bench ship: cargo probe (first time only), position and speed (m/s) from the actor location delta
     //       (uu = cm: delta / el / 100), cargo fill %. Read-only: no game writes. el = seconds since the last sample.
     // ponytail: no glitch filter here (spd_update has one for the speed monitor); add it if floating-origin jumps show as speed spikes.
@@ -2963,6 +3027,7 @@ namespace
             const Config c = eff_cfg(sid);
             int slots = 0, fuel_s = 0, other_s = 0;
             m.cargo_pct = cargo_pct(ship, slots, fuel_s, other_s);
+            power_track(ship, sid, m, el);   // POWER lost/restored lines, lp_t (mb_mining.hpp power_track)
             m.drop_age += el;
             hull_watch(ship, sid, m, true);
             if (m.hw >= 0) { m.hull_h.push_back(m.hw); if (m.hull_h.size() > 6) m.hull_h.erase(m.hull_h.begin()); }

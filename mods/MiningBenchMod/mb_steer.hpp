@@ -450,6 +450,59 @@ namespace
         return true;
     }
 
+    // ---------------- low power (FlightModel LowPowerThrottle / MaxLowPowerSpeed, ship flag bInLowPowerMode or bLowPower) ----------------
+    // WHAT: a numeric property (Float or Double) as double; false when missing or another type.
+    bool get_num_prop(UObject* o, const TCHAR* prop, double& out)
+    {
+        FProperty* p = o ? o->GetPropertyByNameInChain(prop) : nullptr;
+        if (!p) return false;
+        const uint8_t* base = reinterpret_cast<const uint8_t*>(o) + p->GetOffset_Internal();
+        if (CastField<FFloatProperty>(p)) { out = *reinterpret_cast<const float*>(base); return true; }
+        if (CastField<FDoubleProperty>(p)) { out = *reinterpret_cast<const double*>(base); return true; }
+        return false;
+    }
+
+    // WHAT: low-power flag name on this build: bInLowPowerMode, else bLowPower (first one the ship has). nullptr until seen.
+    // WHY: the names come from the exe strings, not from a read; the flag is logged once so the user sees which one is used.
+    const TCHAR* g_lp_name = nullptr;
+    bool g_lp_logged = false;
+
+    // WHAT: low-power flag of ship into out. false when the ship is gone or has no such flag (out untouched).
+    bool lp_flag(UObject* ship, bool& out)
+    {
+        if (!alive(ship)) return false;
+        if (!g_lp_name)
+        {
+            g_lp_name = ship->GetPropertyByNameInChain(STR("bInLowPowerMode")) ? STR("bInLowPowerMode") : ship->GetPropertyByNameInChain(STR("bLowPower")) ? STR("bLowPower") : nullptr;
+            if (!g_lp_logged)
+            {
+                g_lp_logged = true;
+                log_line(g_lp_name ? STR("POWER flag uses ") + std::wstring(g_lp_name) : std::wstring(STR("POWER flag: neither bInLowPowerMode nor bLowPower on the ship")));
+            }
+        }
+        return g_lp_name && get_bool_prop(ship, g_lp_name, out);
+    }
+
+    // WHAT: FlightModel LowPowerThrottle (Throttle step cap) and MaxLowPowerSpeed (fraction of max speed). false when either is unreadable.
+    bool lp_limits(UObject* ship, int& thr, double& frac)
+    {
+        UObject* fm = get_obj_prop(ship, STR("FlightModel"));
+        if (!alive(fm)) return false;
+        int32_t t = 0;
+        if (!get_int_prop(fm, STR("LowPowerThrottle"), t) || !get_num_prop(fm, STR("MaxLowPowerSpeed"), frac)) return false;
+        thr = t;
+        return true;
+    }
+
+    // WHAT: low power for the approach: true when the flag is set and the limits read (thr, frac). false otherwise (normal profile).
+    bool lp_state(UObject* ship, int& thr, double& frac)
+    {
+        bool on = false;
+        thr = 0;
+        frac = 0.0;
+        return lp_flag(ship, on) && on && lp_limits(ship, thr, frac);
+    }
+
     // WHAT: one step of a move job: phase 1 = aim (rotate until aligned), phase 2 = approach (Throttle profile).
     //       Steps: 1 re-check the rock and get the aim numbers; an unreadable rock ends the job ("rock lost").
     //       2 store err in g_mv.err and g_last_err. 3 phase 1 ends: face_rock when err < MV_FACE_DONE_DEG (ok) or after
@@ -517,8 +570,11 @@ namespace
         if (!view_aim_drive(mv, a, err, dt)) return;   // rotation via view_send
         if (bubble_braking(sid)) { set_int_prop(ship, STR("Throttle"), 0); mv.thr = 0; mv.thr_t = 0.0; return; }   // bubble brake: no thrust until stopped
         if (mv.phase != 2) return;
-        // 5. approach timeout
-        if (mv.t >= MV_APPROACH_TIMEOUT_S) { mv_finish(sid, STR("error: approach timeout")); return; }
+        // 5. approach timeout; low power: base / MaxLowPowerSpeed, and the Throttle cap of step 9 is LowPowerThrottle
+        int lp_thr = 0;
+        double lp_frac = 0.0;
+        const bool lp = lp_state(ship, lp_thr, lp_frac);
+        if (mv.t >= approach_timeout_s(MV_APPROACH_TIMEOUT_S, lp, lp_frac)) { mv_finish(sid, STR("error: approach timeout")); return; }
         // 6. surface distance (m) and the per-ship stop distance (m)
         const double surface = (dist - rad) / g_raw_per_m;
         const double md = parse_distance(eff_cfg(sid).mining_distance);
@@ -549,7 +605,7 @@ namespace
         {
             // 9. still before the stop distance: ramped forward step toward the target
             if (mv.thr < 0) mv.thr = 0;   // only if pushed back out after a brake: restart forward from 0
-            const int cap = std::min(MV_APPROACH_MAX_THR, mv.steps);
+            const int cap = lowpower_throttle_cap(std::min(MV_APPROACH_MAX_THR, mv.steps), lp, lp_thr);
             target = err > MV_APPROACH_HEAD_DEG ? 0 : approach_throttle(remaining, v_ms, cap);
             if (target > mv.thr)
             {

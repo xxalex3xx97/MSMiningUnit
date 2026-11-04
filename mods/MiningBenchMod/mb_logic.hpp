@@ -88,6 +88,7 @@ namespace
         int path_clearance_m = 8;            // clear-path check: extra clearance (m) beyond the rock block radius. Global only. (INI: path_clearance_m)
         int bubble_clearance_m = 10;         // bubble reflex: extra clearance (m) beyond ship radius + rock block radius. Global only. (INI: bubble_clearance_m)
         int flee_target_range_km = 5;        // a hostile targeter farther than this (km) does not trigger the flee. Global only. (INI: flee_target_range_km)
+        int low_power_return = 1;            // 1 = a ship in low power for LOWPOWER_GRACE_S while flying/mining goes to dock like fuel low. Global only. (INI: low_power_return)
         // text distance, e.g. 50km: belt mode only. Rocks farther than this from the ship count as none (the ship warps instead of flying there), and radius is capped by it. Empty/0/bad = 50 km. Per-ship. (INI: warp_range)
         std::string warp_range = "50km";
         std::string mining_distance = "50m";    // per-ship: mining distance from the rock, e.g. 200m / 0.2km (empty = unset)
@@ -1447,6 +1448,7 @@ namespace
         {"path_clearance_m", 0, 100, true, false},
         {"bubble_clearance_m", 0, 100, true, false},
         {"flee_target_range_km", 1, 100, false, false},
+        {"low_power_return", 0, 1, false, false},
     };
 
     // WHAT: the bound row for key, nullptr when the key is not bounded.
@@ -1710,5 +1712,74 @@ namespace
         for (wchar_t& ch : l) if (ch >= L'A' && ch <= L'Z') ch = static_cast<wchar_t>(ch + 32);
         for (const wchar_t* w : kWords) if (l.find(w) != std::wstring::npos) return true;
         return false;
+    }
+
+    // ---------- low power (mb_mining.hpp POWER monitor and response, mb_steer.hpp approach profile) ----------
+    constexpr double LOWPOWER_GRACE_S = 10.0;   // low power this long (s) while flying or mining -> dock trip like fuel low (low_power_return)
+
+    // WHAT: the low-power response may fire: low power for at least LOWPOWER_GRACE_S (lp_t = seconds in low power, 1 s samples).
+    inline bool lowpower_due(double lp_t) { return lp_t >= LOWPOWER_GRACE_S; }
+
+    // WHAT: loop guard. A dock stage is done (refuel or unload finished) after a low-power trip and the ship is still in low power -> HALT, no new trip.
+    // WHY: dock -> seek -> low power -> dock would repeat forever when the dock does not clear the low power.
+    inline bool lowpower_halt_at_dock(bool lp_trip, bool lp_due) { return lp_trip && lp_due; }
+
+    // WHAT: approach timeout (s): base, or base / max_frac in low power (max_frac = FlightModel MaxLowPowerSpeed, a fraction 0..1). Other max_frac -> base.
+    inline double approach_timeout_s(double base, bool lp, double max_frac)
+    {
+        if (!lp || max_frac <= 0.0 || max_frac >= 1.0) return base;
+        return base / max_frac;
+    }
+
+    // WHAT: Throttle step cap: min(cap, lp_thr) in low power when lp_thr > 0 (FlightModel LowPowerThrottle), else cap.
+    inline int lowpower_throttle_cap(int cap, bool lp, int lp_thr) { return (lp && lp_thr > 0) ? std::min(cap, lp_thr) : cap; }
+
+    // WHAT: true when name holds one of the words (ASCII case-insensitive, words in lower case).
+    inline bool name_has_word(const std::wstring& name, const wchar_t* const* words, size_t n)
+    {
+        std::wstring l = name;
+        for (wchar_t& ch : l) if (ch >= L'A' && ch <= L'Z') ch = static_cast<wchar_t>(ch + 32);
+        for (size_t i = 0; i < n; ++i) if (l.find(words[i]) != std::wstring::npos) return true;
+        return false;
+    }
+    // WHAT: probe_power property/function name matches Power|Fuel|Energy|Battery|Reactor|Thruster|Generator (LowPower and Powered contain Power).
+    inline bool power_name_match(const std::wstring& name)
+    {
+        static const wchar_t* const kWords[] = {L"power", L"fuel", L"energy", L"battery", L"reactor", L"thruster", L"generator"};
+        return name_has_word(name, kWords, sizeof(kWords) / sizeof(kWords[0]));
+    }
+    // WHAT: probe_power component match: the class name holds Power|Generator|Reactor|Battery|Thruster|Fuel.
+    inline bool power_obj_match(const std::wstring& cls)
+    {
+        static const wchar_t* const kWords[] = {L"power", L"generator", L"reactor", L"battery", L"thruster", L"fuel"};
+        return name_has_word(cls, kWords, sizeof(kWords) / sizeof(kWords[0]));
+    }
+    // WHAT: probe_power highlight: a property name that may say pull / auto / feed / buffer / mode / enabled / active (the fuel draw logic).
+    inline bool power_highlight_match(const std::wstring& name)
+    {
+        static const wchar_t* const kWords[] = {L"pull", L"auto", L"feed", L"buffer", L"request", L"refill", L"supply", L"source", L"priority", L"mode", L"benabled", L"bactive"};
+        return name_has_word(name, kWords, sizeof(kWords) / sizeof(kWords[0]));
+    }
+    // WHAT: a stored fuel / energy amount name (fuel, buffer, stored, reserve, energy) for the watch and the dump.
+    inline bool power_buffer_match(const std::wstring& name)
+    {
+        static const wchar_t* const kWords[] = {L"fuel", L"buffer", L"stored", L"reserve", L"energy"};
+        return name_has_word(name, kWords, sizeof(kWords) / sizeof(kWords[0]));
+    }
+    // WHAT: probe_power_watch sample period (s): true once per 1 s of acc; acc keeps the remainder. dt = time since the last call.
+    inline bool power_watch_due(double& acc, double dt)
+    {
+        acc += dt;
+        if (acc < 1.0) return false;
+        acc -= 1.0;
+        return true;
+    }
+    // WHAT: one watch line (text, no newline): t seconds, low-power state (lp_known false = flag missing), PowerGenRate, PowerDraw, the stored
+    //       buffer text and the cargo fuel text. Pure: the caller reads the game values.
+    inline std::wstring power_watch_line(double t, bool lp_known, bool lp, const std::wstring& rate, const std::wstring& draw,
+                                         const std::wstring& buf, const std::wstring& cargo)
+    {
+        const std::wstring st = !lp_known ? L"unknown" : lp ? L"LOW" : L"ok";
+        return L"t=" + std::to_wstring(t) + L" lp=" + st + L" PowerGenRate=" + rate + L" PowerDraw=" + draw + L" buffer:" + buf + L" cargo:" + cargo;
     }
 }

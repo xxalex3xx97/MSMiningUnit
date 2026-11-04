@@ -143,6 +143,7 @@ namespace
         if (cmd == "warp_belt") return warp_belt_cmd(sid);
         // 7b. probe avoidance: probe_avoid[:<ship>] dump, probe_avoid_watch:<ship>:<seconds> sampler, probe_collision* (mb_devcmd.hpp)
         if (cmd.rfind("probe_avoid", 0) == 0 || cmd.rfind("probe_collision", 0) == 0) return probe_avoid_cmd(sid, cmd);
+        if (cmd.rfind("probe_power", 0) == 0) return probe_power_cmd(sid, cmd);   // MiningProbePower.txt, read only (mb_devcmd.hpp)
         // 8. dev commands (Dev Menu / Test tab only): mb_devcmd.hpp
         bool dev_handled = false;
         const std::wstring dev = dev_cmd(seq, sid, cmd, dev_handled);
@@ -274,6 +275,7 @@ namespace
             fast_watch_tick();
             set_last_step(STR("probe_avoid_tick"));
             probe_avoid_tick(step);   // MiningProbeAvoid.txt sampler, idle unless a watch runs (mb_devcmd.hpp)
+            probe_power_tick(step);   // MiningProbePower.txt watch (probe_power_watch), idle unless a watch runs
             set_last_step(STR("bubble_tick"));   // bubble reflex for every manual move (mb_bubble.hpp): before the state machines, so a flown waypoint resumes first
             bubble_tick(step);
             set_last_step(STR("mining_tick"));   // per-ship labels are set inside (mine ship=N state)

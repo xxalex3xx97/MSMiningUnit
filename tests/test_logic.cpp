@@ -1919,6 +1919,60 @@ static void t_reg_cache_bench()
     std::printf("bench reg_cache_table n=%zu ms=%.2f\n", tab.rocks.size(), std::chrono::duration<double, std::milli>(t2 - t1).count());
 }
 
+// low power: response grace, dock loop guard, approach timeout and Throttle cap, power name matchers, low_power_return bound
+static void t_lowpower()
+{
+    CHECK(!lowpower_due(9.9));
+    CHECK(lowpower_due(10.0));
+    CHECK(lowpower_due(12.5));
+    CHECK(!lowpower_halt_at_dock(false, true));   // no low-power trip: the dock stage is not stopped
+    CHECK(!lowpower_halt_at_dock(true, false));   // power restored at the dock: go on
+    CHECK(lowpower_halt_at_dock(true, true));     // still low power after the dock stage of a low-power trip: HALT
+    NEAR(approach_timeout_s(300.0, true, 0.333), 300.0 / 0.333, 1e-9);
+    CHECK(approach_timeout_s(300.0, false, 0.333) == 300.0);
+    CHECK(approach_timeout_s(300.0, true, 0.0) == 300.0);   // unreadable fraction: base
+    CHECK(approach_timeout_s(300.0, true, 1.0) == 300.0);   // full speed in low power: base
+    CHECK(lowpower_throttle_cap(10, true, 5) == 5);
+    CHECK(lowpower_throttle_cap(3, true, 5) == 3);
+    CHECK(lowpower_throttle_cap(10, false, 5) == 10);
+    CHECK(lowpower_throttle_cap(10, true, 0) == 10);
+    CHECK(power_name_match(std::wstring(L"PowerGenRate")));
+    CHECK(power_name_match(std::wstring(L"ThrusterPowerDraw")));
+    CHECK(power_name_match(std::wstring(L"bInLowPowerMode")));
+    CHECK(!power_name_match(std::wstring(L"Health")));
+    CHECK(power_obj_match(std::wstring(L"BP_ThrusterComponent_C")));
+    CHECK(!power_obj_match(std::wstring(L"DMSPlayerShipObject")));
+    const SettingBound* b = find_setting_bound("low_power_return");
+    CHECK(b != nullptr);
+    double out = -1.0;
+    CHECK(b && clamp_setting(*b, 5.0, out));
+    CHECK(out == 1.0);
+    CHECK(b && !clamp_setting(*b, 0.0, out));
+    CHECK(out == 0.0);
+}
+
+// probe_power: highlight and buffer matchers, 1 s watch cadence, watch line text
+static void t_power_probe_fmt()
+{
+    CHECK(power_highlight_match(std::wstring(L"bAutoPullFuel")));
+    CHECK(power_highlight_match(std::wstring(L"FeedMode")));
+    CHECK(power_highlight_match(std::wstring(L"bEnabled")));
+    CHECK(!power_highlight_match(std::wstring(L"Health")));
+    CHECK(power_buffer_match(std::wstring(L"StoredFuel")));
+    CHECK(!power_buffer_match(std::wstring(L"Health")));
+    CHECK(power_obj_match(std::wstring(L"BP_FuelCell_C")));
+    double acc = 0.0;
+    CHECK(!power_watch_due(acc, 0.4));
+    CHECK(power_watch_due(acc, 0.7));   // 1.1 s total: due, 0.1 s left over
+    CHECK(!power_watch_due(acc, 0.5));
+    CHECK(power_watch_due(acc, 0.5));
+    const std::wstring line = power_watch_line(3.0, true, true, L"5", L"2", L"fuel=10", L"hydrogen=7");
+    CHECK(line.find(L"lp=LOW") != std::wstring::npos);
+    CHECK(line.find(L"PowerGenRate=5") != std::wstring::npos);
+    CHECK(line.find(L"cargo:hydrogen=7") != std::wstring::npos);
+    CHECK(power_watch_line(0.0, false, false, L"-", L"-", L"-", L"-").find(L"lp=unknown") != std::wstring::npos);
+}
+
 int main()
 {
     const Case cases[] = {
@@ -1954,7 +2008,7 @@ int main()
         {"box_probe_parse", t_box_probe_parse}, {"box_probe_uu_fwd", t_box_probe_uu_fwd}, {"reg_check_summary", t_reg_check_summary},
         {"reg_cache_round_trip", t_reg_cache_round_trip}, {"reg_cache_reject", t_reg_cache_reject}, {"reg_cache_verdict", t_reg_cache_verdict},
         {"reg_kill_unseen", t_reg_kill_unseen}, {"reg_seed_rings", t_reg_seed_rings}, {"reg_area_ready", t_reg_area_ready},
-        {"reg_cache_bench", t_reg_cache_bench},
+        {"reg_cache_bench", t_reg_cache_bench}, {"lowpower", t_lowpower}, {"power_probe_fmt", t_power_probe_fmt},
     };
     for (const Case& c : cases)
     {

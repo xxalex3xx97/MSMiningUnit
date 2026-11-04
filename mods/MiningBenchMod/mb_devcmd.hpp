@@ -1253,4 +1253,294 @@ namespace
         log_line(STR("PROBEAVOID dump written ship=") + std::to_wstring(ps) + STR(" bytes=") + std::to_wstring(out.size()));
         return STR("ok MiningProbeAvoid.txt written ship=") + std::to_wstring(ps);
     }
+
+    // ---------------- probe power (MiningProbePower.txt) ----------------
+    // WHAT: probe_power[:<ship>] writes MiningProbePower.txt, read only, under seh_run: the ship and FlightModel properties whose name matches
+    //       power_name_match (type, owner class, value); Thrusters / ThrusterIDs / StartingFuelItems; the fuel items (name, inventory total);
+    //       the occupied Inventory.ItemSlots (item, amount); the functions with power words and their parameters; the properties of objects
+    //       reachable from the ship by one property whose class or name matches power_obj_match / power_name_match.
+    // WHY: the low-power names (bInLowPowerMode, bLowPower, PowerGenRate, PowerDraw, ...) come from the exe strings only. This shows which exist.
+    // SAFETY: every game read runs under seh_run. Game thread only (run_cmd, Test tab / Dev Menu).
+    struct ProbePowerCtx { UObject* ship; int sid; std::wstring* out; };
+
+    // WHAT: power-named properties of o over its class chain: name [type] owner=<class> = value (probe_val).
+    void probe_power_props(std::wstring& s, UObject* o, const TCHAR* label)
+    {
+        s += STR("  ") + std::wstring(label) + STR(" class=") + std::wstring(o->GetClassPrivate()->GetName()) + STR("\n");
+        for (UStruct* st = o->GetClassPrivate(); st && st->GetName() != STR("Object"); st = st->GetSuperStruct())
+            for (FProperty* p : st->ForEachProperty())
+            {
+                const std::wstring n = p->GetName();
+                if (power_name_match(n)) s += STR("  ") + n + STR(" [") + type_text(p) + STR("] owner=") + std::wstring(st->GetName()) + STR(" = ") + probe_val(o, p, n) + STR("\n");
+            }
+    }
+
+    // WHAT: one array property: count, then the element values (object class names via prop_classes, int32 / int64 values; 40 at most), else the count only.
+    void probe_array(std::wstring& s, UObject* o, const TCHAR* name)
+    {
+        FProperty* p = o->GetPropertyByNameInChain(name);
+        auto* ap = p ? CastField<FArrayProperty>(p) : nullptr;
+        if (!ap) { probe_kv(s, name, p ? STR("not an array: ") + type_text(p) : std::wstring(STR("absent"))); return; }
+        FProperty* inner = ap->GetInner();
+        if (CastField<FObjectProperty>(inner)) { probe_kv(s, name, prop_classes(o, name)); return; }
+        std::wstring vals;
+        if (CastField<FIntProperty>(inner))
+        {
+            auto* a = o->GetValuePtrByPropertyNameInChain<TArray<int32_t>>(name);
+            for (int32_t i = 0; a && i < a->Num() && i < 40; ++i) vals += std::to_wstring((*a)[i]) + STR(" ");
+        }
+        else if (CastField<FInt64Property>(inner))
+        {
+            auto* a = o->GetValuePtrByPropertyNameInChain<TArray<int64_t>>(name);
+            for (int32_t i = 0; a && i < a->Num() && i < 40; ++i) vals += std::to_wstring((*a)[i]) + STR(" ");
+        }
+        probe_kv(s, name, prop_count(o, name) + STR(" elements ") + vals);
+    }
+
+    // WHAT: ItemSlots of holder (the ship Inventory, or a generator / thruster component), one line per occupied slot (slot index, item name,
+    //       Amount). 60 lines at most. Same struct walk as cargo_pct.
+    void probe_slots(std::wstring& s, UObject* inv)
+    {
+        constexpr int kSlotLines = 60;
+        FProperty* tp = alive(inv) ? inv->GetPropertyByNameInChain(STR("ItemSlots")) : nullptr;
+        auto* ap = tp ? CastField<FArrayProperty>(tp) : nullptr;
+        auto* arr = ap ? inv->GetValuePtrByPropertyNameInChain<TArray<uint8_t>>(STR("ItemSlots")) : nullptr;
+        auto* isp = ap && ap->GetInner() ? CastField<FStructProperty>(ap->GetInner()) : nullptr;
+        FProperty* fi = isp && isp->GetStruct() ? isp->GetStruct()->FindProperty(FName(STR("Item"), FNAME_Add)) : nullptr;
+        FProperty* fa = isp && isp->GetStruct() ? isp->GetStruct()->FindProperty(FName(STR("Amount"), FNAME_Add)) : nullptr;
+        if (!arr || !fi || !fa || ap->GetInner()->GetElementSize() <= 0) { s += STR("  ItemSlots = n/a\n"); return; }
+        const int32_t stride = ap->GetInner()->GetElementSize();
+        int shown = 0;
+        for (int32_t i = 0; i < arr->Num() && shown < kSlotLines; ++i)
+        {
+            const uint8_t* e = &(*arr)[0] + static_cast<size_t>(i) * static_cast<size_t>(stride);
+            const int32_t amt = *reinterpret_cast<const int32_t*>(e + fa->GetOffset_Internal());
+            if (amt <= 0) continue;
+            UObject* it = *reinterpret_cast<UObject* const*>(e + fi->GetOffset_Internal());
+            s += STR("  slot ") + std::to_wstring(i) + STR(" item=") + (alive(it) ? obj_display(it) : std::wstring(STR("none"))) + STR(" amount=") + std::to_wstring(amt) + STR("\n");
+            ++shown;
+        }
+    }
+
+    // WHAT: functions of o's class chain whose name matches power_name_match, with owner class and the parameter names and types.
+    void probe_power_funcs(std::wstring& s, UObject* o)
+    {
+        for (UStruct* st = o->GetClassPrivate(); st && st->GetName() != STR("Object"); st = st->GetSuperStruct())
+        {
+            UClass* sc = Cast<UClass>(st);
+            if (!sc) continue;
+            for (UFunction* f : sc->ForEachFunction())
+            {
+                const std::wstring n = f->GetName();
+                if (!power_name_match(n)) continue;
+                std::wstring sig;
+                for (FProperty* pp : f->ForEachProperty()) sig += pp->GetName() + STR(":") + type_text(pp) + STR(" ");
+                s += STR("  func ") + n + STR(" owner=") + std::wstring(sc->GetName()) + STR(" params=(") + sig + STR(")\n");
+            }
+        }
+    }
+
+    // WHAT: every property of o over its class chain: name [type] owner=<class> = value. Lines whose name matches power_highlight_match start with "** ".
+    void probe_obj_all(std::wstring& s, UObject* o)
+    {
+        for (UStruct* st = o->GetClassPrivate(); st && st->GetName() != STR("Object"); st = st->GetSuperStruct())
+            for (FProperty* p : st->ForEachProperty())
+            {
+                const std::wstring n = p->GetName();
+                s += power_highlight_match(n) ? STR("  ** ") : STR("  ");
+                s += n + STR(" [") + type_text(p) + STR("] owner=") + std::wstring(st->GetName()) + STR(" = ") + probe_val(o, p, n) + STR("\n");
+            }
+    }
+
+    // WHAT: LogisticFilters rows (pf_read: item name, amount, action LIMIT/BUFFER) and the field list of the filter struct (name, type, offset).
+    void probe_filters(std::wstring& s, UObject* ship)
+    {
+        std::vector<PfRow> rows;
+        if (!pf_read(ship, rows)) s += STR("  LogisticFilters unreadable (pf_read)\n");
+        for (const PfRow& r : rows)
+            s += STR("  row item=") + (alive(r.item) ? obj_display(r.item) : std::wstring(STR("none"))) + STR(" amount=") + std::to_wstring(r.amount) +
+                 STR(" action=") + (r.action == 0 ? std::wstring(STR("LIMIT")) : r.action == 1 ? std::wstring(STR("BUFFER")) : std::to_wstring(r.action)) + STR("\n");
+        FProperty* fp = ship->GetPropertyByNameInChain(STR("LogisticFilters"));
+        auto* ap = fp ? CastField<FArrayProperty>(fp) : nullptr;
+        auto* isp = ap && ap->GetInner() ? CastField<FStructProperty>(ap->GetInner()) : nullptr;
+        if (!isp || !isp->GetStruct()) { s += STR("  filter struct: n/a\n"); return; }
+        s += STR("  filter struct fields:\n");
+        for (FProperty* q : isp->GetStruct()->ForEachProperty())
+            s += STR("    ") + std::wstring(q->GetName()) + STR(" [") + type_text(q) + STR("] offset=") + std::to_wstring(q->GetOffset_Internal()) + STR("\n");
+    }
+
+    // WHAT: power numbers: PowerGenRate, PowerDraw, ThrusterPowerDraw (ship, else FlightModel) and every ship/FlightModel property named like a buffer
+    //       (fuel, buffer, stored, reserve, energy) with its value.
+    void probe_power_numbers(std::wstring& s, UObject* ship)
+    {
+        UObject* fm = get_obj_prop(ship, STR("FlightModel"));
+        for (const TCHAR* n : {STR("PowerGenRate"), STR("PowerDraw"), STR("ThrusterPowerDraw")})
+            s += STR("  ") + std::wstring(n) + STR("=") + power_field(ship, n) + STR("\n");
+        for (UObject* o : {ship, alive(fm) ? fm : ship})
+            for (UStruct* st = o->GetClassPrivate(); st && st->GetName() != STR("Object"); st = st->GetSuperStruct())
+                for (FProperty* p : st->ForEachProperty())
+                {
+                    const std::wstring n = p->GetName();
+                    if (power_buffer_match(n)) s += STR("  buffer ") + n + STR(" [") + type_text(p) + STR("] = ") + probe_val(o, p, n) + STR("\n");
+                }
+    }
+
+    // WHAT: objects reachable from o by one property (ObjectProperty, or ArrayProperty of objects) whose class matches power_obj_match or whose
+    //       name matches power_name_match: all their properties (probe_dump_props). 12 objects at most.
+    void probe_power_comps(std::wstring& s, UObject* o)
+    {
+        int found = 0;
+        for (UStruct* st = o->GetClassPrivate(); st && st->GetName() != STR("Object"); st = st->GetSuperStruct())
+            for (FProperty* p : st->ForEachProperty())
+            {
+                uint8_t* base = reinterpret_cast<uint8_t*>(o) + p->GetOffset_Internal();
+                std::vector<UObject*> objs;
+                if (CastField<FObjectProperty>(p)) objs.push_back(*reinterpret_cast<UObject**>(base));
+                else if (auto* ap = CastField<FArrayProperty>(p))
+                {
+                    if (CastField<FObjectProperty>(ap->GetInner()))
+                    {
+                        auto* arr = reinterpret_cast<TArray<UObject*>*>(base);
+                        for (int32_t k = 0; k < arr->Num(); ++k) objs.push_back((*arr)[k]);
+                    }
+                }
+                for (UObject* x : objs)
+                {
+                    if (!alive(x) || x == o || found >= 12) continue;
+                    const std::wstring cls = std::wstring(x->GetClassPrivate()->GetName());
+                    const std::wstring nm = std::wstring(x->GetName());
+                    if (!power_obj_match(cls) && !power_name_match(nm)) continue;
+                    ++found;
+                    s += STR("  component ") + nm + STR(" class=") + cls + STR(" via ") + std::wstring(p->GetName()) + STR("\n");
+                    probe_obj_all(s, x);
+                    s += STR("  slots of component:\n");
+                    probe_slots(s, x);
+                }
+            }
+        if (found == 0) s += STR("  none\n");
+    }
+
+    // WHAT: the probe_power dump text (runs under seh_run from probe_power_cmd).
+    void probe_power_fn(void* p)
+    {
+        auto* c = static_cast<ProbePowerCtx*>(p);
+        std::wstring& s = *c->out;
+        UObject* ship = c->ship;
+        UObject* fm = get_obj_prop(ship, STR("FlightModel"));
+        s += STR("MiningProbePower ship=") + std::to_wstring(c->sid) + STR("\n[ship power properties]\n");
+        probe_power_props(s, ship, STR("ship"));
+        s += STR("[flight model power properties]\n");
+        if (alive(fm)) probe_power_props(s, fm, STR("flight model")); else s += STR("  n/a\n");
+        s += STR("[thruster and fuel fields]\n");
+        probe_array(s, ship, STR("Thrusters"));
+        probe_array(s, ship, STR("ThrusterIDs"));
+        probe_array(s, ship, STR("StartingFuelItems"));
+        s += STR("[fuel items: name, inventory total]\n");
+        for (int i = 0; i < N_FUEL; ++i)
+        {
+            std::wstring w;
+            UObject* it = item_c(FUEL_ITEM[i], w);
+            s += STR("  ") + widen(FUEL_KEY[i]) + STR(" item=") + (alive(it) ? obj_display(it) : std::wstring(STR("n/a"))) +
+                 STR(" total=") + (alive(it) ? i64w(inv_total(ship, it)) : std::wstring(STR("n/a"))) + STR("\n");
+        }
+        s += STR("[power numbers and stored buffers]\n");
+        probe_power_numbers(s, ship);
+        s += STR("[inventory ItemSlots, occupied slots (cargo)]\n");
+        probe_slots(s, get_obj_prop(ship, STR("Inventory")));
+        s += STR("[logistic filters (auto pull / buffer rows)]\n");
+        probe_filters(s, ship);
+        s += STR("[power functions, owner class chain]\n");
+        probe_power_funcs(s, ship);
+        if (alive(fm)) probe_power_funcs(s, fm);
+        s += STR("[reachable component objects (class or name: power, generator, reactor, battery, thruster, fuel); ** = pull/auto/feed/buffer/mode/enabled/active]\n");
+        probe_power_comps(s, ship);
+    }
+
+    // ---------------- probe power watch (MiningProbePower.txt) ----------------
+    // WHAT: probe_power_watch:<ship>:<seconds> (<= PROBE_WATCH_MAX_S) appends one line per second: low-power flag, PowerGenRate, PowerDraw,
+    //       the stored buffers and the cargo fuel totals (power_watch_line). Runs in the mining tick (probe_power_tick), read only.
+    // WHY: shows the fuel drain live while a ship flies (generator from cargo or from its own slot).
+    struct PowerWatch { bool active = false; int sid = 0; double elapsed = 0.0, total = 0.0, acc = 0.0; int lines = 0; std::string text; };
+    PowerWatch g_pw;
+    struct PowerWatchCtx { UObject* ship; double t; std::wstring* out; };
+
+    // WHAT: one watch sample (runs under seh_run): low-power flag, PowerGenRate, PowerDraw, buffers, cargo fuel totals.
+    void power_watch_fn(void* p)
+    {
+        auto* c = static_cast<PowerWatchCtx*>(p);
+        bool lp = false;
+        const bool known = lp_flag(c->ship, lp);
+        std::wstring buf;
+        for (UStruct* st = c->ship->GetClassPrivate(); st && st->GetName() != STR("Object"); st = st->GetSuperStruct())
+            for (FProperty* pr : st->ForEachProperty())
+            {
+                const std::wstring n = pr->GetName();
+                if (power_buffer_match(n)) buf += n + STR("=") + probe_val(c->ship, pr, n) + STR(" ");
+            }
+        std::wstring cargo;
+        for (int i = 0; i < N_FUEL; ++i)
+        {
+            std::wstring w;
+            UObject* it = item_c(FUEL_ITEM[i], w);
+            cargo += widen(FUEL_KEY[i]) + STR("=") + (alive(it) ? i64w(inv_total(c->ship, it)) : std::wstring(STR("n/a"))) + STR(" ");
+        }
+        *c->out = power_watch_line(c->t, known, lp, power_field(c->ship, STR("PowerGenRate")), power_field(c->ship, STR("PowerDraw")),
+                                   buf.empty() ? std::wstring(STR("none")) : buf, cargo);
+    }
+
+    // WHAT: appends one line to the watch text and rewrites MiningProbePower.txt (at most 125 lines). Ends the watch at the time asked or the cap.
+    void power_watch_write(const std::wstring& line)
+    {
+        g_pw.text += u8(line) + "\r\n";
+        ++g_pw.lines;
+        write_atomic(get_dll_dir() / "MiningProbePower.txt", g_pw.text);
+    }
+
+    // WHAT: mining tick hook (run_cmd driver, mb_testcmd.hpp): one watch sample per second while a probe_power_watch runs.
+    void probe_power_tick(double dt)
+    {
+        if (!g_pw.active) return;
+        g_pw.elapsed += dt;
+        UObject* ship = find_by_id(STR("DMSPlayerShipObject"), g_pw.sid);
+        if (!alive(ship)) { power_watch_write(STR("ship gone")); g_pw.active = false; return; }
+        if (!power_watch_due(g_pw.acc, dt)) return;
+        std::wstring line;
+        PowerWatchCtx c{ship, g_pw.elapsed, &line};
+        if (!seh_run(power_watch_fn, &c)) line = STR("fault ") + seh_describe(g_seh);
+        power_watch_write(line);
+        if (g_pw.elapsed >= g_pw.total || g_pw.lines >= 125) { power_watch_write(STR("watch end")); g_pw.active = false; }
+    }
+
+    // WHAT: command entry for probe_power_watch:<ship>:<seconds>. Truncates MiningProbePower.txt and arms the watch. Returns "ok ..." or "error: ...".
+    std::wstring probe_power_watch_cmd(const std::string& cmd)
+    {
+        int ws = 0;
+        double secs = 0.0;
+        if (!probe_parse_watch_pfx(cmd, "probe_power_watch:", ws, secs)) return STR("error: usage probe_power_watch:<ship>:<seconds> (max 120)");
+        if (!alive(find_by_id(STR("DMSPlayerShipObject"), ws))) return STR("error: ship not found");
+        g_pw = PowerWatch{};
+        g_pw.active = true;
+        g_pw.sid = ws;
+        g_pw.total = secs;
+        g_pw.text = u8(STR("MiningProbePower watch ship=") + std::to_wstring(ws) + STR(" seconds=") + probe_f2(secs) + STR(" (1 s samples)")) + "\r\n";
+        write_atomic(get_dll_dir() / "MiningProbePower.txt", g_pw.text);
+        log_line(STR("PROBEPOWER watch start ship=") + std::to_wstring(ws) + STR(" seconds=") + probe_f2(secs));
+        return STR("ok watch ship=") + std::to_wstring(ws) + STR(" seconds=") + probe_f2(secs) + STR(" file=MiningProbePower.txt");
+    }
+
+    // WHAT: command entry for probe_power and probe_power:<ship> (run_cmd, mb_testcmd.hpp). Returns "ok ..." or "error: ...".
+    std::wstring probe_power_cmd(int sid, const std::string& cmd)
+    {
+        if (cmd.rfind("probe_power_watch", 0) == 0) return probe_power_watch_cmd(cmd);
+        int ps = sid;
+        if (cmd != "probe_power" && !probe_parse_sid_pfx(cmd, "probe_power:", ps)) return STR("error: usage probe_power[:<ship>]");
+        UObject* ship = find_by_id(STR("DMSPlayerShipObject"), ps);
+        if (!alive(ship)) return STR("error: ship not found");
+        std::wstring out;
+        ProbePowerCtx c{ship, ps, &out};
+        if (!seh_run(probe_power_fn, &c)) return STR("error: probe fault ") + seh_describe(g_seh);
+        write_atomic(get_dll_dir() / "MiningProbePower.txt", u8(out));
+        log_line(STR("PROBEPOWER dump written ship=") + std::to_wstring(ps) + STR(" bytes=") + std::to_wstring(out.size()));
+        return STR("ok MiningProbePower.txt written ship=") + std::to_wstring(ps);
+    }
 }
