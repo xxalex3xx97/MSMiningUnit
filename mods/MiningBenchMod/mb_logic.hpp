@@ -898,4 +898,99 @@ namespace
         default: return "";
         }
     }
+
+    // WHAT: no-yield rock: a rock whose idle-watchdog exit (no ore gained on it) happened this many times in a row is skipped by the rock search.
+    // WHY: a rock that gives nothing (spent, unreachable) would otherwise be picked again forever.
+    constexpr int NOY_SKIP_VISITS = 3;
+    inline bool noy_skip_now(int visits) { return visits >= NOY_SKIP_VISITS; }
+
+    // WHAT: "rock lost" approach results (another ship took the rock) in a row in SEEK. This many = HALT "rock lost 5x".
+    // WHY: a rock lost is a free retry, but the same rock vanishing again and again must still end the loop.
+    constexpr int ROCK_LOST_MAX = 5;
+    inline bool rock_lost_halt(int n) { return n >= ROCK_LOST_MAX; }
+
+    // WHAT: CHECK returns to OFF with nothing in range (belt off), in a row, before HALT "no rock in range". 12 checks x MINE_ROCK_CHECK_S (5 s) = about 60 s.
+    // WHY: the idle poll must not run forever with no rock anywhere near.
+    constexpr int IDLE_POLL_MAX = 12;
+    inline bool idle_poll_halt(int n) { return n >= IDLE_POLL_MAX; }
+
+    // WHAT: every rock in range is skipped: a rock exists when the skip list is ignored, but none is found with it. HALT "rocks give no ore".
+    inline bool all_rocks_skipped(bool rock_ignoring_skip, bool rock_with_skip) { return rock_ignoring_skip && !rock_with_skip; }
+
+    // WHAT: longest dock wait (dwait, queued or holding for a dock) in one trip before HALT "waited 15 min for a dock" (s).
+    // WHY: a dock that never frees up must not hold the loop forever (not an error).
+    constexpr double MINE_DWAIT_MAX_S = 900.0;
+    inline bool dwait_halt(double waited_s) { return waited_s > MINE_DWAIT_MAX_S; }
+
+    // WHAT: refuel amount is never below its own threshold (a refuel to amount ends at or above threshold).
+    // WHY: a refuel that stops at amount below threshold would make the next CHECK refuel again at once.
+    inline int fuel_amount_floor(int amount, int threshold) { return std::max(amount, threshold); }
+
+    // WHAT: one bounded setting. key = INI key (global or [ship.<id>]). min/max in the key's unit (s, count, km, fuel units); dist: the value is a
+    //       distance text (5km, 2500m, plain meters) and the bounds are meters. zero_ok: 0 = off, allowed and kept as is.
+    // WHY: one table for the config load and for the Lua Operation tab, so out-of-range input is clamped or rejected the same way everywhere.
+    struct SettingBound { const char* key; double min; double max; bool zero_ok; bool dist; };
+    constexpr SettingBound SETTING_BOUNDS[] = {
+        {"idle_seconds", 30, 3600, true, false},
+        {"max_attempts", 1, 10, false, false},
+        {"wait_seconds", 0, 300, false, false},
+        {"dock_hold_limit", 30, 3600, true, false},
+        {"warp_trip_km", 1, 100, true, false},
+        {"fuel_hydrogen_threshold", 0, 5000, false, false},
+        {"fuel_hydrogen_amount", 0, 5000, false, false},
+        {"fuel_warp_threshold", 0, 5000, false, false},
+        {"fuel_warp_amount", 0, 5000, false, false},
+        {"fuel_deuterium_threshold", 0, 5000, false, false},
+        {"fuel_deuterium_amount", 0, 5000, false, false},
+        {"fuel_margin", 0, 5000, false, false},
+        {"fuel_amount", 0, 5000, false, false},
+        {"radius", 100, 100000, true, true},
+        {"max_radius", 100, 100000, true, true},
+        {"warp_range", 1000, 100000, true, true},
+        {"mining_distance", 1, 5000, false, true},
+    };
+
+    // WHAT: the bound row for key, nullptr when the key is not bounded.
+    inline const SettingBound* find_setting_bound(const std::string& key)
+    {
+        for (const SettingBound& b : SETTING_BOUNDS) if (key == b.key) return &b;
+        return nullptr;
+    }
+
+    // WHAT: v clamped to the bound into out (zero_ok and v == 0 stays 0). true when the value changed.
+    inline bool clamp_setting(const SettingBound& b, double v, double& out)
+    {
+        out = (b.zero_ok && v == 0.0) ? 0.0 : std::min(b.max, std::max(b.min, v));
+        return out != v;
+    }
+
+    // WHAT: clamps every bounded key of one raw INI section (kv) in place. Each change adds one "key old -> new" text to msgs.
+    // WHY: runs on load only; empty and unparsable values are left alone (apply_kv keeps the old value or the default).
+    inline void clamp_kv(std::map<std::string, std::string>& kv, std::vector<std::string>& msgs)
+    {
+        for (const SettingBound& b : SETTING_BOUNDS)
+        {
+            auto it = kv.find(b.key);
+            if (it == kv.end()) continue;
+            const std::string t = trim(it->second);
+            if (t.empty()) continue;
+            double v = 0.0;
+            if (b.dist)
+            {
+                v = parse_distance(t);
+                if (v < 0.0) continue;
+            }
+            else
+            {
+                char* end = nullptr;
+                v = std::strtod(t.c_str(), &end);
+                if (end == t.c_str() || *end != '\0') continue;
+            }
+            double out = v;
+            if (!clamp_setting(b, v, out)) continue;
+            const std::string nt = std::to_string(static_cast<long long>(out)) + (b.dist ? "m" : "");
+            msgs.push_back(std::string(b.key) + " " + t + " -> " + nt);
+            it->second = nt;
+        }
+    }
 }

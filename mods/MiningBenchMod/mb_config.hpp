@@ -228,6 +228,19 @@ namespace
                 }
             }
 
+            // WHAT: bounds table (SETTING_BOUNDS, mb_logic.hpp) applied to the global section and to every [ship.<id>] section; one log line per clamped key, once per load.
+            // WHY: the mod never runs with an out-of-range value; the INI file itself is left as the user wrote it.
+            {
+                std::vector<std::string> clamps;
+                clamp_kv(kv, clamps);
+                for (const auto& c : clamps) log_line(STR("config clamped: ") + widen(c));
+                for (auto& [sid_, m_] : skv)
+                {
+                    std::vector<std::string> sc;
+                    clamp_kv(m_, sc);
+                    for (const auto& c : sc) log_line(STR("config clamped ship.") + std::to_wstring(sid_) + STR(": ") + widen(c));
+                }
+            }
             // WHAT: builds the new global config nc from kv.
             // WHY: parse into a fresh struct; g_cfg is swapped only at the end, so a failure leaves the old config in place.
             Config nc; apply_kv(nc, kv, false);
@@ -253,6 +266,10 @@ namespace
                 if (kv.count(base + "_on")) nc.fuel[i].on = to_int(kv[base + "_on"], nc.fuel[i].on);
                 if (kv.count(base + "_threshold")) nc.fuel[i].threshold = to_int(kv[base + "_threshold"], nc.fuel[i].threshold);
                 if (kv.count(base + "_amount")) nc.fuel[i].amount = to_int(kv[base + "_amount"], nc.fuel[i].amount);
+                // WHAT: refuel amount raised to its threshold when lower (logged once per load). Per-ship sections have no fuel threshold of their own, so they use this one.
+                const int fl = fuel_amount_floor(nc.fuel[i].amount, nc.fuel[i].threshold);
+                if (fl != nc.fuel[i].amount) log_line(STR("config clamped: ") + widen(base) + STR("_amount ") + std::to_wstring(nc.fuel[i].amount) + STR(" -> ") + std::to_wstring(fl));
+                nc.fuel[i].amount = fl;
             }
             // raw per meter must be positive. The value also replaces g_raw_per_m, which the mod math uses.
             if (kv.count("raw_per_meter"))

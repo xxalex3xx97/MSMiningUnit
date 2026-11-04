@@ -110,6 +110,12 @@ namespace
         int sw_found = -1;                     // MS_SWEEP: BP_FloatingOre_C count of the last scan (-1 none yet)
         bool sw_frame = false;                 // MS_SWEEP: ship frame readable at the last scan
         int sw_undock_n = 0;                   // MS_SWEEP: undock tries while docked and position unreadable (guard)
+        int noy_run = 0;                       // consecutive MINE idle-watchdog exits with no ore gained (reset: ore gained, dock/unload, Start)
+        std::map<int, int> noy_visits;         // per rock id: consecutive no-yield visits (reset when ore is gained on it; cleared on a new row and Start)
+        std::set<int> noy_skip;                // rock ids the rock search leaves out after NOY_SKIP_VISITS no-yield visits (cleared on a new row and Start)
+        int lost_n = 0;                        // consecutive "rock lost" approach results in SEEK (reset on approach ok and Start)
+        int idle_polls = 0;                    // consecutive CHECK returns to OFF with nothing in range (belt off); reset on rock found and Start
+        double dwait_total = 0.0;              // seconds waited for a dock in this trip (dwait); reset per trip, capped by MINE_DWAIT_MAX_S
     };
     std::map<int, MineSt> g_mine;
 
@@ -182,13 +188,14 @@ namespace
 
 
     // nearest rock holding `item` measured from the anchor (not the ship); nullptr when none or outside the radius
-    UObject* rock_in_range(int sid, const double anchor[3], UObject* item, double rad_m, UObject* skip = nullptr)
+    // skip_ids: no-yield rock ids left out (MineSt::noy_skip)
+    UObject* rock_in_range(int sid, const double anchor[3], UObject* item, double rad_m, UObject* skip = nullptr, const std::set<int>* skip_ids = nullptr)
     {
         rock_list_ensure();
         ActFrame f;
         std::copy(anchor, anchor + 3, f.loc);
         ActAim r;
-        UObject* a = nearest_item_actor(sid, f, item, r, skip);
+        UObject* a = nearest_item_actor(sid, f, item, r, skip, skip_ids);
         if (!a || !actor_ok(a)) return nullptr;
         if (rad_m > 0.0 && r.dist_m > rad_m) return nullptr;
         return a;
@@ -471,8 +478,18 @@ namespace
         log_line(STR("NET dock=") + std::to_wstring(did) + STR(" FULL by=") + std::to_wstring(sid));
         cancel_dock_job(ship, sid);
         g_job_res.erase(sid);
+        // WHY: each full-dock redock counts as a dock time limit round (dl_n, same limit as MINE_DOCK_RETRIES), so the cycle ends in HALT
+        const bool give_up = dock_limit_giveup(m.dl_n);
+        if (!give_up) ++m.dl_n;
         const std::wstring ur = job_start(sid, "undock", -1);
         if (undock_failed(ur)) { m.st = MS_HALT; m.err = true; mset(sid, m, STR("ERROR: undock failed: ") + ur, STR("ERROR: undock failed: ") + ur); return; }
+        if (give_up)
+        {
+            const std::wstring idle = STR("Dock full ") + std::to_wstring(MINE_DOCK_RETRIES) + STR(" times, undocked, idle");
+            m.dl_n = 0; m.fin = false; m.st = MS_HALT;
+            mset(sid, m, idle, idle);
+            return;
+        }
         m.st = MS_DLWAIT; m.dl_wait_t = MINE_DOCK_RETRY_WAIT_S; m.left_last.clear();   // MS_DLWAIT: undock finishes, then the dock trip runs again at once
         mset(sid, m, STR("Dock full, undocking to try the next dock"), STR("Dock full, next dock"));
     }
@@ -516,7 +533,7 @@ namespace
         g_job_res.erase(sid);
         const std::wstring r = job_start(sid, m.trip, -1);
         m.t = 0.0; m.seek_started = false; m.no_rock = false;
-        m.err = false; m.dwait = false; m.warp_to = 0;
+        m.err = false; m.dwait = false; m.warp_to = 0; m.dwait_total = 0.0;
         m.wait_gate = LogGate(); m.q_gate = LogGate();   // a new trip starts its own wait lines
         if (r == STR("waiting dock")) { m.st = MS_TRIP; m.dwait = true; m.dwait_t = 0.0; m.dwait_shown = -1.0; dock_wait_text(sid, m); return; }
         if (r == STR("nothing to unload")) { g_flee_pick.erase(sid); m.st = MS_HALT; mset(sid, m, STR("Nothing to unload")); return; }
@@ -583,6 +600,7 @@ namespace
     void trip_end(UObject* ship, int sid, MineSt& m, const Config& c)
     {
         std::wstring err;
+        m.noy_run = 0;   // unloaded: the no-yield run starts over
         set_autopilot(sid, false, err);
         zero_all(ship);
         // hull hit: fled to dock, the trip is over for good
@@ -750,7 +768,14 @@ namespace
         ActFrame f;
         if (!act_frame(ship, f)) { m.st = MS_OFF; m.chk_t = 0.0; mset(sid, m, STR("ship actor unreadable")); return; }
         std::copy(f.loc, f.loc + 3, m.anchor);
-        const bool in_range = rock_in_range(sid, m.anchor, item, mine_radius_m(c));   // one scan for all the checks below
+        const double rad = mine_radius_m(c);
+        const bool in_range = rock_in_range(sid, m.anchor, item, rad, nullptr, &m.noy_skip);   // one scan for all the checks below
+        if (in_range) m.idle_polls = 0;   // a rock was found: the idle poll count starts over
+        if (!in_range && !m.noy_skip.empty() && all_rocks_skipped(rock_in_range(sid, m.anchor, item, rad) != nullptr, in_range))
+        {
+            m.st = MS_HALT; mset(sid, m, STR("rocks give no ore"));   // every rock in range is no-yield: not an error
+            return;
+        }
         // belt: ship not in the target sector -> warp after the undock (after_undock); HALT when no sector has the ore
         if (!belt_off(c.belt) && !in_range)   // rock in range here -> mine it, warp only when none
         {
@@ -774,6 +799,8 @@ namespace
             {
                 if (m.empty_t >= MINE_BELT_EMPTY_S && !in_range && belt_go(ship, sid, m, c, item, true) != 0) return;
             }
+            // belt off: this many empty checks in a row = HALT (IDLE_POLL_MAX)
+            if (belt_off(c.belt) && idle_poll_halt(++m.idle_polls)) { m.st = MS_HALT; mset(sid, m, STR("no rock in range")); return; }
             m.st = MS_OFF; m.chk_t = 0.0; mset(sid, m, STR("nothing in range")); return;   // Update 15: do not undock
         }
         m.empty_t = 0.0;
@@ -814,7 +841,7 @@ namespace
             const std::wstring r = g_mv_res[sid];
             if (ok_res(r))
             {
-                m.fails = 0; m.unl_chk = 0;
+                m.fails = 0; m.unl_chk = 0; m.lost_n = 0;
                 m.tried.clear();   // a rock is being mined: every sector may be searched again later
                 chunk_hold_target_clear(sid); save_rock_picks().erase(sid);   // at the rock: hold the ship's own chunks again
                 m.last_ore = inv_total(ship, item);
@@ -829,8 +856,12 @@ namespace
                 mset(sid, m, STR("mining rock ") + std::to_wstring(m.rock), STR("Mining ") + item_name(c.resource) + STR(" (rock ") + std::to_wstring(m.rock) + STR(")"));
                 return;
             }
-            // rock lost (another ship mined it) = free retry, not a failed attempt
-            if (r.find(STR("rock lost")) == std::wstring::npos && ++m.fails >= std::max(1, c.max_attempts)) { mine_stop_work(ship, sid); m.st = MS_HALT; mset(sid, m, STR("approach failed ") + std::to_wstring(m.fails) + STR("x: ") + r); return; }
+            if (r.find(STR("rock lost")) != std::wstring::npos)
+            {
+                // rock lost (another ship mined it) = free retry, not a failed attempt; ROCK_LOST_MAX in a row = HALT
+                if (rock_lost_halt(++m.lost_n)) { mine_stop_work(ship, sid); m.st = MS_HALT; mset(sid, m, STR("rock lost ") + std::to_wstring(ROCK_LOST_MAX) + STR("x")); return; }
+            }
+            else if (++m.fails >= std::max(1, c.max_attempts)) { mine_stop_work(ship, sid); m.st = MS_HALT; mset(sid, m, STR("approach failed ") + std::to_wstring(m.fails) + STR("x: ") + r); return; }
             mset(sid, m, STR("approach ended: ") + r + STR(", retrying"));
         }
         // cargo full with ore still floating: the next seek returns to that rock first (set in st_mine)
@@ -840,11 +871,20 @@ namespace
         if (m.chk_t >= MINE_ROCK_CHECK_S)
         {
             m.chk_t = 0.0;
-            UObject* rock = rock_in_range(sid, m.anchor, item, mine_radius_m(c), m.abandon);
-            if (!rock && m.abandon) rock = rock_in_range(sid, m.anchor, item, mine_radius_m(c));   // the abandoned rock is the only one: mine it anyway
+            const double rad = mine_radius_m(c);
+            UObject* rock = rock_in_range(sid, m.anchor, item, rad, m.abandon, &m.noy_skip);
+            if (!rock && m.abandon) rock = rock_in_range(sid, m.anchor, item, rad, nullptr, &m.noy_skip);   // the abandoned rock is the only one: mine it anyway
+            // every rock in range is no-yield (skipped): HALT, not an error
+            if (!rock && all_rocks_skipped(rock_in_range(sid, m.anchor, item, rad) != nullptr, false))
+            {
+                m.abandon = nullptr; m.col_rock = 0; g_sel_rocks.erase(sid);
+                mine_stop_work(ship, sid); m.st = MS_HALT; mset(sid, m, STR("rocks give no ore"));
+                return;
+            }
             // approach_rock picks the nearest rock by itself: pin the chosen one when it is not the nearest (the abandoned one)
             if (m.abandon && rock) g_sel_rocks[sid] = rock_id_of(rock);
             m.abandon = nullptr;
+            if (rock) m.idle_polls = 0;
             m.no_rock = !rock;
             if (!rock)
             {
@@ -883,7 +923,7 @@ namespace
         const int64_t inv = inv_total(ship, item);
         if (inv >= 0)
         {
-            if (inv > m.last_ore) { m.got += got_delta(inv, m.last_ore); m.idle_t = 0.0; }
+            if (inv > m.last_ore) { m.got += got_delta(inv, m.last_ore); m.idle_t = 0.0; m.noy_run = 0; m.noy_visits.erase(m.rock); }   // ore gained: not a no-yield visit
             else m.idle_t += dt;
             m.last_ore = inv;
         }
@@ -909,6 +949,7 @@ namespace
             const std::wstring from = item_name(c.resource);
             item_advance(sid, wrapped);
             m.got = 0;
+            m.noy_skip.clear(); m.noy_visits.clear(); m.noy_run = 0;   // a new ore row: no rock is skipped yet
             if (wrapped && !c.repeat) { m.fin = true; begin_collect(ship, sid, m, 1, c.has_items ? STR("queue done") : STR("amount reached")); return; }
             if (wrapped) { begin_collect(ship, sid, m, 1, STR("queue done, repeat")); return; }   // repeat loop = mine, dock + unload, mine again
             if (c.has_items) mlog(sid, STR("Row done: ") + from + STR(" -> ") + item_name(eff_cfg(sid).resource));
@@ -928,6 +969,14 @@ namespace
         if (idle_lim > 0.0 && m.idle_t >= idle_lim)
         {
             m.abandon = rock_actor_by_id(m.rock);   // the next seek must not pick this rock again at once
+            // no-yield: counted for the ship (noy_run) and for this rock; NOY_SKIP_VISITS visits in a row = the rock is skipped by the search
+            ++m.noy_run;
+            if (m.rock > 0 && noy_skip_now(++m.noy_visits[m.rock]))
+            {
+                m.noy_skip.insert(m.rock);
+                mlog(sid, STR("Rock ") + std::to_wstring(m.rock) + STR(" gave no ore ") + std::to_wstring(NOY_SKIP_VISITS) + STR(" times, skipped"));
+            }
+            log_line(STR("MINE ship=") + std::to_wstring(sid) + STR(" no-yield rock=") + std::to_wstring(m.rock) + STR(" run=") + std::to_wstring(m.noy_run));
             begin_collect(ship, sid, m, 0, STR("no ore gained for ") + std::to_wstring((int)idle_lim) + STR(" s, seeking next rock"));
             return;
         }
@@ -942,7 +991,7 @@ namespace
         std::wstring why;
         UObject* item = item_c(c.resource, why);
         const int64_t inv = alive(item) ? inv_total(ship, item) : -1;
-        if (inv >= 0) { if (m.last_ore >= 0 && inv > m.last_ore) m.got += got_delta(inv, m.last_ore); m.last_ore = inv; }
+        if (inv >= 0) { if (m.last_ore >= 0 && inv > m.last_ore) { m.got += got_delta(inv, m.last_ore); m.noy_run = 0; m.noy_visits.erase(m.rock); } m.last_ore = inv; }
         m.col_t += dt; m.col_stall += dt; m.col_scan_t += dt;
         if (m.col_scan_t < COLLECT_SCAN_S) return;
         m.col_scan_t = 0.0;
@@ -1478,6 +1527,12 @@ namespace
         {
             if (m.leave && !m.btn) { net_leave_slot(sid); m.dwait = false; m.st = MS_HALT; mset(sid, m, STR("stopped while waiting for dock")); return; }
             m.dwait_t += dt;
+            m.dwait_total += dt;
+            if (dwait_halt(m.dwait_total))   // longest dock wait of this trip (MINE_DWAIT_MAX_S): HALT, not an error
+            {
+                net_leave_slot(sid); m.dwait = false; m.st = MS_HALT; mset(sid, m, STR("waited 15 min for a dock"));
+                return;
+            }
             const auto gi = g_net_ships.find(sid);
             const bool granted = gi != g_net_ships.end() && gi->second.granted;
             if (!granted && m.dwait_t < 60.0)
@@ -1539,7 +1594,7 @@ namespace
             dock_wait_text(sid, m);
             return;
         }
-        if (ok_res(r)) { m.st = MS_HOLD; m.t = 0.0; m.hold_idle = 0.0; m.hold_last = -1; m.chk_t = MINE_HOLD_CHECK_S; m.hold_seen = false; m.left_last.clear(); mset(sid, m, STR("docked, waiting for orders to finish"), is_refuel(m) ? STR("Docked, refueling") : STR("Docked, unloading")); }
+        if (ok_res(r)) { m.st = MS_HOLD; m.noy_run = 0; m.t = 0.0; m.hold_idle = 0.0; m.hold_last = -1; m.chk_t = MINE_HOLD_CHECK_S; m.hold_seen = false; m.left_last.clear(); mset(sid, m, STR("docked, waiting for orders to finish"), is_refuel(m) ? STR("Docked, refueling") : STR("Docked, unloading")); }
         else if (r.find(STR("seems stuck")) != std::wstring::npos)
         {
             m.err = true; m.st = MS_HALT;
@@ -2042,6 +2097,7 @@ namespace
             m.btn = false;             g_item_idx[sid] = 0; m.got = 0; m.fin = false; m.noore = false; m.unl_prev = -1; m.unl_undock = false;   // always: a stale queue position must not survive a Start
             m.sweep = false;
             m.flee = false; m.warp_to = 0; m.tried.clear(); m.hull = -1; m.dl_n = 0;    // a new run starts with no flee, no pending warp, no sector blacklist, no dock time limit rounds
+            m.noy_run = 0; m.noy_visits.clear(); m.noy_skip.clear(); m.lost_n = 0; m.idle_polls = 0; m.dwait_total = 0.0;   // and no no-yield skips, rock lost or idle poll counts
             if (m.st == MS_HALT) m.st = MS_OFF;
             m.chk_t = MINE_ROCK_CHECK_S; m.fails = 0; m.unl_chk = 0; m.leave = false;
             mset(sid, m, STR("starting"), STR("Loop started"));
