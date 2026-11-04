@@ -83,6 +83,7 @@ namespace
         int record = 0;                      // no effect since 0.0.1 (recorder removed); kept so old INI files still load
         int record_interval_seconds = 2;     // global only
         bool kill_switch = false;            // 1 = the mod stops touching the game completely (hot reload). Global only. (INI: kill_switch)
+        bool watchdog = true;                // 1 = freeze watchdog on: MiningFreeze.txt lines when the game thread stalls 10 s. Global only. (INI: watchdog)
         int flee_on_target = 1;              // 1 = a ship targeted by a hostile (or in combat) flees to a dock like after a hull hit. Global only. (INI: flee_on_target)
         // text distance, e.g. 50km: belt mode only. Rocks farther than this from the ship count as none (the ship warps instead of flying there), and radius is capped by it. Empty/0/bad = 50 km. Per-ship. (INI: warp_range)
         std::string warp_range = "50km";
@@ -1038,6 +1039,7 @@ namespace
     // WHY: one table for the config load and for the Lua Operation tab, so out-of-range input is clamped or rejected the same way everywhere.
     struct SettingBound { const char* key; double min; double max; bool zero_ok; bool dist; };
     constexpr SettingBound SETTING_BOUNDS[] = {
+        {"watchdog", 0, 1, false, false},
         {"idle_seconds", 30, 3600, true, false},
         {"max_attempts", 1, 10, false, false},
         {"wait_seconds", 0, 300, false, false},

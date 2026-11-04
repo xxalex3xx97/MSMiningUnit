@@ -6,6 +6,7 @@
 // GAME FACTS: the engine tick hook (UE4SS RegisterEngineTickPostCallback) fires every frame with dt in seconds. Crash history (brief Update 21): a Lua reload (Ctrl+R) with this DLL loaded crashed inside the tick hook, so restart the game fully after any change.
 #include "mb_version.hpp"
 #include "mb_common.hpp"
+#include "mb_wd_logic.hpp"
 #include "mb_pattern.hpp"
 #include "mb_compat.hpp"
 #include "mb_config.hpp"
@@ -31,6 +32,7 @@
 #include "mb_chunkhold.hpp"
 #include "mb_devcmd.hpp"
 #include "mb_testcmd.hpp"
+#include "mb_watchdog.hpp"
 #include "mb_compat_run.hpp"
 
 namespace
@@ -91,12 +93,14 @@ public:
         log_line(widen(std::string("MiningBenchMod v") + kVersion));
         std::wstring ms_err;
         ms_load(ms_err);   // logs MSCORE loaded / load failed once; each call site retries if it failed
+        mb_wd::start(get_dll_dir().wstring());   // freeze watchdog thread (INI watchdog=0 idles it)
     }
 
     // WHAT: sets g_shutdown and unregisters the tick callback.
     // WHY: UE4SS can unload the mod while the engine keeps ticking; the callback must not run after this object is gone.
     ~MiningBenchMod() override
     {
+        mb_wd::stop();   // first: the watchdog must not write or suspend the game thread during teardown
         g_shutdown = true;
         if (g_tick_cb) { Hook::UnregisterCallback(g_tick_cb); g_tick_cb = 0; }
         g_hook_registered = false;

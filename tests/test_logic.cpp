@@ -11,6 +11,7 @@
 
 #include "mb_logic.hpp"
 #include "mb_math.hpp"
+#include "mb_wd_logic.hpp"
 
 static int g_pass = 0;
 static int g_fail = 0;
@@ -1093,6 +1094,19 @@ static void t_warp_settle()
 
 struct Case { const char* name; void (*fn)(); };
 
+static void t_watchdog()
+{
+    CHECK(!wd_is_stalled(9.9));
+    CHECK(wd_is_stalled(10.0));
+    CHECK(wd_is_stalled(120.0));
+    CHECK(wd_line_due(0, true, 0.0));          // first line of an episode is due at once
+    CHECK(!wd_line_due(1, false, 29.9));       // repeat waits 30 s
+    CHECK(wd_line_due(1, false, 30.0));
+    CHECK(!wd_line_due(WD_MAX_LINES, true, 999.0)); // hard cap
+    CHECK(!wd_line_due(WD_MAX_LINES, false, 999.0));
+    CHECK(wd_line_due(WD_MAX_LINES - 1, false, 30.0));
+}
+
 int main()
 {
     const Case cases[] = {
@@ -1114,6 +1128,7 @@ int main()
         {"net_full", t_net_full}, {"net_bad_holder", t_net_bad_holder}, {"unload_stalled", t_unload_stalled},
         {"net_log_gate", t_net_log_gate}, {"net_self_occupant", t_net_self_occupant}, {"net_queue_never_occupant", t_net_queue_never_occupant}, {"net_blocked_by_never_self", t_net_blocked_by_never_self},
         {"net_reconcile", t_net_reconcile}, {"net_release", t_net_release}, {"net_text", t_net_text},
+        {"watchdog", t_watchdog},
         {"net_score_order", t_net_score_order}, {"net_higher_cargo_wins", t_net_higher_cargo_wins}, {"net_non_preempt", t_net_non_preempt},
         {"net_flee_no_slot", t_net_flee_no_slot}, {"net_slots", t_net_slots}, {"net_slot_pos", t_net_slot_pos}, {"net_offset_carry", t_net_offset_carry}, {"net_line_spacing", t_net_line_spacing},
         {"net_clear_expired", t_net_clear_expired}, {"net_unload_first", t_net_unload_first}, {"dock_undock_first", t_dock_undock_first},

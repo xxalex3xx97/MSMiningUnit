@@ -184,6 +184,9 @@ namespace
     // WHY: work is spread over different periods so no single tick does everything (perf lessons: heavy reads caused freezes).
     void cmd_tick(double dt)
     {
+        // WHAT: heartbeat for the freeze watchdog (mb_watchdog.hpp): one beat per game-thread frame, plus this thread's id.
+        g_heartbeat.fetch_add(1, std::memory_order_relaxed);
+        g_game_tid.store(static_cast<std::uint32_t>(GetCurrentThreadId()), std::memory_order_relaxed);
         LARGE_INTEGER t0;
         QueryPerformanceCounter(&t0);
         // 1. every line sets g_last_step first: a fault line (compat_run) names the part that ran

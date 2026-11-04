@@ -201,6 +201,7 @@ namespace
             ensure_key("record", "0", "record: no effect since 0.0.1 (recorder removed)");
             ensure_key("record_interval_seconds", "2", "record_interval_seconds: seconds between recorder lines (global only)");
             ensure_key("kill_switch", "0", "kill_switch: 1 = the mod stops touching the game completely (hot reload, global only)");
+            ensure_key("watchdog", "1", "watchdog: 1 = freeze watchdog: if the game thread does not tick for 10 s, MiningFreeze.txt gets its stack (max 20 lines); 0 = off (global only)");
             ensure_key("flee_on_target", "1", "flee_on_target: 1 = a ship targeted by a hostile or in combat flees to a dock like after a hull hit (global only)");
             ensure_key("warp_range", "50km", "warp_range: belt mode: a rock farther than this from the ship is not flown to, the ship warps to the next sector instead; also caps radius (m/km, empty/0 = 50km; per-ship key allowed)");
             ensure_key("mining_distance", "50m", "mining_distance: distance from the rock in m/km, e.g. 200m (empty = 50m; per-ship key allowed)");
@@ -260,6 +261,7 @@ namespace
             if (kv.count("record_interval_seconds")) nc.record_interval_seconds = to_int(kv["record_interval_seconds"], 2);
             if (nc.record_interval_seconds < 1) nc.record_interval_seconds = 1;
             if (kv.count("kill_switch")) nc.kill_switch = to_int(kv["kill_switch"], 0) != 0;
+            if (kv.count("watchdog")) nc.watchdog = to_int(kv["watchdog"], 1) != 0;
             if (kv.count("flee_on_target")) nc.flee_on_target = to_int(kv["flee_on_target"], 1) != 0 ? 1 : 0;
             if (nc.log_interval_seconds < 1) nc.log_interval_seconds = 1;
             // WHAT: wait and per-fuel keys (global only). An empty or non-number value falls back to the struct default (to_int).
@@ -289,6 +291,7 @@ namespace
             Fields old_f = config_fields(g_cfg);
             Fields new_f = config_fields(nc);
             g_cfg = nc;
+            g_wd_enabled.store(nc.watchdog);
             g_ship_kv = skv;
             // WHAT: logs each [ship.<id>] section and its effective values.
             // WHY: so the user can check what the mod read.
