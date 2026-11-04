@@ -483,11 +483,11 @@ namespace
     {
         return hostile_n > 0 ? prev + 1 : 0;
     }
-    // WHAT: flee trigger from a target sample: flee_on_target on, not latched by an earlier flee of this attack, and the streak reached TARGET_FLEE_READS or the ship is in combat.
-    // WHY: the latch means one flee per attack; the ship that already fled is not sent again while the attack goes on.
-    inline bool target_flee_trigger(bool enabled, int streak, bool combat, bool latched)
+    // WHAT: flee trigger from a target sample: flee_on_target on, not latched by an earlier flee of this attack, and the hostile-targeter streak reached TARGET_FLEE_READS.
+    // WHY: IsShipInCombat() is not a trigger (our own lasers vs rocks may set it); it is logged only. The latch means one flee per attack.
+    inline bool target_flee_trigger(bool enabled, int streak, bool latched)
     {
-        return enabled && !latched && (streak >= TARGET_FLEE_READS || combat);
+        return enabled && !latched && streak >= TARGET_FLEE_READS;
     }
     // WHAT: the latch stays set only while the ship is still attacked (targeted or in combat); a sample with no attack clears it.
     inline bool target_latch_next(bool latched, bool attacked)

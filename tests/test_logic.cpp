@@ -981,12 +981,12 @@ static void t_combat_flee()
 {
     CHECK(TARGET_FLEE_READS == 2);
     int s = 0;
-    s = target_streak_next(s, 1); CHECK(s == 1 && !target_flee_trigger(true, s, false, false));   // one read: no flee yet
-    s = target_streak_next(s, 0); CHECK(s == 0);                                                   // a clean read resets
-    s = target_streak_next(s, 3); s = target_streak_next(s, 1); CHECK(s == 2 && target_flee_trigger(true, s, false, false));   // two in a row: flee
-    CHECK(target_flee_trigger(true, 0, true, false));          // in combat flees at once
-    CHECK(!target_flee_trigger(false, 5, true, false));        // flee_on_target = 0: never
-    CHECK(!target_flee_trigger(true, 5, true, true));          // latched (already fled for this attack): no second flee
+    s = target_streak_next(s, 1); CHECK(s == 1 && !target_flee_trigger(true, s, false));   // one read: no flee yet
+    s = target_streak_next(s, 0); CHECK(s == 0);                                           // a clean read resets
+    s = target_streak_next(s, 3); s = target_streak_next(s, 1); CHECK(s == 2 && target_flee_trigger(true, s, false));   // two in a row: flee
+    CHECK(!target_flee_trigger(true, 0, false));               // IsShipInCombat alone never flees (streak 0)
+    CHECK(!target_flee_trigger(false, 5, false));              // flee_on_target = 0: never
+    CHECK(!target_flee_trigger(true, 5, true));                // latched (already fled for this attack): no second flee
     bool l = true;
     CHECK(target_latch_next(l, true));                         // still attacked: stays latched
     CHECK(!target_latch_next(l, false));                       // attack over: released

@@ -738,7 +738,7 @@ namespace
     // WHY: same states and exclusions as the hull hit; the latch (set here) keeps one flee per attack.
     bool tgt_flee(UObject* ship, int sid, MineSt& m)
     {
-        if (!target_flee_trigger(g_cfg.flee_on_target != 0, m.tgt_streak, m.combat_now, m.tgt_latch)) return false;
+        if (!target_flee_trigger(g_cfg.flee_on_target != 0, m.tgt_streak, m.tgt_latch)) return false;
         m.tgt_latch = true;
         flee_now(ship, sid, m, STR("targeted by ") + std::to_wstring(m.tgt_n) + STR(", combat ") + (m.combat_now ? STR("1") : STR("0")));
         return true;
@@ -2077,14 +2077,15 @@ namespace
         {
             m.atk_on = true;
             m.sec_txt = sector_text(ship);
-            combat_record(sid, m, STR("attack started"), false);
+            // combat=1 with TargettedBy empty: IsShipInCombat alone (no flee); logged to learn whether it fires while mining
+            combat_record(sid, m, hostile > 0 ? STR("attack started, targeted") : STR("combat=1 without TargettedBy"), false);
         }
         m.atk_acc += el;
         if (m.atk_acc >= 30.0)
         {
             m.atk_acc = 0.0;
             m.sec_txt = sector_text(ship);
-            combat_record(sid, m, STR("in combat, 30 s summary"), false);
+            combat_record(sid, m, STR("30 s combat summary"), false);
         }
     }
 
