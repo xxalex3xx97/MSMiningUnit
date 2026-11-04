@@ -1436,6 +1436,28 @@ static void t_bubble_scope()
     CHECK(s.wp == 1 && s.resume && s.dst[0] == 5.0);
 }
 
+// sweep return arrival (sweep_arrive) and flee target range (target_entry_near)
+static void t_sweep_return_flee()
+{
+    CHECK(sweep_arrive(1.0, 500.0, true) == SA_WAIT);      // inside 1000 m but before the 2 s settle minimum
+    CHECK(sweep_arrive(3.0, 500.0, true) == SA_ARRIVED);
+    CHECK(sweep_arrive(2.0, 1000.0, true) == SA_ARRIVED);  // boundary: 1000 m counts
+    CHECK(sweep_arrive(3.0, 1000.5, true) == SA_WAIT);     // 1000.5 m: not yet
+    CHECK(sweep_arrive(3.0, 500.0, false) == SA_WAIT);     // jumping: system 0, still travelling
+    CHECK(sweep_arrive(5.0, -1.0, true) == SA_WAIT);       // position unreadable while jumping
+    CHECK(sweep_arrive(29.9, 5000.0, false) == SA_WAIT);
+    CHECK(sweep_arrive(30.0, 5000.0, false) == SA_GIVE_UP); // 30 s cap, not arrived
+    CHECK(sweep_arrive(30.0, -1.0, true) == SA_GIVE_UP);
+    // flee range: a targeter within the range (or unreadable distance) counts, a farther one does not
+    CHECK(target_entry_near(4999.0, 5000.0));
+    CHECK(target_entry_near(5000.0, 5000.0));
+    CHECK(!target_entry_near(5001.0, 5000.0));
+    CHECK(!target_entry_near(70000.0, 5000.0));            // 70 km: far
+    CHECK(target_entry_near(-1.0, 5000.0));                // unreadable distance counts as near
+    CHECK(target_entry_near(-1.0, 1000.0));
+    CHECK(!target_entry_near(1500.0, 1000.0));              // 1 km range: 1.5 km is far
+}
+
 // far-trip warp for our flights: decision order, landing candidates, sweep reachability
 static void t_flight_warp()
 {
@@ -1927,7 +1949,7 @@ int main()
         {"path_block", t_path_block}, {"path_perf", t_path_perf}, {"path_waypoint", t_path_waypoint}, {"shield_drop", t_shield_drop}, {"fast_sample", t_fast_sample},
         {"rock_depleted", t_rock_depleted},
         {"reg_table", t_reg_table}, {"reg_events", t_reg_events}, {"reg_within_nearest", t_reg_within_nearest}, {"reg_surface_block", t_reg_surface_block_radius},
-        {"approach_throttle", t_approach_throttle}, {"bubble", t_bubble}, {"bubble_ladder", t_bubble_ladder}, {"bubble_scope", t_bubble_scope}, {"tune_geom", t_tune_geom}, {"flight_warp", t_flight_warp},
+        {"approach_throttle", t_approach_throttle}, {"bubble", t_bubble}, {"bubble_ladder", t_bubble_ladder}, {"bubble_scope", t_bubble_scope}, {"tune_geom", t_tune_geom}, {"flight_warp", t_flight_warp}, {"sweep_return_flee", t_sweep_return_flee},
         {"reg_targeted_ore_budget", t_reg_targeted_ore_budget}, {"reg_bench", t_reg_bench}, {"reg_abs_m", t_reg_abs_m},
         {"box_probe_parse", t_box_probe_parse}, {"box_probe_uu_fwd", t_box_probe_uu_fwd}, {"reg_check_summary", t_reg_check_summary},
         {"reg_cache_round_trip", t_reg_cache_round_trip}, {"reg_cache_reject", t_reg_cache_reject}, {"reg_cache_verdict", t_reg_cache_verdict},

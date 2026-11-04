@@ -119,6 +119,7 @@ namespace
         std::vector<SwOre> sw_list;            // MS_SWEEP: floating ore cache (nearest first when picking)
         double sw_prev[3] = {0, 0, 0};         // MS_SWEEP: position of the ore picked last (the next pick prefers ore near it)
         bool sw_prev_ok = false;               // sw_prev is set
+        int sw_fb_n = 0;                       // return flights by move job after a failed return warp (one per return)
         int sw_found = -1;                     // MS_SWEEP: BP_FloatingOre_C count of the last scan (-1 none yet)
         bool sw_frame = false;                 // MS_SWEEP: ship frame readable at the last scan
         int sw_undock_n = 0;                   // MS_SWEEP: undock tries while docked and position unreadable (guard)
@@ -129,7 +130,8 @@ namespace
         int idle_polls = 0;                    // consecutive CHECK returns to OFF with nothing in range (belt off); reset on rock found and Start
         double dwait_total = 0.0;              // seconds waited for a dock in this trip (dwait); reset per trip, capped by MINE_DWAIT_MAX_S
         // combat (target_sample, hull_watch, combat_record): sampled once a second; the flee trigger reads tgt_streak / combat_now / tgt_latch
-        int tgt_streak = 0, tgt_n = 0;         // consecutive samples with a hostile targeter; hostile targeters at the last sample
+        int tgt_streak = 0, tgt_n = 0;         // consecutive samples with a hostile targeter; hostile targeters at the last sample (within flee_target_range_km)
+        int tgt_far = 0;                       // hostile targeters farther than flee_target_range_km at the last sample (logged, no flee)
         bool combat_now = false;               // IsShipInCombat() at the last sample
         bool tgt_latch = false;                // a flee for this attack already started (cleared when the attack is over)
         bool atk_on = false;                   // an attack episode is running (sector text is read once per episode and per 30 s summary)
@@ -248,7 +250,7 @@ namespace
                          STR(" chunk=") + m.chunk_txt + STR(" sector=") + m.sec_txt +
                          STR(" pos=") + std::to_wstring(static_cast<long long>(m.pos[0] / 100.0)) + STR(",") + std::to_wstring(static_cast<long long>(m.pos[1] / 100.0)) + STR(",") + std::to_wstring(static_cast<long long>(m.pos[2] / 100.0)) + STR("m") +
                          STR(" speed=") + std::to_wstring(static_cast<long long>(m.spd)) + STR("m/s state=") + mine_state_name(m.st) + STR(" result='") + m.result + STR("'") +
-                         STR(" hostile=") + std::to_wstring(m.tgt_n) + STR(" combat=") + (m.combat_now ? STR("1") : STR("0")) + STR(" attackers: ") + m.atk_txt;
+                         STR(" hostile=") + std::to_wstring(m.tgt_n) + STR(" far=") + std::to_wstring(m.tgt_far) + STR(" combat=") + (m.combat_now ? STR("1") : STR("0")) + STR(" attackers: ") + m.atk_txt;
         if (full)
         {
             s += STR(" | states:");
@@ -1636,6 +1638,33 @@ namespace
         sw_phase(ship, sid, m, SW_PICK);
     }
 
+    // WHAT: one SWEEP return line (SWEEP return: dist_km, landing = saved point, settle time, state) for the log.
+    void sweep_return_log(const MineSt& m, double d, bool same, const std::string& state)
+    {
+        log_line(STR("SWEEP return: dist_km=") + std::to_wstring(d < 0.0 ? -1.0 : d / 1000.0) + STR(" landing=sys") + std::to_wstring(m.sw_sys) +
+                 STR(" ch=(") + std::to_wstring(m.sw_ch[0]) + STR(",") + std::to_wstring(m.sw_ch[1]) + STR(",") + std::to_wstring(m.sw_ch[2]) + STR(")") +
+                 STR(" settle=") + std::to_wstring(m.sw_t) + STR(" s same_sys=") + (same ? STR("1") : STR("0")) + STR(" state=") + widen(state));
+    }
+
+    // WHAT: the return warp did not land (give up): fly back once with a move job (SW_FLY); a second failure picks ore from where the ship is.
+    //       No error state for this: the sweep goes on.
+    void sw_return_fallback(UObject* ship, int sid, MineSt& m)
+    {
+        if (m.sw_fb_n == 0 && m.sw_sys > 0)
+        {
+            ++m.sw_fb_n;
+            PtTarget t;
+            t.sys = m.sw_sys;
+            std::copy(m.sw_ch, m.sw_ch + 3, t.ch);
+            std::copy(m.sw_loc, m.sw_loc + 3, t.loc);
+            const std::wstring r = move_start(sid, "approach_rock", -1, nullptr, &t);
+            if (r == STR("waiting")) { sw_phase(ship, sid, m, SW_FLY); mlog(sid, STR("Collect: return by flight")); return; }
+        }
+        mlog(sid, STR("Collect: return not possible, picking ore from here"));
+        m.sw_nofly = false;
+        sw_arrived(ship, sid, m);
+    }
+
     // WHAT: MS_SWEEP: undock after a dock trip, return to the ore field, pick floating ore nearest first, dock when cargo is full.
     // WHY: the collect action runs until no ore is left: the ship keeps the tractor on and flies to each piece in turn.
     void st_sweep(UObject* ship, int sid, MineSt& m, double dt, const Config& c)
@@ -1687,16 +1716,25 @@ namespace
                 const std::wstring r = move_start(sid, "approach_rock", -1, nullptr, &t);
                 if (r == STR("waiting")) { sw_phase(ship, sid, m, SW_FLY); mlog(sid, STR("Collect: flying back")); return; }
             }
+            if (!m.sw_back || m.sw_sys <= 0)   // no saved return point (a return needs one): pick from here
+            {
+                mlog(sid, STR("Collect: no return point, picking ore from here"));
+                sw_arrived(ship, sid, m);
+                return;
+            }
             chunk_hold_target(sid, m.sw_sys, m.sw_ch);
             const int64_t arr[3] = {(int64_t)m.sw_loc[0], (int64_t)m.sw_loc[1], (int64_t)m.sw_loc[2]};
             std::wstring e;
+            double dd = -1.0;
+            sw_abs_dist(ship, m, dd, same);
             if (!warp_send(sid, m.sw_sys, m.sw_ch, arr, false, e))
             {
-                m.sweep = false; m.st = MS_HALT; m.err = true;
-                mset(sid, m, STR("ERROR: return warp failed: ") + e, STR("ERROR: return warp failed: ") + e);
+                sweep_return_log(m, dd, same, "warp refused: " + std::string(u8(e)));
+                sw_return_fallback(ship, sid, m);
                 return;
             }
             sw_phase(ship, sid, m, SW_WARP);
+            sweep_return_log(m, dd, same, "sent");
             mlog(sid, STR("Collect: warping back"));
             return;
         }
@@ -1717,14 +1755,12 @@ namespace
         case SW_WARP:
         {
             m.sw_t += dt;
-            double d = 0.0;
+            double d = -1.0;
             bool same = false;
-            if (sw_abs_dist(ship, m, d, same) && same && d <= 100.0) { sw_arrived(ship, sid, m); return; }
-            if (m.sw_t >= SWEEP_WARP_WAIT_S)
-            {
-                m.sweep = false; m.st = MS_HALT; m.err = true;
-                mset(sid, m, STR("ERROR: return warp did not arrive"), STR("ERROR: return warp did not arrive"));
-            }
+            if (!sw_abs_dist(ship, m, d, same)) d = -1.0;   // unreadable while jumping: still travelling
+            const int ar = sweep_arrive(m.sw_t, d, same);
+            if (ar == SA_ARRIVED) { sweep_return_log(m, d, same, "arrived"); sw_arrived(ship, sid, m); return; }
+            if (ar == SA_GIVE_UP) { sweep_return_log(m, d, same, "not arrived, flying back"); sw_return_fallback(ship, sid, m); return; }
             return;
         }
         case SW_PICK:
@@ -1751,6 +1787,7 @@ namespace
                     std::copy(ch, ch + 3, m.sw_ch);
                     std::copy(l, l + 3, m.sw_loc);
                     m.sw_back = true;
+                    m.sw_fb_n = 0;
                 }
                 mine_stop_work(ship, sid);
                 trip_begin(ship, sid, m, STR("cargo full"), "dock_mining");
@@ -2666,7 +2703,7 @@ namespace
     // WHAT: target read of one ship (ctx for seh_run). combat = IsShipInCombat() (bool getter). TargettedBy: total entries, hostile entries (not one of our bench ships;
     //       an entry that cannot be read counts as hostile), txt = the first 8 entries described (attacker_text). Read-only.
     // WHY: the entries are game objects that can be freed at any time, so the whole read runs under SEH; a fault leaves the sample empty.
-    struct TgtCtx { UObject* ship; bool arr_ok; bool combat_ok; bool combat; int total; int hostile; std::wstring txt; };
+    struct TgtCtx { UObject* ship; bool arr_ok; bool combat_ok; bool combat; int total; int hostile; std::wstring txt; int far_n = 0; double range_m = 0.0; };
     void tgt_read_fn(void* p)
     {
         auto* c = static_cast<TgtCtx*>(p);
@@ -2703,13 +2740,13 @@ namespace
             UObject* eo = live ? get_obj_prop(e, STR("Owner")) : nullptr;
             UObject* ef = live ? get_obj_prop(e, STR("Faction")) : nullptr;
             const bool same_side = (alive(eo) && eo == so) || (alive(ef) && ef == sf);
-            if (target_entry_hostile(live, own, same_side, objs)) c->hostile++;
+            double ep[3] = {0, 0, 0};
+            const double dm = (live && sp_ok && get_loc(e, ep)) ? dist3(sp, ep) / 100.0 : -1.0;   // metres; -1 = unreadable
+            if (target_entry_hostile(live, own, same_side, objs)) { if (target_entry_near(dm, c->range_m)) c->hostile++; else c->far_n++; }
             if (i >= 8) continue;
             const std::wstring cls = live ? std::wstring(e->GetClassPrivate()->GetName()) : std::wstring(STR("unreadable ")) + (inner ? type_text(inner) : std::wstring(STR("?")));
             const std::wstring name = live ? who_text(e) : std::wstring(STR("n/a"));
             const std::wstring owner = who_text(eo) + STR(" / ") + who_text(ef);
-            double ep[3] = {0, 0, 0};
-            const double dm = (live && sp_ok && get_loc(e, ep)) ? dist3(sp, ep) / 100.0 : -1.0;
             c->txt += (c->txt.empty() ? STR("") : STR("; ")) + attacker_text(i + 1, cls, id, name, owner, dm, own);
         }
     }
@@ -2721,6 +2758,7 @@ namespace
     {
         static std::set<int> warned;   // a read fault is logged once per ship per session
         TgtCtx c{ship, false, false, false, 0, 0, std::wstring()};
+        c.range_m = g_cfg.flee_target_range_km * 1000.0;
         if (!seh_run(tgt_read_fn, &c))
         {
             if (warned.insert(sid).second) log_line(STR("COMBAT target read faulted ship=") + std::to_wstring(sid) + STR(" ") + seh_describe(g_seh));
@@ -2730,6 +2768,7 @@ namespace
         const bool combat = c.combat_ok && c.combat;
         const bool attacked = hostile > 0 || combat;
         m.tgt_n = hostile;
+        m.tgt_far = c.far_n;
         m.combat_now = combat;
         m.tgt_streak = target_streak_next(m.tgt_streak, hostile);
         m.tgt_latch = target_latch_next(m.tgt_latch, attacked);

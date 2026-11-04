@@ -171,8 +171,9 @@ namespace
         mv_cancel(sid); zero_all(ship);
         if (m.st == MS_SWEEP && (bs.phase == BPH_WAYPOINT || bs.phase == BPH_ORE))
         {
-            m.sw_nofly = true;   // SW_RETURN: back by warp instead of this leg
-            sw_phase(ship, sid, m, SW_RETURN);
+            // back by warp only when a return point was saved (sw_back); else the next ore is picked. A return with no saved point warped to system 0.
+            if (m.sw_back) { m.sw_nofly = true; sw_phase(ship, sid, m, SW_RETURN); }
+            else if (m.sw_ph != SW_PICK) sw_phase(ship, sid, m, SW_PICK);
         }
     }
 

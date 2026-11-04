@@ -87,6 +87,7 @@ namespace
         int flee_on_target = 1;              // 1 = a ship targeted by a hostile (or in combat) flees to a dock like after a hull hit. Global only. (INI: flee_on_target)
         int path_clearance_m = 8;            // clear-path check: extra clearance (m) beyond the rock block radius. Global only. (INI: path_clearance_m)
         int bubble_clearance_m = 10;         // bubble reflex: extra clearance (m) beyond ship radius + rock block radius. Global only. (INI: bubble_clearance_m)
+        int flee_target_range_km = 5;        // a hostile targeter farther than this (km) does not trigger the flee. Global only. (INI: flee_target_range_km)
         // text distance, e.g. 50km: belt mode only. Rocks farther than this from the ship count as none (the ship warps instead of flying there), and radius is capped by it. Empty/0/bad = 50 km. Per-ship. (INI: warp_range)
         std::string warp_range = "50km";
         std::string mining_distance = "50m";    // per-ship: mining distance from the rock, e.g. 200m / 0.2km (empty = unset)
@@ -470,10 +471,20 @@ namespace
     constexpr int SWEEP_RESCANS = 2;
     constexpr double SWEEP_FLY_MAX_M = 4096.0;
     constexpr double SWEEP_FLY_TIMEOUT_S = 120.0;
-    constexpr double SWEEP_WARP_WAIT_S = 15.0;
     constexpr double SWEEP_RESCAN_S = 2.0;   // wait before each rescan of the ore list (s)
 
     // WHAT: fly back by tractor flight only when same system and within SWEEP_FLY_MAX_M; else warp.
+    // WHAT: return warp decision (SW_WARP). Arrived: same system, within WARP_ARRIVE_M of the saved point, after WARP_SETTLE_MIN_S. Give up: no arrival
+    //       after WARP_SETTLE_MAX_S. Else wait. dist_m < 0 = position unreadable while jumping; same_sys false = jumping (system 0): still travelling.
+    // WHY: the 15 s wait was too short for a jump and a jump reads system 0, so the warp was called a failure (live 2026-11-04).
+    enum SweepArrive { SA_WAIT = 0, SA_ARRIVED = 1, SA_GIVE_UP = 2 };
+    inline int sweep_arrive(double t, double dist_m, bool same_sys)
+    {
+        const bool near = same_sys && dist_m >= 0.0 && dist_m <= WARP_ARRIVE_M;
+        if (near && t >= WARP_SETTLE_MIN_S) return SA_ARRIVED;
+        return t >= WARP_SETTLE_MAX_S ? SA_GIVE_UP : SA_WAIT;
+    }
+
     inline bool sweep_fly_back(bool same_sys, double dist_m)
     {
         return same_sys && dist_m <= SWEEP_FLY_MAX_M;
@@ -535,6 +546,9 @@ namespace
         if (own) return false;
         return live ? !same_side : object_type;
     }
+
+    // WHAT: a TargettedBy entry counts for the flee only when it is within range_m (m) of the ship. dist_m < 0 = unreadable: counts as near (conservative).
+    inline bool target_entry_near(double dist_m, double range_m) { return dist_m < 0.0 || dist_m <= range_m; }
 
     // ---------- hazard flee: hull drop with no hostile targeter ----------
     // WHAT: the flee is a hazard flee when the hull drop had no hostile targeter at the sample (the damage has no attacker).
@@ -1432,6 +1446,7 @@ namespace
         {"flee_on_target", 0, 1, true, false},
         {"path_clearance_m", 0, 100, true, false},
         {"bubble_clearance_m", 0, 100, true, false},
+        {"flee_target_range_km", 1, 100, false, false},
     };
 
     // WHAT: the bound row for key, nullptr when the key is not bounded.
