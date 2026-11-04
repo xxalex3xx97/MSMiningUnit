@@ -1196,9 +1196,6 @@ static void t_path_perf()
     CHECK(!path_box_reject(a, b, near, PATH_RMAX_M));   // 4 km off the path: inside the 5 km box
     CHECK(path_box_reject(a, b, far, PATH_RMAX_M));     // 9 km off: rejected
     CHECK(path_box_reject(a, b, past, PATH_RMAX_M));    // 6 km before the start
-    // budget: takes one unit per call until empty
-    int bud = 2;
-    CHECK(budget_take(bud)); CHECK(budget_take(bud)); CHECK(!budget_take(bud)); CHECK(bud == 0);
     // slow check: over 3 ms only
     CHECK(!path_over_budget(3.0)); CHECK(path_over_budget(3.01));
     // slow log: first time always, then every 30 s
@@ -1212,11 +1209,6 @@ static void t_path_perf()
     CHECK(!path_skip_active(until, 60000));
     // periodic check due at 2 s of approach
     CHECK(!path_watch_due(1.99)); CHECK(path_watch_due(2.0));
-    // snapshot rebuild: list changed, or 5 s old, and never while building
-    CHECK(snap_rebuild_due(false, 7, 6, 1000, 0));
-    CHECK(!snap_rebuild_due(false, 7, 7, 4000, 0));
-    CHECK(snap_rebuild_due(false, 7, 7, 5000, 0));
-    CHECK(!snap_rebuild_due(true, 8, 7, 9000, 0));
     NEAR(PATH_SLOW_MS, 3.0, 1e-12);
     CHECK(PATH_CANDIDATES == 8);
 }
@@ -1327,8 +1319,6 @@ static void t_reg_surface_block_radius()
     const size_t hb = b.first_blocker(7, a, e, 300.0, &handle, 0, &hz, 500.0, dd);   // rock 2: 50 + 300 + 500 = 850 m reach, 400 m off: blocks
     CHECK(hb != RockReg::npos && b.rocks[hb].id == 2);
     CHECK(b.first_blocker(7, a, e, 300.0, &handle, 0, nullptr, 0, dd) == RockReg::npos);   // rock 2: 350 m reach, clear
-    CHECK(b.near_path(7, a, e, nullptr, 0.0));                // rock 1 is on the path
-    CHECK(!b.near_path(7, a, e, &handle, 0.0));               // only rock 1 is near; rock 2 is 400 m off (surface 350 > 0)
     std::vector<std::array<double, 3>> refs = {{{0.0, 0.0, 0.0}}};
     std::vector<size_t> want;
     b.radius_wanted(7, refs, 5000, 10, want);
@@ -1338,6 +1328,72 @@ static void t_reg_surface_block_radius()
     want.clear();
     c.radius_wanted(7, refs, 5000, 10, want);
     CHECK(want.size() == 1);
+}
+
+// approach Throttle (approach_throttle, mb_logic.hpp): full speed beyond APPROACH_RAMP_M, linear to 1 inside, 0 at or past the stand-off point
+static void t_approach_throttle()
+{
+    CHECK(approach_throttle(5000.0, 40.0, 10) == 10);
+    CHECK(approach_throttle(500.0, 40.0, 10) == 10);
+    CHECK(approach_throttle(250.0, 40.0, 10) == 5);
+    CHECK(approach_throttle(250.0, 40.0, 4) == 2);
+    CHECK(approach_throttle(1.0, 0.0, 10) == 1);         // ceil: the last metres still move
+    CHECK(approach_throttle(0.0, 0.0, 10) == 0);
+    CHECK(approach_throttle(-3.0, 0.0, 10) == 0);
+    CHECK(approach_throttle(250.0, 40.0, 0) == 0);
+    CHECK(approach_throttle(300.0, 99.0, 10) == approach_throttle(300.0, 0.0, 10));   // speed does not change the ramp
+    int prev = 0;
+    bool mono = true;
+    for (double d = 1.0; d <= 600.0; d += 1.0)   // never falls as the ship gets farther, always 0..max
+    {
+        const int t = approach_throttle(d, 0.0, 10);
+        if (t < prev || t < 0 || t > 10) mono = false;
+        prev = t;
+    }
+    CHECK(mono);
+}
+
+// bubble geometry (mb_logic.hpp + registry first_blocker): look-ahead, clearance, target exclusion, unknown radius = 35 m
+static void t_bubble()
+{
+    CHECK(bubble_look_ahead(0.0) == 100.0);
+    CHECK(bubble_look_ahead(20.0) == 100.0);               // 80 m < minimum
+    CHECK(bubble_look_ahead(50.0) == 200.0);               // 4 s x 50 m/s
+    CHECK(bubble_look_ahead(-5.0) == 100.0);
+    CHECK(bubble_clear_m(12.0) == 42.0);                   // ship radius + 30 m
+    RockReg g;
+    reg_add(g, 1, 7, 150, 0, 0, nullptr, 8.0);             // on the nose
+    reg_add(g, 2, 7, 150, 60, 0, nullptr, 8.0);            // 60 m off: 8 + 42 = 50 < 60, clear
+    reg_add(g, 3, 7, 150, 49, 0, nullptr, 8.0);            // 49 m off: inside
+    reg_add(g, 4, 7, 400, 0, 0, nullptr, 8.0);             // beyond the look-ahead
+    const double a[3] = {0, 0, 0}, b[3] = {200, 0, 0};
+    double d = 0.0;
+    size_t i = g.first_blocker(7, a, b, bubble_clear_m(12.0), nullptr, 0, nullptr, 0.0, d);
+    CHECK(i != RockReg::npos && g.rocks[i].id == 1 && std::fabs(d) < 1e-9);
+    i = g.first_blocker(7, a, b, bubble_clear_m(12.0), nullptr, 1, nullptr, 0.0, d);   // target excluded (stand-off phase)
+    CHECK(i != RockReg::npos && g.rocks[i].id == 3 && std::fabs(d - 49.0) < 1e-9);
+    RockReg u;
+    reg_add(u, 9, 7, 150, 60, 0);                          // radius unknown: 35 m until read, 35 + 42 = 77 > 60 blocks
+    CHECK(u.first_blocker(7, a, b, bubble_clear_m(12.0), nullptr, 0, nullptr, 0.0, d) != RockReg::npos);
+    RockReg v;
+    reg_add(v, 9, 7, 150, 0, 0, nullptr, 8.0);
+    CHECK(v.first_blocker(7, a, b, bubble_clear_m(12.0), nullptr, 9, nullptr, 0.0, d) == RockReg::npos);   // only the target is there
+}
+
+// bubble ladder (bubble_step): brake on a hit, replan after the stop, give up after BUBBLE_MAX_REPLAN replans
+static void t_bubble_ladder()
+{
+    BubbleState s;
+    CHECK(bubble_step(s, false, 50.0, 5) == BBA_NONE);
+    CHECK(bubble_step(s, true, 50.0, 5) == BBA_BRAKE && s.braking && s.pending == BBA_REPLAN);
+    CHECK(bubble_step(s, true, 10.0, 5) == BBA_NONE);      // still braking: no action until stopped
+    CHECK(bubble_step(s, false, 2.0, 5) == BBA_REPLAN && !s.braking && s.replans == 1);
+    CHECK(bubble_step(s, true, 40.0, 5) == BBA_BRAKE && s.pending == BBA_REPLAN);
+    CHECK(bubble_step(s, false, 0.5, 5) == BBA_REPLAN && s.replans == 2);
+    CHECK(bubble_step(s, true, 40.0, 5) == BBA_BRAKE && s.pending == BBA_RETARGET);   // 2 replans done: give up
+    CHECK(bubble_step(s, false, 1.0, 5) == BBA_RETARGET && s.replans == 0 && !s.braking);
+    CHECK(bubble_step(s, true, 40.0, 6) == BBA_BRAKE && s.pending == BBA_REPLAN);      // new target: fresh count
+    CHECK(bubble_step(s, true, 40.0, 6) == BBA_NONE);
 }
 
 static void t_reg_targeted_ore_budget()
@@ -1589,6 +1645,7 @@ int main()
         {"path_block", t_path_block}, {"path_perf", t_path_perf}, {"path_waypoint", t_path_waypoint}, {"shield_drop", t_shield_drop}, {"fast_sample", t_fast_sample},
         {"rock_depleted", t_rock_depleted},
         {"reg_table", t_reg_table}, {"reg_events", t_reg_events}, {"reg_within_nearest", t_reg_within_nearest}, {"reg_surface_block", t_reg_surface_block_radius},
+        {"approach_throttle", t_approach_throttle}, {"bubble", t_bubble}, {"bubble_ladder", t_bubble_ladder},
         {"reg_targeted_ore_budget", t_reg_targeted_ore_budget}, {"reg_bench", t_reg_bench}, {"reg_abs_m", t_reg_abs_m},
         {"box_probe_parse", t_box_probe_parse}, {"box_probe_uu_fwd", t_box_probe_uu_fwd}, {"reg_check_summary", t_reg_check_summary},
     };

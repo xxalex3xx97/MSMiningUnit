@@ -1,7 +1,7 @@
 // FILE: mods/MiningBenchMod/mb_registry_logic.hpp
 // WHAT: pure rock registry. Table of rocks (seeded from save data, centre in metres, radius in metres, ore items, alive flag, optional actor
 //       handle kept as an opaque pointer), a chunk-cell grid index per system, local queries (within, nearest, nearest_n, nearest_surface,
-//       first_blocker, near_path), destroy event ring with a sequence number, targeted-rock set, floating ore table, per-tick time budget test.
+//       first_blocker), destroy event ring with a sequence number, targeted-rock set, floating ore table, per-tick time budget test.
 // WHY separate: no UE / Windows calls, so tests/test_logic.cpp and the benchmark run it alone. The game side (mb_registry.hpp) fills and
 //       updates it; ships only read it.
 // DEPENDS ON (exact): mb_logic.hpp (PathRock, path_first_blocker, seg_point_dist, path_box_reject, PATH_RMAX_M), std headers.
@@ -60,6 +60,10 @@ namespace
 
     // WHAT: one destroy event: rock id, tick it was seen, sequence number (1, 2, ...).
     struct RegEvent { int id = 0; uint64_t tick = 0; uint64_t seq = 0; };
+
+    // WHAT: blocking/surface radius (m) of a registry rock: its read radius, or REG_RAD_UNKNOWN_M until the radius is read.
+    // WHY: an unread rock counts as big as the conservative default, so the path check never misses it.
+    inline double reg_eff_rad(const RegRock& r) { return r.rad_known ? std::max(0.0, r.rad_m) : REG_RAD_UNKNOWN_M; }
 
     // WHAT: one floating ore entry: opaque key (actor pointer), position (m), alive flag.
     struct RegOre { const void* key = nullptr; double p[3] = {0, 0, 0}; bool alive = true; };
@@ -327,7 +331,7 @@ namespace
 
         // WHAT: nearest rock by SURFACE distance (centre distance - radius, m) of system sys, skipping skip_act. surf_m = that distance.
         //       npos when none. The search is final once the best surface distance + REG_RAD_MAX_M lies inside the searched radius.
-        size_t nearest_surface(int sys, const double p[3], const void* skip_act, double& surf_m) const
+        size_t nearest_surface(int sys, const double p[3], const void* skip_act, double& surf_m, int skip_id = 0) const
         {
             std::vector<size_t> cand;
             for (double r = REG_SEARCH_START_M;; r = std::min(r * 4.0, REG_SEARCH_MAX_M))
@@ -339,9 +343,9 @@ namespace
                 for (size_t i : cand)
                 {
                     const RegRock& rk = rocks[i];
-                    if (skip_act && rk.act == skip_act) continue;
+                    if ((skip_act && rk.act == skip_act) || (skip_id && rk.id == skip_id)) continue;
                     const double d[3] = {rk.c[0] - p[0], rk.c[1] - p[1], rk.c[2] - p[2]};
-                    const double s = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]) - std::max(0.0, rk.rad_m);
+                    const double s = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]) - reg_eff_rad(rk);
                     if (s < bs) { bs = s; best = i; }
                 }
                 if (best != npos && bs + REG_RAD_MAX_M <= r) { surf_m = bs; return best; }
@@ -366,7 +370,7 @@ namespace
                 if (path_box_reject(a, b, rk.c, PATH_RMAX_M) || seg_point_dist(a, b, rk.c) > PATH_RMAX_M) return;
                 PathRock p;
                 std::copy(rk.c, rk.c + 3, p.c);
-                p.r = std::max(0.0, rk.rad_m) + clear_m + (hazard && hazard->count(rk.id) ? hazard_extra_m : 0.0);
+                p.r = reg_eff_rad(rk) + clear_m + (hazard && hazard->count(rk.id) ? hazard_extra_m : 0.0);
                 pr.push_back(p);
                 who.push_back(i);
             });
@@ -374,22 +378,19 @@ namespace
             return k < 0 ? npos : who[static_cast<size_t>(k)];
         }
 
-        // WHAT: true when a rock (not skip_act) lies within zone_m of the path a->b by surface distance (slow-down zone of the approach).
-        bool near_path(int sys, const double a[3], const double b[3], const void* skip_act, double zone_m) const
+        // WHAT: up to max_n alive rocks of sys with radius not known yet whose cells lie within r_m of the segment a->b (metres). Appended to out (indices, no duplicates).
+        // WHY: the approach segment's rocks get their radius first (the path check uses it).
+        void radius_wanted_seg(int sys, const double a[3], const double b[3], double r_m, size_t max_n, std::vector<size_t>& out) const
         {
-            const double lo[3] = {std::min(a[0], b[0]) - PATH_RMAX_M, std::min(a[1], b[1]) - PATH_RMAX_M, std::min(a[2], b[2]) - PATH_RMAX_M};
-            const double hi[3] = {std::max(a[0], b[0]) + PATH_RMAX_M, std::max(a[1], b[1]) + PATH_RMAX_M, std::max(a[2], b[2]) + PATH_RMAX_M};
-            bool hit = false;
+            const double lo[3] = {std::min(a[0], b[0]) - r_m, std::min(a[1], b[1]) - r_m, std::min(a[2], b[2]) - r_m};
+            const double hi[3] = {std::max(a[0], b[0]) + r_m, std::max(a[1], b[1]) + r_m, std::max(a[2], b[2]) + r_m};
             for_box(sys, lo, hi, [&](size_t i)
             {
-                if (hit) return;
                 const RegRock& rk = rocks[i];
-                if (!rk.alive || rk.sys != sys || (skip_act && rk.act == skip_act)) return;
-                if (path_box_reject(a, b, rk.c, PATH_RMAX_M)) return;
-                const double sd = seg_point_dist(a, b, rk.c);
-                if (sd <= PATH_RMAX_M && sd - std::max(0.0, rk.rad_m) <= zone_m) hit = true;
+                if (out.size() >= max_n || !rk.alive || rk.rad_known || rk.sys != sys) return;
+                if (path_box_reject(a, b, rk.c, r_m) || seg_point_dist(a, b, rk.c) > r_m) return;
+                if (std::find(out.begin(), out.end(), i) == out.end()) out.push_back(i);
             });
-            return hit;
         }
 
         // WHAT: up to max_n alive rocks of sys with radius not known yet, within r_m of any point in refs (metres). Appended to out (indices, no duplicates).

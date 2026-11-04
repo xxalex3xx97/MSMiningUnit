@@ -213,6 +213,16 @@ namespace
             if (kv.second.rock > 0) targets.push_back(kv.second.rock);
         }
         for (const auto& kv : g_mvs) if (kv.second.rock_id > 0) targets.push_back(kv.second.rock_id);
+        // approach segments: ship -> target rock centre (radius reads first, see reg_radius_stage)
+        for (RegShip& r : ships)
+        {
+            auto mv = g_mvs.find(r.sid);
+            if (mv == g_mvs.end() || mv->second.kind != "approach_rock" || mv->second.rock_id <= 0) continue;
+            const RegRock* tr = reg_st().tab.get(mv->second.rock_id);
+            if (!tr) continue;
+            r.has_seg = true;
+            std::copy(tr->c, tr->c + 3, r.q);
+        }
         registry_tick(dt, ships, targets);
     }
 
@@ -231,7 +241,7 @@ namespace
         set_last_step(STR("rock_drain_dead"));
         rock_drain_dead();   // deleted actors queued by the engine listener are removed every tick, also while no ship asks for rocks
         ++g_actor_frame;   // invalidates the actor_ok() set: it is rebuilt at most once per engine tick
-        path_tick_begin();   // path budgets reset, one rock snapshot chunk (mb_mining.hpp)
+        path_tick_begin();   // path check: one periodic check per tick (mb_mining.hpp)
         // 2.
         set_last_step(STR("move_tick"));
         move_tick(dt);   // move jobs run every engine tick
@@ -268,6 +278,8 @@ namespace
             mining_tick(step);
             set_last_step(STR("registry_frame"));   // rock registry (mb_registry.hpp): one updater per 0.25 s
             registry_frame(step);
+            set_last_step(STR("bubble_tick"));   // bubble reflex for approaching / mining ships (mb_bubble.hpp)
+            bubble_tick(step);
             set_last_step(STR("station_destroy_tick"));
             station_destroy_tick(step);
         }

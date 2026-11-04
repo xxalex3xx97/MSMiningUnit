@@ -29,6 +29,7 @@
 #include "mb_warpreal.hpp"
 #include "mb_belt.hpp"
 #include "mb_mining.hpp"
+#include "mb_bubble.hpp"
 #include "mb_natives.hpp"
 #include "mb_chunkhold.hpp"
 #include "mb_devcmd.hpp"

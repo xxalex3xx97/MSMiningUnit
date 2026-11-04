@@ -546,12 +546,24 @@ namespace
     // ---------- clear-path check for approaches (segment ship -> stand-off point against rock spheres) ----------
     constexpr double SHIP_CLEARANCE_M = 300.0;       // a rock blocks when its centre is closer than radius + this to the path (m)
     constexpr double HAZARD_CLEAR_EXTRA_M = 500.0;   // hazard rocks: extra clearance on top of SHIP_CLEARANCE_M (m)
-    constexpr double SLOW_ZONE_M = 500.0;            // a non-target rock this close to the approach path (surface, m): slow down; also the fast-sample range
+    constexpr double SLOW_ZONE_M = 500.0;            // fast-sample range: a rock this close (surface, m) to a ship gets the fast hull/shield watch
     constexpr double HAZARD_BLOCK_M = 1500.0;        // hazard hit: rocks this close (surface, m) are marked; the back-out distance is HAZARD_BACKOUT_M
     constexpr double HAZARD_BACKOUT_M = 1500.0;
     constexpr int PATH_WP_MAX = 3;                   // waypoints per approach before the target is skipped for this visit
     constexpr double PATH_CHECK_S = 1.0;             // clear-path re-check period while an approach runs (s)
     constexpr double FAST_SAMPLE_S = 0.25;           // hull/shield sample period near rock (s); elsewhere 1 s
+    constexpr double APPROACH_RAMP_M = 500.0;        // approach: full Throttle beyond this distance to the stand-off point (m), linear ramp inside
+
+    // WHAT: approach Throttle step for the distance to the stand-off point (m). max_thr beyond APPROACH_RAMP_M; inside it linear down to 1
+    //       (ceil, so the last metres still move); 0 at or past the stand-off point. speed_mps is not used by the ramp (the caller brakes on it).
+    // WHY: full speed on the long leg, a smooth slow-down near the rock. Ramp is distance-only: no measured deceleration exists.
+    inline int approach_throttle(double dist_to_standoff_m, double speed_mps, int max_thr)
+    {
+        (void)speed_mps;
+        if (max_thr < 1 || dist_to_standoff_m <= 0.0) return 0;
+        if (dist_to_standoff_m >= APPROACH_RAMP_M) return max_thr;
+        return std::clamp(static_cast<int>(std::ceil(max_thr * dist_to_standoff_m / APPROACH_RAMP_M)), 1, max_thr);
+    }
 
     // WHAT: a rock as the path check sees it: centre (m) and blocking radius (m) = rock radius + clearance.
     struct PathRock { double c[3]; double r; };
@@ -571,7 +583,7 @@ namespace
         return t >= 0.0 && t <= 1.0 && out_d < r;
     }
 
-    // WHAT: distance from point c to the SEGMENT a->b (clamped to the ends). Used for the slow-down zone (the ship end counts).
+    // WHAT: distance from point c to the SEGMENT a->b (clamped to the ends). Used by the bubble and path checks of the registry (the ship end counts).
     inline double seg_point_dist(const double a[3], const double b[3], const double c[3])
     {
         const double d[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
@@ -601,10 +613,8 @@ namespace
     // ---------- path check cost limits (perf) ----------
     constexpr double PATH_RMAX_M = 5000.0;        // rocks whose centre is farther than this from the path are never tested (prefilter)
     constexpr size_t PATH_CANDIDATES = 8;         // retarget: nearest candidates of the ore tried
-    constexpr int PATH_RAD_READS_TICK = 10;       // GetRadius game calls per cmd_tick (each rock once per session, cached)
-    constexpr int PATH_LOC_READS_TICK = 50;       // K2_GetActorLocation game calls per cmd_tick (snapshot build)
-    constexpr size_t PATH_SNAP_CHUNK = 400;       // rocks read into the snapshot per cmd_tick
-    constexpr double PATH_SNAP_S = 5.0;           // snapshot rebuilt at most this often (s), or at once when the rock list is refreshed
+    constexpr double PATH_PICK_M = 10000.0;       // retarget: candidates are rocks of the ore within this distance of the ship (m)
+    constexpr double REG_RAD_UNKNOWN_M = 35.0;    // blocking radius of a registry rock whose radius is not read yet (conservative, m)
     constexpr double PATH_WATCH_S = 2.0;          // per-ship clear-path re-check period while an approach runs (s)
     constexpr double PATH_SLOW_MS = 3.0;          // one check over this many ms is slow
     constexpr double PATH_SLOW_LOG_S = 30.0;      // at most one 'PATH slow' line per this many seconds
@@ -631,12 +641,48 @@ namespace
     inline bool path_skip_active(uint64_t until_ms, uint64_t now_ms) { return now_ms < until_ms; }
     // WHAT: a ship's periodic clear-path check is due after PATH_WATCH_S of approach time.
     inline bool path_watch_due(double t) { return t >= PATH_WATCH_S; }
-    // WHAT: take one unit from a per-tick budget. false (nothing taken) when the budget is spent.
-    inline bool budget_take(int& budget) { if (budget <= 0) return false; --budget; return true; }
-    // WHAT: the rock snapshot is rebuilt now: no build running and (the rock list was refreshed since the last build, or the last build is PATH_SNAP_S old).
-    inline bool snap_rebuild_due(bool building, uint64_t list_stamp, uint64_t snap_stamp, uint64_t now_ms, uint64_t snap_ms)
+
+    // ---------- bubble: reflex brake before a rock on the nose (mb_bubble.hpp) ----------
+    constexpr double BUBBLE_CLEARANCE_M = 30.0;      // bubble = ship CollisionRadius + rock radius + this (m)
+    constexpr double BUBBLE_LOOK_MIN_M = 100.0;      // look-ahead never shorter than this (m)
+    constexpr double BUBBLE_LOOK_S = 4.0;            // look-ahead = speed x this (s), along the nose
+    constexpr double BUBBLE_BRAKE_V = 3.0;           // braking ends below this speed (m/s)
+    constexpr int BUBBLE_MAX_REPLAN = 2;             // replans per target before the target is given up
+    constexpr double BUBBLE_SHIP_R_M = 12.0;         // ship CollisionRadius when the game read fails (m)
+    constexpr double BUBBLE_SLOW_MS = 0.2;           // one ship's bubble pass over this many ms is slow ('BUBBLE slow')
+
+    // WHAT: look-ahead length (m) for speed_mps (m/s): speed x BUBBLE_LOOK_S, at least BUBBLE_LOOK_MIN_M.
+    inline double bubble_look_ahead(double speed_mps) { return std::max(BUBBLE_LOOK_MIN_M, std::max(0.0, speed_mps) * BUBBLE_LOOK_S); }
+    // WHAT: clearance (m) passed to the registry first_blocker for a ship of collision radius ship_r (m): the rock radius is added by the query.
+    inline double bubble_clear_m(double ship_r) { return ship_r + BUBBLE_CLEARANCE_M; }
+
+    // WHAT: bubble ladder action. NONE = nothing; BRAKE = hit seen, throttle cut (the log line names the next action); REPLAN = after braking,
+    //       path_guard against the target with the blocker skipped; RETARGET = after BUBBLE_MAX_REPLAN replans, the target is given up.
+    enum BubbleAct { BBA_NONE = 0, BBA_BRAKE = 1, BBA_REPLAN = 2, BBA_RETARGET = 3 };
+    // WHAT: ladder state of one ship. braking = throttle held at 0 until speed < BUBBLE_BRAKE_V. pending = action after the stop.
+    //       replans = replans done for rock. rock = the target the count belongs to (a new target starts at 0).
+    //       blk / blk_d = last blocker id and its distance to the nose line (m), kept for the replan and the log.
+    struct BubbleState { bool braking = false; int replans = 0; int pending = BBA_NONE; int rock = 0; int blk = 0; double blk_d = 0.0; };
+    // WHAT: one ladder step. hit = a blocker lies in the bubble, speed_mps = current speed, rock = current target id.
+    //       Clear -> hit: BRAKE, pending = REPLAN, or RETARGET after BUBBLE_MAX_REPLAN replans. Braking -> speed < BUBBLE_BRAKE_V: returns pending
+    //       (REPLAN or RETARGET) once and counts it. Otherwise NONE.
+    // WHY: brake first, then replan, then give up: the ship never flies on at speed toward a rock.
+    inline BubbleAct bubble_step(BubbleState& s, bool hit, double speed_mps, int rock)
     {
-        return !building && (list_stamp != snap_stamp || now_ms - snap_ms >= static_cast<uint64_t>(PATH_SNAP_S * 1000.0));
+        if (s.rock != rock) { s.rock = rock; s.replans = 0; s.braking = false; s.pending = BBA_NONE; }
+        if (!s.braking)
+        {
+            if (!hit) return BBA_NONE;
+            s.braking = true;
+            s.pending = s.replans < BUBBLE_MAX_REPLAN ? BBA_REPLAN : BBA_RETARGET;
+            return BBA_BRAKE;
+        }
+        if (speed_mps >= BUBBLE_BRAKE_V) return BBA_NONE;
+        const BubbleAct act = static_cast<BubbleAct>(s.pending);
+        s.braking = false;
+        s.pending = BBA_NONE;
+        if (act == BBA_REPLAN) ++s.replans; else s.replans = 0;
+        return act;
     }
 
     // WHAT: stand-off point on the line from the rock centre c toward the ship a, at distance dist (m) from c. Fallback direction +X when a == c.

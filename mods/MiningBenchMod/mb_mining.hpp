@@ -315,151 +315,48 @@ namespace
     }
 
     // ---------------- clear-path geometry (metres; world = uu / 100) ----------------
+    // The path and bubble checks read the rock registry only (mb_registry.hpp): every rock of every ore, loaded or not.
 
-    // WHAT: centre of a rock actor in metres, from g_rock_loc (the cache act_aim fills). A first read costs one PATH_LOC_READS_TICK unit.
-    // false when unreadable or the per-tick budget is spent (the rock is then left out of this snapshot build).
-    int g_loc_budget = 0, g_rad_budget = 0;   // game-call budgets of this cmd_tick (path_tick_begin)
-    bool rock_centre_m(UObject* a, double c[3])
+    // WHAT: centre (m) and blocking radius (m, REG_RAD_UNKNOWN_M until read) of registry rock id. false when the id is unknown.
+    bool reg_geom(int id, double c[3], double& rad_m)
     {
-        if (!actor_ok(a)) return false;
-        auto lc = g_rock_loc.find(a);
-        if (lc == g_rock_loc.end())
-        {
-            if (!budget_take(g_loc_budget)) return false;
-            std::wstring why;
-            RockLoc l;
-            if (!actor_vec_call(a, STR("K2_GetActorLocation"), l.p, why)) return false;
-            lc = g_rock_loc.emplace(a, l).first;
-        }
-        for (int i = 0; i < 3; ++i) c[i] = lc->second.p[i] / MV_UU_PER_M;
+        const RegRock* r = reg_st().tab.get(id);
+        if (!r) return false;
+        std::copy(r->c, r->c + 3, c);
+        rad_m = reg_eff_rad(*r);
         return true;
     }
 
-    // WHAT: radius (m) of rock id from g_rock_rad_m, else GetRadius on its save object (one g_rad_budget unit). Zero is cached too, so each rock
-    //       costs one game call per session. false when the save object is not known yet (no call, read later) or the budget is spent.
-    std::map<int, double> g_rock_rad_m;
-    bool rad_read(int id, double& out)
+    // WHAT: blocking radius (m) of rock id for the path check: radius + SHIP_CLEARANCE_M, + HAZARD_CLEAR_EXTRA_M for a hazard rock. 0 for an unknown id.
+    double block_radius_id(int id)
     {
-        auto it = g_rock_rad_m.find(id);
-        if (it != g_rock_rad_m.end()) { out = it->second; return true; }
-        if (id <= 0) return false;
-        auto sv = g_save_by_id.find(id);
-        if (sv == g_save_by_id.end() || !alive(sv->second)) return false;
-        if (!budget_take(g_rad_budget)) return false;
-        out = rock_radius(sv->second) / g_raw_per_m;
-        g_rock_rad_m[id] = out;
-        return true;
-    }
-    // WHAT: radius (m) of a rock actor; 0 while unknown.
-    double rock_rad_m(UObject* a) { double r = 0.0; rad_read(rock_id_of(a), r); return r; }
-
-    // WHAT: blocking radius (m) of a rock for the path check: radius + SHIP_CLEARANCE_M, + HAZARD_CLEAR_EXTRA_M for a hazard rock.
-    double block_radius_m(UObject* a)
-    {
-        return rock_rad_m(a) + SHIP_CLEARANCE_M + (g_hazard_rocks.count(rock_id_of(a)) ? HAZARD_CLEAR_EXTRA_M : 0.0);
+        double c[3] = {0, 0, 0}, r = 0.0;
+        if (!reg_geom(id, c, r)) return 0.0;
+        return r + SHIP_CLEARANCE_M + (g_hazard_rocks.count(id) ? HAZARD_CLEAR_EXTRA_M : 0.0);
     }
 
-    // WHAT: one rock of the snapshot: actor, id, ore item, centre (m), radius (m, -1 = not read yet).
-    struct RockSnap { UObject* a = nullptr; int id = 0; UObject* item = nullptr; double c[3] = {0, 0, 0}; double rad = -1.0; };
-    // WHAT: snapshot of every listed rock, used by all path checks (no game call per check, no copy of the rock list).
-    // WHY: the old checks called the game for each rock (ProcessEvent) on every check; that froze the game thread for 18 s.
-    std::vector<RockSnap> g_snap_act, g_snap_build;
-    size_t g_snap_cursor = 0;
-    bool g_snap_building = false;
-    ULONGLONG g_snap_ms = 0, g_snap_stamp = 0;
-
-    // WHAT: radius (m) of snapshot entry s: read once through rad_read (budgeted), kept in the entry. 0 while unknown.
-    double snap_rad(RockSnap& s)
-    {
-        if (s.rad < 0.0) { double r = 0.0; if (rad_read(s.id, r)) s.rad = r; }
-        return s.rad < 0.0 ? 0.0 : s.rad;
-    }
-
-    // WHAT: builds the snapshot in chunks: PATH_SNAP_CHUNK rocks per cmd_tick, swapped in when complete. A new build starts when the rock list
-    //       was refreshed or the snapshot is PATH_SNAP_S old; a list refresh during a build restarts it on the next tick.
-    void rock_snap_step()
-    {
-        const ULONGLONG now = GetTickCount64();
-        if (!g_snap_building)
-        {
-            if (!snap_rebuild_due(false, g_rock_list_ms, g_snap_stamp, now, g_snap_ms)) return;
-            g_snap_build.clear();
-            g_snap_cursor = 0;
-            g_snap_stamp = g_rock_list_ms;
-            g_snap_building = true;
-        }
-        if (g_snap_stamp != g_rock_list_ms) { g_snap_building = false; return; }
-        const size_t end = std::min(g_rock_actors.size(), g_snap_cursor + PATH_SNAP_CHUNK);
-        for (; g_snap_cursor < end; ++g_snap_cursor)
-        {
-            UObject* a = g_rock_actors[g_snap_cursor];
-            RockSnap s;
-            if (!rock_centre_m(a, s.c)) continue;   // unread centre: a later build takes it
-            s.a = a;
-            s.id = rock_id_of(a);
-            auto it = g_rock_item.find(a);
-            s.item = it != g_rock_item.end() ? it->second : nullptr;
-            auto rr = g_rock_rad_m.find(s.id);
-            if (rr != g_rock_rad_m.end()) s.rad = rr->second;
-            g_snap_build.push_back(s);
-        }
-        if (g_snap_cursor >= g_rock_actors.size())
-        {
-            g_snap_act.swap(g_snap_build);
-            g_snap_build.clear();
-            g_snap_building = false;
-            g_snap_ms = now;
-        }
-    }
-
-    // WHAT: nearest rock of any ore to the ship (surface distance, m). skip is left out. nullptr when none (surf_m = 1e300).
-    // WHY: hazard marking and the fast sample period look at every rock. Snapshot only: the radius is the cached one (0 if unknown) for the
-    //      choice; the chosen rock's radius is then read (budgeted) for surf_m.
-    UObject* nearest_rock_any(UObject* ship, double& surf_m, UObject* skip)
+    // WHAT: nearest rock of any ore to the ship by surface distance (m), from the registry. skip_id is left out (0 = none).
+    //       Returns the rock id, 0 when none. surf_m = its surface distance (1e300 when none).
+    int nearest_rock_any_id(UObject* ship, double& surf_m, int skip_id)
     {
         surf_m = 1e300;
         ActFrame f;
-        if (!act_frame(ship, f)) return nullptr;
+        if (!act_frame(ship, f)) return 0;
         const double p[3] = {f.loc[0] / MV_UU_PER_M, f.loc[1] / MV_UU_PER_M, f.loc[2] / MV_UU_PER_M};
-        RockSnap* best = nullptr;
-        double bd = 1e300, bc = 0.0;
-        for (RockSnap& s : g_snap_act)
-        {
-            if (s.a == skip) continue;
-            const double d[3] = {s.c[0] - p[0], s.c[1] - p[1], s.c[2] - p[2]};
-            const double cd = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
-            const double sd = cd - std::max(0.0, s.rad);
-            if (sd < bd) { bd = sd; bc = cd; best = &s; }
-        }
-        if (!best) return nullptr;
-        surf_m = bc - snap_rad(*best);
-        return best->a;
+        const RockReg& t = reg_st().tab;
+        const size_t i = t.nearest_surface(sys_id(ship), p, nullptr, surf_m, skip_id);
+        return i == RockReg::npos ? 0 : t.rocks[i].id;
     }
 
-    // WHAT: per-check scratch (reused between checks, so no allocation after warm-up).
-    std::vector<PathRock> g_path_pr;
-    std::vector<UObject*> g_path_who;
-
-    // WHAT: the rock that blocks the straight path a->goal (m). Only snapshot rocks within PATH_RMAX_M of the path are tested (box, then distance),
-    //       except skip, with their blocking radius. nullptr = clear. dist_m = blocker centre to path (m); c_out = its centre (m).
-    UObject* path_blocker(const double a[3], const double goal[3], UObject* skip, double& dist_m, double c_out[3])
+    // WHAT: the rock that blocks the straight path a->goal in system sys (registry, first_blocker). skip_id is left out (0 = none).
+    //       Returns the blocker id, 0 = clear. dist_m = blocker centre to path (m); c_out = its centre (m).
+    int path_blocker(int sys, const double a[3], const double goal[3], int skip_id, double& dist_m, double c_out[3])
     {
-        g_path_pr.clear();
-        g_path_who.clear();
-        for (RockSnap& s : g_snap_act)
-        {
-            if (s.a == skip || path_box_reject(a, goal, s.c, PATH_RMAX_M)) continue;
-            if (seg_point_dist(a, goal, s.c) > PATH_RMAX_M) continue;
-            PathRock p;
-            std::copy(s.c, s.c + 3, p.c);
-            p.r = snap_rad(s) + SHIP_CLEARANCE_M + (g_hazard_rocks.count(s.id) ? HAZARD_CLEAR_EXTRA_M : 0.0);
-            g_path_pr.push_back(p);
-            g_path_who.push_back(s.a);
-        }
-        const int i = path_first_blocker(a, goal, g_path_pr.data(), g_path_pr.size(), dist_m);
-        if (i < 0) return nullptr;
-        std::copy(g_path_pr[(size_t)i].c, g_path_pr[(size_t)i].c + 3, c_out);
-        return g_path_who[(size_t)i];
+        const RockReg& t = reg_st().tab;
+        const size_t i = t.first_blocker(sys, a, goal, SHIP_CLEARANCE_M, nullptr, skip_id, &g_hazard_rocks, HAZARD_CLEAR_EXTRA_M, dist_m);
+        if (i == RockReg::npos) return 0;
+        std::copy(t.rocks[i].c, t.rocks[i].c + 3, c_out);
+        return t.rocks[i].id;
     }
 
     // WHAT: chunk (system + 3 ints) of the save-data asteroid nearest to the ship that holds `item` and is alive; the ore list is shared by all ships and refreshed at most once a minute.
@@ -961,13 +858,12 @@ namespace
             m.hz_dir[0] = 1.0; m.hz_dir[1] = 0.0; m.hz_dir[2] = 0.0;
             // blocker = the rock nearest the ship (surface, within HAZARD_BLOCK_M); else the target
             double ns = 0.0;
-            UObject* nr = nearest_rock_any(ship, ns, nullptr);
-            const bool nr_in = nr && ns <= HAZARD_BLOCK_M;
-            UObject* tg = m.rock > 0 ? rock_actor_by_id(m.rock) : nullptr;
-            UObject* blk = nr_in ? nr : tg;
+            const int nid = nearest_rock_any_id(ship, ns, 0);
+            const bool nr_in = nid > 0 && ns <= HAZARD_BLOCK_M;
+            const int blk_id = nr_in ? nid : m.rock;
             ActFrame f;
-            double bc[3] = {0, 0, 0};
-            if (blk && act_frame(ship, f) && rock_centre_m(blk, bc))
+            double bc[3] = {0, 0, 0}, brad = 0.0;
+            if (blk_id > 0 && act_frame(ship, f) && reg_geom(blk_id, bc, brad))
             {
                 double d[3] = {f.loc[0] / MV_UU_PER_M - bc[0], f.loc[1] / MV_UU_PER_M - bc[1], f.loc[2] / MV_UU_PER_M - bc[2]};
                 const double n = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
@@ -978,14 +874,13 @@ namespace
             bool marked = false;
             if (nr_in)
             {
-                const int nid = rock_id_of(nr);
                 g_hazard_rocks.insert(nid);
                 marked = true;
                 log_line(STR("rock ") + std::to_wstring(nid) + STR(" marked hazardous: nearest rock, surface ") + std::to_wstring(static_cast<long long>(ns)) + STR(" m") + hit);
             }
             double os = 0.0;
-            UObject* other = nearest_rock_any(ship, os, tg);
-            if (tg && !(other && os <= HAZARD_BLOCK_M) && m.rock > 0)
+            const int oid = nearest_rock_any_id(ship, os, m.rock);
+            if (m.rock > 0 && !(oid > 0 && os <= HAZARD_BLOCK_M))
             {
                 g_hazard_rocks.insert(m.rock);
                 marked = true;
@@ -1214,44 +1109,38 @@ namespace
         else { m.st = MS_HALT; mset(sid, m, STR("undock failed: ") + r); }
         return;
     }
-    // WHAT: stand-off point of target rock `target` for the ship at ps (m): mining_distance (m) outside its surface, on the ship side.
-    //       tc / tr = target centre (m) and radius (m). false when the mining distance or the target centre is unreadable.
-    bool standoff_of(int sid, UObject* target, const double ps[3], double so[3], double tc[3], double& tr)
+    // WHAT: stand-off point of target rock rid (registry) for the ship at ps (m): mining_distance (m) outside its surface, on the ship side.
+    //       tc / tr = rock centre (m) and blocking radius (m, REG_RAD_UNKNOWN_M until read). false when the mining distance or the rock is unknown.
+    bool standoff_of(int sid, int rid, const double ps[3], double so[3], double tc[3], double& tr)
     {
         const double md = parse_distance(eff_cfg(sid).mining_distance);
-        if (md < 0.0 || !rock_centre_m(target, tc)) return false;
-        tr = rock_rad_m(target);
+        if (md < 0.0 || !reg_geom(rid, tc, tr)) return false;
         standoff_point(ps, tc, tr + md, so);
         return true;
     }
 
-    // WHAT: next-nearest live rock of ore `item` (not skip, not no-yield / hazard / path-skipped) whose own straight path from ps is clear. nullptr when none.
-    // WHY: only the PATH_CANDIDATES nearest are tried (partial sort over the snapshot), each against the prefiltered rocks.
-    std::vector<std::pair<double, UObject*>> g_cand;
-    UObject* clear_rock_pick(int sid, const MineSt& m, const double ps[3], UObject* item, UObject* skip)
+    // WHAT: next-nearest live rock of ore item (registry; not skip, no-yield, hazard, depleted or path-skipped) whose own straight path from ps is clear.
+    //       0 when none. WHY: the PATH_CANDIDATES nearest within PATH_PICK_M are tried in turn.
+    int clear_rock_pick(int sid, const MineSt& m, int sys, const double ps[3], UObject* item, int skip_id)
     {
-        g_cand.clear();
-        if (!item) return nullptr;
+        if (!item) return 0;
+        std::set<int> skip = {skip_id};
+        skip.insert(m.noy_skip.begin(), m.noy_skip.end());
+        skip.insert(g_hazard_rocks.begin(), g_hazard_rocks.end());
+        skip.insert(g_depleted_rocks.begin(), g_depleted_rocks.end());
         const auto psk = g_path_skip.find(sid);
-        for (const RockSnap& s : g_snap_act)
+        if (psk != g_path_skip.end()) skip.insert(psk->second.begin(), psk->second.end());
+        const RockReg& t = reg_st().tab;
+        std::vector<std::pair<double, size_t>> cand;
+        t.nearest_n(sys, item, ps, m.abandon, &skip, PATH_PICK_M, PATH_CANDIDATES, cand);
+        for (const auto& pr : cand)
         {
-            if (s.a == skip || s.item != item) continue;
-            if (s.a == m.abandon || m.noy_skip.count(s.id) || g_hazard_rocks.count(s.id) || g_depleted_rocks.count(s.id) || (psk != g_path_skip.end() && psk->second.count(s.id))) continue;
-            const double d[3] = {s.c[0] - ps[0], s.c[1] - ps[1], s.c[2] - ps[2]};
-            g_cand.push_back({std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]), s.a});
-        }
-        const size_t k = std::min(PATH_CANDIDATES, g_cand.size());
-        std::partial_sort(g_cand.begin(), g_cand.begin() + static_cast<std::ptrdiff_t>(k), g_cand.end(),
-                          [](const std::pair<double, UObject*>& x, const std::pair<double, UObject*>& y) { return x.first < y.first; });
-        for (size_t i = 0; i < k; ++i)
-        {
-            UObject* cand = g_cand[i].second;
-            if (!actor_ok(cand)) continue;
+            const RegRock& rk = t.rocks[pr.second];
             double so[3], tc[3], tr = 0.0, dist = 0.0, bc[3];
-            if (!standoff_of(sid, cand, ps, so, tc, tr)) return nullptr;
-            if (!path_blocker(ps, so, cand, dist, bc)) return cand;
+            if (!standoff_of(sid, rk.id, ps, so, tc, tr)) return 0;
+            if (path_blocker(sys, ps, so, rk.id, dist, bc) == 0) return rk.id;
         }
-        return nullptr;
+        return 0;
     }
 
     // WHAT: one PATH log line (UE4SS log + Log tab): blocker, its distance to the path (m), what was done.
@@ -1261,7 +1150,19 @@ namespace
                  STR(" (dist ") + std::to_wstring(static_cast<long long>(std::llround(dist))) + STR(" m) -> ") + what);
     }
 
-    // WHAT: clear-path check of an approach to `target` (rock actor) from the ship's current position. false = the path is clear (or the check
+    // WHAT: gives the target rock tid up for this visit (path_guard step 3, bubble RETARGET): skip list, approach cancelled, next pick.
+    void path_give_up(UObject* ship, int sid, MineSt& m, int tid, int bid, double dist)
+    {
+        log_path(sid, tid, bid, dist, STR("skip"));
+        mlog(sid, STR("Path blocked by rock ") + std::to_wstring(bid) + STR(": rock ") + std::to_wstring(tid) + STR(" skipped"));
+        g_path_skip[sid].insert(tid);
+        mv_cancel(sid); zero_all(ship);
+        g_sel_rocks.erase(sid);
+        m.wp_on = false; m.wp_n = 0; m.seek_started = false; m.path_t = 0.0;
+        m.chk_t = MINE_ROCK_CHECK_S;   // the next check picks another rock
+    }
+
+    // WHAT: clear-path check of an approach to target (rock actor) from the ship current position. false = the path is clear (or the check
     //       cannot run): the caller goes on. true = it acted and the caller returns. Order: 1 retarget to the next-nearest rock of the ore whose path is
     //       clear; 2 waypoint beside the blocker (move job, PATH_WP_MAX per target); 3 skip the target for this visit (g_path_skip).
     // WHY: the ship must not fly into an intermediate rock. Runs before the approach (st_seek) and every PATH_CHECK_S during it (path_watch).
@@ -1269,18 +1170,18 @@ namespace
     {
         ActFrame f;
         if (!act_frame(ship, f) || !actor_ok(target)) return false;
+        const int sys = sys_id(ship);
+        const int tid = rock_id_of(target);
         const double ps[3] = {f.loc[0] / MV_UU_PER_M, f.loc[1] / MV_UU_PER_M, f.loc[2] / MV_UU_PER_M};
         double so[3], tc[3], tr = 0.0;
-        if (!standoff_of(sid, target, ps, so, tc, tr)) return false;
+        if (!standoff_of(sid, tid, ps, so, tc, tr)) return false;
         double dist = 0.0, bc[3] = {0, 0, 0};
-        UObject* blk = path_blocker(ps, so, target, dist, bc);
-        if (!blk) return false;
-        const int tid = rock_id_of(target), bid = rock_id_of(blk);
+        const int bid = path_blocker(sys, ps, so, tid, dist, bc);
+        if (!bid) return false;
         // 1. retarget
-        UObject* alt = alive(item) ? clear_rock_pick(sid, m, ps, item, target) : nullptr;
-        if (alt)
+        const int aid = alive(item) ? clear_rock_pick(sid, m, sys, ps, item, tid) : 0;
+        if (aid)
         {
-            const int aid = rock_id_of(alt);
             log_path(sid, tid, bid, dist, STR("retarget ") + std::to_wstring(aid));
             mlog(sid, STR("Path blocked by rock ") + std::to_wstring(bid) + STR(": next rock ") + std::to_wstring(aid));
             mv_cancel(sid); zero_all(ship);
@@ -1296,15 +1197,14 @@ namespace
         if (m.wp_n < PATH_WP_MAX)
         {
             double wp[3];
-            path_waypoint(ps, so, bc, block_radius_m(blk), wp);
-            const int64_t sys = sys_id(ship);
+            path_waypoint(ps, so, bc, block_radius_id(bid), wp);
             int64_t ch[3] = {0, 0, 0};
             double raw[3] = {0, 0, 0};
             if (sys > 0 && get_chunk(ship, ch) && get_loc(ship, raw))
             {
                 const double off[3] = {wp[0] - ps[0], wp[1] - ps[1], wp[2] - ps[2]};
                 PtTarget pt;
-                pt.sys = static_cast<int>(sys);
+                pt.sys = sys;
                 dock_add_m(ch, raw, off, pt.ch, pt.loc);
                 mv_cancel(sid); zero_all(ship);
                 const std::wstring r = move_start(sid, "approach_rock", -1, nullptr, &pt);
@@ -1318,30 +1218,18 @@ namespace
             }
         }
         // 3. give the target up for this visit
-        log_path(sid, tid, bid, dist, STR("skip"));
-        mlog(sid, STR("Path blocked by rock ") + std::to_wstring(bid) + STR(": rock ") + std::to_wstring(tid) + STR(" skipped"));
-        g_path_skip[sid].insert(tid);
-        mv_cancel(sid); zero_all(ship);
-        g_sel_rocks.erase(sid);
-        m.wp_on = false; m.wp_n = 0; m.seek_started = false; m.path_t = 0.0;
-        m.chk_t = MINE_ROCK_CHECK_S;   // the next check picks another rock
+        path_give_up(ship, sid, m, tid, bid, dist);
         return true;
     }
 
-    // WHAT: per cmd_tick path budget reset: game-call budgets, the one periodic path check of this tick, and the snapshot step.
+    // WHAT: per cmd_tick path budget reset: the one periodic path check of this tick (path_watch).
     bool g_path_tick_used = false;
-    ULONGLONG g_path_slow_log_ms = 0;   // GetTickCount64 of the last 'PATH slow' line (0 = none yet)
-    void path_tick_begin()
-    {
-        g_loc_budget = PATH_LOC_READS_TICK;
-        g_rad_budget = PATH_RAD_READS_TICK;
-        g_path_tick_used = false;
-        rock_snap_step();
-    }
+    ULONGLONG g_path_slow_log_ms = 0;   // GetTickCount64 of the last PATH slow line (0 = none yet)
+    void path_tick_begin() { g_path_tick_used = false; }
 
-    // WHAT: during an approach (move job of kind approach_rock at a rock, not a waypoint or ore flight): every PATH_WATCH_S of approach runs the
-    //       slow-zone flag and path_guard. Round robin: one ship's periodic check per cmd_tick. A check over PATH_SLOW_MS logs 'PATH slow' (once per
-    //       30 s) and pauses this ship's periodic checks for PATH_SLOW_OFF_S. The approach-start check in st_seek is never paused.
+    // WHAT: during an approach (move job of kind approach_rock at a rock, not a waypoint or ore flight): every PATH_WATCH_S of approach runs
+    //       path_guard. Round robin: one ship periodic check per cmd_tick. A check over PATH_SLOW_MS logs PATH slow (once per
+    //       30 s) and pauses this ship periodic checks for PATH_SLOW_OFF_S. The approach-start check in st_seek is never paused.
     void path_watch(UObject* ship, int sid, MineSt& m, double dt, const Config& c, UObject* item)
     {
         auto it = g_mvs.find(sid);
@@ -1353,23 +1241,9 @@ namespace
         g_path_tick_used = true;
         m.path_t = 0.0;
         UObject* target = it->second.rock_act;
-        ActFrame f;
-        if (!actor_ok(target) || !act_frame(ship, f)) return;
+        if (!actor_ok(target)) return;
         LARGE_INTEGER t0;
         QueryPerformanceCounter(&t0);
-        const double ps[3] = {f.loc[0] / MV_UU_PER_M, f.loc[1] / MV_UU_PER_M, f.loc[2] / MV_UU_PER_M};
-        double so[3], tc[3], tr = 0.0;
-        if (!standoff_of(sid, target, ps, so, tc, tr)) return;
-        // slow zone: a non-target rock within SLOW_ZONE_M (surface) of the ship-to-stand-off segment
-        bool slow = false;
-        for (RockSnap& s : g_snap_act)
-        {
-            if (s.a == target || path_box_reject(ps, so, s.c, PATH_RMAX_M)) continue;
-            const double sd = seg_point_dist(ps, so, s.c);
-            if (sd > PATH_RMAX_M) continue;
-            if (sd - snap_rad(s) <= SLOW_ZONE_M) { slow = true; break; }
-        }
-        it->second.slow = slow;   // set before path_guard: it may end the job
         path_guard(ship, sid, m, c, target, item);
         const double ms = perf_ms_since(t0);
         if (path_over_budget(ms))
@@ -1379,7 +1253,7 @@ namespace
             {
                 g_path_slow_log_ms = now;
                 log_line(STR("PATH slow ship=") + std::to_wstring(sid) + STR(" ms=") + std::to_wstring(static_cast<long long>(ms)) +
-                         STR(" rocks=") + std::to_wstring(g_snap_act.size()));
+                         STR(" rocks=") + std::to_wstring(reg_st().tab.rocks.size()));
             }
         }
     }
@@ -2637,13 +2511,18 @@ namespace
         std::vector<Near> v;
         ActFrame f;
         std::copy(m.pos, m.pos + 3, f.loc);
-        if (m.pos_ok)
-            for (const RockSnap& s : g_snap_act)   // snapshot: no game call per rock
+        if (m.pos_ok)   // registry: no game call per rock
+        {
+            const double p[3] = {m.pos[0] / MV_UU_PER_M, m.pos[1] / MV_UU_PER_M, m.pos[2] / MV_UU_PER_M};
+            const RockReg& t = reg_st().tab;
+            std::vector<size_t> hits;
+            t.within(m.sys, p, COMBAT_NEAR_M, hits);
+            for (size_t i : hits)
             {
-                const double d[3] = {s.c[0] - m.pos[0] / MV_UU_PER_M, s.c[1] - m.pos[1] / MV_UU_PER_M, s.c[2] - m.pos[2] / MV_UU_PER_M};
-                const double dd = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
-                if (dd <= COMBAT_NEAR_M) v.push_back({dd, STR("rock ") + std::to_wstring(s.id)});
+                const double d[3] = {t.rocks[i].c[0] - p[0], t.rocks[i].c[1] - p[1], t.rocks[i].c[2] - p[2]};
+                v.push_back({std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]), STR("rock ") + std::to_wstring(t.rocks[i].id)});
             }
+        }
         std::vector<UObject*> ships;
         UObjectGlobals::FindAllOf(STR("DMSPlayerShipObject"), ships);
         for (UObject* s : ships)
@@ -2760,7 +2639,7 @@ namespace
             UObject* ship = find_by_id(STR("DMSPlayerShipObject"), sid);
             if (!alive(ship)) continue;
             double surf = 0.0;
-            if (!nearest_rock_any(ship, surf, nullptr) || !fast_sample_due(surf)) continue;
+            if (nearest_rock_any_id(ship, surf, 0) == 0 || !fast_sample_due(surf)) continue;
             m.fast = true;
             hull_watch(ship, sid, m, false);
         }

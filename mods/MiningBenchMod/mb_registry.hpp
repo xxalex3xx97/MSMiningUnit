@@ -50,9 +50,11 @@ namespace
     constexpr ULONGLONG REG_TRIG_MS = 1000;             // world system and rock count check (seed triggers)
     constexpr ULONGLONG REG_EMPTY_RETRY_MS = 5000;      // seed retry while the table holds no alive rock (world not ready)
     constexpr double REG_MISSING_M = 3000.0;            // compare: a loaded actor this close with no registry entry counts as missing
+    constexpr double REG_RAD_SEG_M = 1500.0;            // radius reads first for rocks this close to an approach segment (m)
+    constexpr size_t REG_RAD_SEG_TICK = 40;             // GetRadius reads per tick for approach segment rocks (the general cap is REG_RAD_TICK)
 
     // WHAT: one mining ship as the registry sees it this tick: save id, system id, centre (m).
-    struct RegShip { int sid = 0; int sys = 0; double p[3] = {0, 0, 0}; };
+    struct RegShip { int sid = 0; int sys = 0; double p[3] = {0, 0, 0}; bool has_seg = false; double q[3] = {0, 0, 0}; };   // has_seg: approach to q (rock centre, m)
 
     // WHAT: all registry state (heap, never freed: the engine may call the delete listener at shutdown).
     struct RegState
@@ -218,11 +220,12 @@ namespace
     void reg_radius_stage(RegState& s, const std::vector<RegShip>& ships)
     {
         std::vector<size_t> want;
-        for (const RegShip& sh : ships) s.tab.radius_wanted(sh.sys, {{sh.p[0], sh.p[1], sh.p[2]}}, REG_RAD_NEAR_M, REG_RAD_TICK, want);
+        for (const RegShip& sh : ships) if (sh.has_seg) s.tab.radius_wanted_seg(sh.sys, sh.p, sh.q, REG_RAD_SEG_M, REG_RAD_SEG_TICK, want);
+        for (const RegShip& sh : ships) s.tab.radius_wanted(sh.sys, {{sh.p[0], sh.p[1], sh.p[2]}}, REG_RAD_NEAR_M, want.size() + REG_RAD_TICK, want);
         for (int id : s.tab.targeted())
         {
             const size_t i = s.tab.index_of(id);
-            if (i != RockReg::npos && !s.tab.rocks[i].rad_known && want.size() < REG_RAD_TICK) want.push_back(i);
+            if (i != RockReg::npos && !s.tab.rocks[i].rad_known && want.size() < REG_RAD_SEG_TICK + REG_RAD_TICK) want.push_back(i);
         }
         for (size_t i : want)
         {

@@ -66,17 +66,9 @@ namespace
     constexpr double MV_APPROACH_TIMEOUT_S = 300.0;
 
     // approach Throttle profile (see move_aim_step phase 2).
-    // WHAT: remaining distance per Throttle step (m): target step = floor(remaining / this), clamped to 1..MV_APPROACH_MAX_THR.
-    // WHY: the ship slows down step by step as it nears the stop distance. Value unknown (ported as is).
-    constexpr double MV_APPROACH_M_PER_STEP = 25.0;
-
-    // WHAT: top forward Throttle step used by the approach (steps). The game has steps -10..+10.
+    // WHAT: top forward Throttle step used by the approach (steps). The game has steps -10..+10. Full speed until APPROACH_RAMP_M (mb_logic.hpp).
     // WHY: fixed step 1 made the ship crawl at about 2 m/s (observed), so the approach uses steps up to this.
     constexpr int MV_APPROACH_MAX_THR = 10;
-
-    // WHAT: Throttle step cap while a non-target rock is inside SLOW_ZONE_M of the approach path (MoveJob::slow).
-    // WHY: slow-down zone of the clear-path rule. Value is a choice (about 1/5 of the full approach speed); not measured.
-    constexpr int MV_SLOW_THR = 2;
 
     // WHAT: the applied Throttle step rises by 1 at most once per this many seconds (s). It falls straight to the target.
     // WHY: gradual acceleration, so the 1.1x speed abort is not hit far from the rock.
@@ -179,12 +171,15 @@ namespace
         UObject* rock_act = nullptr;    // rock ACTOR for face/approach (game list); alive-checked each tick, 'rock lost' when gone
         bool pt_on = false;             // point move: target is ptg (no actor). Named pt_on: pt is the phase timer.
         PtTarget ptg;
-        bool slow = false;              // approach: a non-target rock is within SLOW_ZONE_M of the path (set by path_watch): Throttle cap MV_SLOW_THR
     };
 
     // WHAT: move jobs per ship (sid -> job). Empty kind = no job for that ship. Each ship can steer on its own.
     std::map<int, MoveJob> g_mvs;
     bool mv_active(int sid) { auto it = g_mvs.find(sid); return it != g_mvs.end() && !it->second.kind.empty(); }
+
+    // WHAT: bubble ladder state per ship (mb_bubble.hpp). braking = the move job holds Throttle 0 (see move_aim_step).
+    std::map<int, BubbleState> g_bubble;
+    bool bubble_braking(int sid) { auto it = g_bubble.find(sid); return it != g_bubble.end() && it->second.braking; }
 
     // Body-frame axes for the aim offset. Measured earlier in game (old code, removed); the working steering confirms them.
     // WHAT: unit body-frame axis of the YAW offset = +Z (unitless). WHY: a yaw offset turns the nose about +Z.
@@ -485,6 +480,7 @@ namespace
         }
         // 4. rotation runs in both phases
         if (!view_aim_drive(mv, a, err, dt)) return;   // rotation via view_send
+        if (bubble_braking(sid)) { set_int_prop(ship, STR("Throttle"), 0); mv.thr = 0; mv.thr_t = 0.0; return; }   // bubble brake: no thrust until stopped
         if (mv.phase != 2) return;
         // 5. approach timeout
         if (mv.t >= MV_APPROACH_TIMEOUT_S) { mv_finish(sid, STR("error: approach timeout")); return; }
@@ -493,7 +489,7 @@ namespace
         const double md = parse_distance(eff_cfg(sid).mining_distance);
         if (md < 0.0) { mv_finish(sid, STR("error: mining_distance unset")); return; }
         // Approach Throttle profile. WHY: remaining = surface - mining distance (m). Target step = floor(remaining / 25 m) clamped to
-        // 1..min(10, steps): full speed above 250 m, linear slow-down to step 1 near the stop distance. Heading error > MV_APPROACH_HEAD_DEG -> 0.
+        // 1..min(10, steps): full speed above APPROACH_RAMP_M (500 m), linear slow-down to step 1 near the stop distance. Heading error > MV_APPROACH_HEAD_DEG -> 0.
         // Applied step rises by 1 at most every MV_THR_RAMP_S (gradual accel, keeps the 1.1x speed abort far away); it falls straight to target.
         // Past the stop distance (overshoot): reverse step MV_BRAKE_THR while speed >= MV_BRAKE_DONE_MS, then 0 and the job ends.
         // 7. remaining distance (m) and speed (m/s)
@@ -518,8 +514,8 @@ namespace
         {
             // 9. still before the stop distance: ramped forward step toward the target
             if (mv.thr < 0) mv.thr = 0;   // only if pushed back out after a brake: restart forward from 0
-            const int cap = std::min(mv.slow ? MV_SLOW_THR : MV_APPROACH_MAX_THR, mv.steps);
-            target = err > MV_APPROACH_HEAD_DEG ? 0 : std::clamp(static_cast<int>(std::floor(remaining / MV_APPROACH_M_PER_STEP)), 1, cap);
+            const int cap = std::min(MV_APPROACH_MAX_THR, mv.steps);
+            target = err > MV_APPROACH_HEAD_DEG ? 0 : approach_throttle(remaining, v_ms, cap);
             if (target > mv.thr)
             {
                 mv.thr_t += dt;

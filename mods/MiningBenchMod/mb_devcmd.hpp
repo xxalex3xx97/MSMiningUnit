@@ -487,6 +487,7 @@ namespace
         if (cmd.rfind("warp_cur:", 0) == 0) return warp_real_cmd(0, cmd.substr(9));   // Dev Menu cheat: piloted ship, real warp (variant e)
         if (cmd == "chunkhold:release_all") { chunk_hold_release_all(); return STR("ok chunk holds released (see CHUNKHOLD log)"); }   // Dev Menu "Release all chunk holds" (mb_chunkhold.hpp)
         if (cmd == "reg_dump" || cmd.rfind("reg_query:", 0) == 0 || cmd.rfind("reg_check:", 0) == 0) return registry_dev(sid, cmd);   // rock registry (mb_registry.hpp)
+        if (cmd.rfind("bubble_status:", 0) == 0 || cmd.rfind("bubble_sim:", 0) == 0) return bubble_dev(cmd);   // bubble reflex, read-only (mb_bubble.hpp)
         if (cmd == "dev_stations") return STR("ok stations=") + std::to_wstring(stations_write());
         if (cmd.rfind("dev_destroy_station:", 0) == 0) return station_destroy_start(cmd.substr(20));
         handled = false;
