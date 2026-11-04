@@ -1110,10 +1110,10 @@ static void t_path_block()
     rk[0].c[0] = 800; rk[0].c[1] = 0; rk[0].c[2] = 0; rk[0].r = 100;
     rk[1].c[0] = 300; rk[1].c[1] = 0; rk[1].c[2] = 0; rk[1].r = 50;
     double dd = -1.0;
-    CHECK(path_first_blocker(a, b, rk, dd) == 1);
-    CHECK(path_first_blocker(a, b, {rk[0]}, dd) == 0);
+    CHECK(path_first_blocker(a, b, rk.data(), rk.size(), dd) == 1);
+    CHECK(path_first_blocker(a, b, rk.data(), 1, dd) == 0);
     rk[0].r = 0.0; rk[1].r = 0.0;
-    CHECK(path_first_blocker(a, b, rk, dd) == -1);             // radius 0 never blocks
+    CHECK(path_first_blocker(a, b, rk.data(), rk.size(), dd) == -1);             // radius 0 never blocks
 }
 
 // waypoint and stand-off geometry
@@ -1168,6 +1168,39 @@ static void t_fast_sample()
     NEAR(FAST_SAMPLE_S, 0.25, 1e-12);
 }
 
+// perf helpers: box prefilter, per-check budget, slow-check log/skip timing, snapshot rebuild
+static void t_path_perf()
+{
+    const double a[3] = {0, 0, 0}, b[3] = {1000, 0, 0};
+    const double near[3] = {500, 4000, 0}, far[3] = {500, 9000, 0}, past[3] = {-6000, 0, 0};
+    CHECK(!path_box_reject(a, b, near, PATH_RMAX_M));   // 4 km off the path: inside the 5 km box
+    CHECK(path_box_reject(a, b, far, PATH_RMAX_M));     // 9 km off: rejected
+    CHECK(path_box_reject(a, b, past, PATH_RMAX_M));    // 6 km before the start
+    // budget: takes one unit per call until empty
+    int bud = 2;
+    CHECK(budget_take(bud)); CHECK(budget_take(bud)); CHECK(!budget_take(bud)); CHECK(bud == 0);
+    // slow check: over 3 ms only
+    CHECK(!path_over_budget(3.0)); CHECK(path_over_budget(3.01));
+    // slow log: first time always, then every 30 s
+    CHECK(path_slow_log_due(0, 1000));
+    CHECK(!path_slow_log_due(10000, 39999));
+    CHECK(path_slow_log_due(10000, 40000));
+    // slow ship skips its periodic checks for 10 s
+    const uint64_t until = path_skip_until(50000);
+    CHECK(until == 60000);
+    CHECK(path_skip_active(until, 59999));
+    CHECK(!path_skip_active(until, 60000));
+    // periodic check due at 2 s of approach
+    CHECK(!path_watch_due(1.99)); CHECK(path_watch_due(2.0));
+    // snapshot rebuild: list changed, or 5 s old, and never while building
+    CHECK(snap_rebuild_due(false, 7, 6, 1000, 0));
+    CHECK(!snap_rebuild_due(false, 7, 7, 4000, 0));
+    CHECK(snap_rebuild_due(false, 7, 7, 5000, 0));
+    CHECK(!snap_rebuild_due(true, 8, 7, 9000, 0));
+    NEAR(PATH_SLOW_MS, 3.0, 1e-12);
+    CHECK(PATH_CANDIDATES == 8);
+}
+
 // ---------- runner ----------
 
 struct Case { const char* name; void (*fn)(); };
@@ -1212,7 +1245,7 @@ int main()
         {"net_clear_expired", t_net_clear_expired}, {"net_unload_first", t_net_unload_first}, {"dock_undock_first", t_dock_undock_first},
         {"combat_flee", t_combat_flee}, {"combat_log", t_combat_log},
         {"hazard_flee", t_hazard_flee}, {"targett_entry", t_targett_entry},
-        {"path_block", t_path_block}, {"path_waypoint", t_path_waypoint}, {"shield_drop", t_shield_drop}, {"fast_sample", t_fast_sample},
+        {"path_block", t_path_block}, {"path_perf", t_path_perf}, {"path_waypoint", t_path_waypoint}, {"shield_drop", t_shield_drop}, {"fast_sample", t_fast_sample},
     };
     for (const Case& c : cases)
     {

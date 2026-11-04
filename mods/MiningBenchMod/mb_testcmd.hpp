@@ -204,6 +204,7 @@ namespace
         set_last_step(STR("rock_drain_dead"));
         rock_drain_dead();   // deleted actors queued by the engine listener are removed every tick, also while no ship asks for rocks
         ++g_actor_frame;   // invalidates the actor_ok() set: it is rebuilt at most once per engine tick
+        path_tick_begin();   // path budgets reset, one rock snapshot chunk (mb_mining.hpp)
         // 2.
         set_last_step(STR("move_tick"));
         move_tick(dt);   // move jobs run every engine tick

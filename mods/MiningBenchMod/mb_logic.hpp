@@ -583,11 +583,12 @@ namespace
     }
 
     // WHAT: index of the blocking rock nearest to a along a->b (smallest projection), -1 when none blocks. out_d = its perpendicular distance (m).
-    inline int path_first_blocker(const double a[3], const double b[3], const std::vector<PathRock>& rocks, double& out_d)
+    // WHY pointer + count: the caller keeps one reused scratch array (no copy of the rock list per check).
+    inline int path_first_blocker(const double a[3], const double b[3], const PathRock* rocks, size_t n, double& out_d)
     {
         int best = -1;
         double best_t = 1e300;
-        for (size_t i = 0; i < rocks.size(); ++i)
+        for (size_t i = 0; i < n; ++i)
         {
             double d = 0.0;
             if (!seg_sphere_blocks(a, b, rocks[i].c, rocks[i].r, d)) continue;
@@ -595,6 +596,47 @@ namespace
             if (t < best_t) { best_t = t; best = static_cast<int>(i); out_d = d; }
         }
         return best;
+    }
+
+    // ---------- path check cost limits (perf) ----------
+    constexpr double PATH_RMAX_M = 5000.0;        // rocks whose centre is farther than this from the path are never tested (prefilter)
+    constexpr size_t PATH_CANDIDATES = 8;         // retarget: nearest candidates of the ore tried
+    constexpr int PATH_RAD_READS_TICK = 10;       // GetRadius game calls per cmd_tick (each rock once per session, cached)
+    constexpr int PATH_LOC_READS_TICK = 50;       // K2_GetActorLocation game calls per cmd_tick (snapshot build)
+    constexpr size_t PATH_SNAP_CHUNK = 400;       // rocks read into the snapshot per cmd_tick
+    constexpr double PATH_SNAP_S = 5.0;           // snapshot rebuilt at most this often (s), or at once when the rock list is refreshed
+    constexpr double PATH_WATCH_S = 2.0;          // per-ship clear-path re-check period while an approach runs (s)
+    constexpr double PATH_SLOW_MS = 3.0;          // one check over this many ms is slow
+    constexpr double PATH_SLOW_LOG_S = 30.0;      // at most one 'PATH slow' line per this many seconds
+    constexpr double PATH_SLOW_OFF_S = 10.0;      // a ship whose check was slow skips its periodic checks this long
+
+    // WHAT: true when centre c lies outside the box of segment a->b grown by rmax on every side (cannot be within rmax of the segment).
+    // WHY: cheap first test; the distance test only runs on the rocks that pass it.
+    inline bool path_box_reject(const double a[3], const double b[3], const double c[3], double rmax)
+    {
+        for (int i = 0; i < 3; ++i)
+        {
+            const double lo = std::min(a[i], b[i]) - rmax, hi = std::max(a[i], b[i]) + rmax;
+            if (c[i] < lo || c[i] > hi) return true;
+        }
+        return false;
+    }
+    // WHAT: a check that took ms milliseconds is over budget (PATH_SLOW_MS).
+    inline bool path_over_budget(double ms) { return ms > PATH_SLOW_MS; }
+    // WHAT: the 'PATH slow' line may be written: never written (last 0) or PATH_SLOW_LOG_S or more since the last one (ms, GetTickCount64 clock).
+    inline bool path_slow_log_due(uint64_t last_ms, uint64_t now_ms) { return last_ms == 0 || now_ms - last_ms >= static_cast<uint64_t>(PATH_SLOW_LOG_S * 1000.0); }
+    // WHAT: a slow check pauses the ship's periodic checks until this time (ms).
+    inline uint64_t path_skip_until(uint64_t now_ms) { return now_ms + static_cast<uint64_t>(PATH_SLOW_OFF_S * 1000.0); }
+    // WHAT: the periodic checks of a ship are paused at now_ms (until_ms = path_skip_until of its last slow check).
+    inline bool path_skip_active(uint64_t until_ms, uint64_t now_ms) { return now_ms < until_ms; }
+    // WHAT: a ship's periodic clear-path check is due after PATH_WATCH_S of approach time.
+    inline bool path_watch_due(double t) { return t >= PATH_WATCH_S; }
+    // WHAT: take one unit from a per-tick budget. false (nothing taken) when the budget is spent.
+    inline bool budget_take(int& budget) { if (budget <= 0) return false; --budget; return true; }
+    // WHAT: the rock snapshot is rebuilt now: no build running and (the rock list was refreshed since the last build, or the last build is PATH_SNAP_S old).
+    inline bool snap_rebuild_due(bool building, uint64_t list_stamp, uint64_t snap_stamp, uint64_t now_ms, uint64_t snap_ms)
+    {
+        return !building && (list_stamp != snap_stamp || now_ms - snap_ms >= static_cast<uint64_t>(PATH_SNAP_S * 1000.0));
     }
 
     // WHAT: stand-off point on the line from the rock centre c toward the ship a, at distance dist (m) from c. Fallback direction +X when a == c.
