@@ -529,6 +529,108 @@ namespace
         out[0] = x; out[1] = y; out[2] = base[2];
     }
 
+    // ---------- shields: drop rule shared with hull ----------
+    // WHAT: shield lost since the last sample. baseline < 0 or s < 0 (unreadable) = never a drop. A rise (regeneration) is never a drop.
+    // WHY: the baseline is the last sample, so regeneration just raises it and the next loss is measured from there.
+    inline bool shield_dropped(int32_t baseline, int32_t s) { return s >= 0 && hull_dropped(baseline, s); }
+    enum DmgKind { DMG_NONE = 0, DMG_HULL = 1, DMG_SHIELD = 2 };
+    // WHAT: which damage a sample shows: hull first, then shield. A docked ship never counts (the drop is not a hit in space).
+    inline DmgKind damage_drop_kind(int32_t hull_base, int32_t h, int32_t sh_base, int32_t s, bool docked)
+    {
+        if (docked) return DMG_NONE;
+        if (hull_dropped(hull_base, h)) return DMG_HULL;
+        if (shield_dropped(sh_base, s)) return DMG_SHIELD;
+        return DMG_NONE;
+    }
+
+    // ---------- clear-path check for approaches (segment ship -> stand-off point against rock spheres) ----------
+    constexpr double SHIP_CLEARANCE_M = 300.0;       // a rock blocks when its centre is closer than radius + this to the path (m)
+    constexpr double HAZARD_CLEAR_EXTRA_M = 500.0;   // hazard rocks: extra clearance on top of SHIP_CLEARANCE_M (m)
+    constexpr double SLOW_ZONE_M = 500.0;            // a non-target rock this close to the approach path (surface, m): slow down; also the fast-sample range
+    constexpr double HAZARD_BLOCK_M = 1500.0;        // hazard hit: rocks this close (surface, m) are marked; the back-out distance is HAZARD_BACKOUT_M
+    constexpr double HAZARD_BACKOUT_M = 1500.0;
+    constexpr int PATH_WP_MAX = 3;                   // waypoints per approach before the target is skipped for this visit
+    constexpr double PATH_CHECK_S = 1.0;             // clear-path re-check period while an approach runs (s)
+    constexpr double FAST_SAMPLE_S = 0.25;           // hull/shield sample period near rock (s); elsewhere 1 s
+
+    // WHAT: a rock as the path check sees it: centre (m) and blocking radius (m) = rock radius + clearance.
+    struct PathRock { double c[3]; double r; };
+
+    // WHAT: segment a->b (m) blocks a sphere (c, r) when the sphere centre projects inside the segment (0..1) and its perpendicular
+    //       distance to the segment line is below r. out_d = that perpendicular distance. Tangent (distance == r) does not block.
+    // WHY: the rock is only a hazard when it lies between the ship and the stand-off point; a rock behind or past the end does not count.
+    inline bool seg_sphere_blocks(const double a[3], const double b[3], const double c[3], double r, double& out_d)
+    {
+        const double d[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+        const double w[3] = {c[0] - a[0], c[1] - a[1], c[2] - a[2]};
+        const double l2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+        if (l2 < 1e-12) { out_d = std::sqrt(w[0] * w[0] + w[1] * w[1] + w[2] * w[2]); return false; }
+        const double t = (w[0] * d[0] + w[1] * d[1] + w[2] * d[2]) / l2;
+        const double p[3] = {a[0] + d[0] * t, a[1] + d[1] * t, a[2] + d[2] * t};
+        out_d = std::sqrt((c[0] - p[0]) * (c[0] - p[0]) + (c[1] - p[1]) * (c[1] - p[1]) + (c[2] - p[2]) * (c[2] - p[2]));
+        return t >= 0.0 && t <= 1.0 && out_d < r;
+    }
+
+    // WHAT: distance from point c to the SEGMENT a->b (clamped to the ends). Used for the slow-down zone (the ship end counts).
+    inline double seg_point_dist(const double a[3], const double b[3], const double c[3])
+    {
+        const double d[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+        const double w[3] = {c[0] - a[0], c[1] - a[1], c[2] - a[2]};
+        const double l2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+        const double t = std::clamp(l2 < 1e-12 ? 0.0 : (w[0] * d[0] + w[1] * d[1] + w[2] * d[2]) / l2, 0.0, 1.0);
+        const double p[3] = {a[0] + d[0] * t, a[1] + d[1] * t, a[2] + d[2] * t};
+        return std::sqrt((c[0] - p[0]) * (c[0] - p[0]) + (c[1] - p[1]) * (c[1] - p[1]) + (c[2] - p[2]) * (c[2] - p[2]));
+    }
+
+    // WHAT: index of the blocking rock nearest to a along a->b (smallest projection), -1 when none blocks. out_d = its perpendicular distance (m).
+    inline int path_first_blocker(const double a[3], const double b[3], const std::vector<PathRock>& rocks, double& out_d)
+    {
+        int best = -1;
+        double best_t = 1e300;
+        for (size_t i = 0; i < rocks.size(); ++i)
+        {
+            double d = 0.0;
+            if (!seg_sphere_blocks(a, b, rocks[i].c, rocks[i].r, d)) continue;
+            const double t = (rocks[i].c[0] - a[0]) * (b[0] - a[0]) + (rocks[i].c[1] - a[1]) * (b[1] - a[1]) + (rocks[i].c[2] - a[2]) * (b[2] - a[2]);
+            if (t < best_t) { best_t = t; best = static_cast<int>(i); out_d = d; }
+        }
+        return best;
+    }
+
+    // WHAT: stand-off point on the line from the rock centre c toward the ship a, at distance dist (m) from c. Fallback direction +X when a == c.
+    inline void standoff_point(const double a[3], const double c[3], double dist, double out[3])
+    {
+        double d[3] = {a[0] - c[0], a[1] - c[1], a[2] - c[2]};
+        const double n = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+        if (n < 1e-9) { d[0] = 1.0; d[1] = 0.0; d[2] = 0.0; }
+        else for (double& x : d) x /= n;
+        for (int i = 0; i < 3; ++i) out[i] = c[i] + d[i] * dist;
+    }
+
+    // WHAT: waypoint beside a blocker: the point at distance r from the blocker centre c, perpendicular to the path a->b, on the side of c away from the path.
+    //       When c lies on the path line, the side is perpendicular to the path and to +Z (fallback: perpendicular to the path and to +Y).
+    // WHY: the ship flies around the blocker, never through its zone; the path is re-checked at the waypoint.
+    inline void path_waypoint(const double a[3], const double b[3], const double c[3], double r, double out[3])
+    {
+        double u[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+        double un = std::sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]);
+        if (un < 1e-9) { u[0] = 1.0; u[1] = 0.0; u[2] = 0.0; un = 1.0; }
+        for (double& x : u) x /= un;
+        const double t = (c[0] - a[0]) * u[0] + (c[1] - a[1]) * u[1] + (c[2] - a[2]) * u[2];
+        double n[3] = {c[0] - (a[0] + u[0] * t), c[1] - (a[1] + u[1] * t), c[2] - (a[2] + u[2] * t)};   // blocker minus its projection on the path line
+        double nn = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+        if (nn < 1e-6)   // blocker on the path line: u x Z, else (u parallel to Z) the Y direction
+        {
+            n[0] = u[1]; n[1] = -u[0]; n[2] = 0.0;
+            nn = std::sqrt(n[0] * n[0] + n[1] * n[1]);
+            if (nn < 1e-6) { n[0] = 0.0; n[1] = 1.0; n[2] = 0.0; nn = 1.0; }
+        }
+        for (int i = 0; i < 3; ++i) out[i] = c[i] + n[i] / nn * r;
+    }
+
+    // WHAT: a rock is sampled at the fast period (FAST_SAMPLE_S) when its surface distance to the ship is within SLOW_ZONE_M.
+    inline bool fast_sample_due(double surface_m) { return surface_m <= SLOW_ZONE_M; }
+
     // ---------- combat: target flee trigger and combat log text (mb_mining.hpp samples the game, mb_common.hpp writes the file) ----------
 
     // WHAT: consecutive target samples with a hostile targeter (a sample with none sets 0).

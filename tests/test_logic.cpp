@@ -1090,6 +1090,84 @@ static void t_warp_settle()
     CHECK(warp_settle_done(5.0, 1000.0));          // exactly the arrival distance counts
 }
 
+// clear-path geometry: segment vs sphere (in front, behind, beyond the end, tangent)
+static void t_path_block()
+{
+    const double a[3] = {0, 0, 0}, b[3] = {1000, 0, 0};
+    double d = -1.0;
+    const double front[3] = {500, 100, 0}, behind[3] = {-500, 0, 0}, beyond[3] = {1500, 0, 0}, tangent[3] = {500, 150, 0}, inside[3] = {500, 149.9, 0};
+    CHECK(seg_sphere_blocks(a, b, front, 150, d));
+    NEAR(d, 100.0, 1e-9);
+    CHECK(!seg_sphere_blocks(a, b, behind, 600, d));           // behind the start
+    CHECK(!seg_sphere_blocks(a, b, beyond, 600, d));           // past the end (even inside the radius there)
+    CHECK(!seg_sphere_blocks(a, b, tangent, 150, d));          // distance == radius: clear
+    CHECK(seg_sphere_blocks(a, b, inside, 150, d));            // just inside
+    CHECK(!seg_sphere_blocks(a, a, front, 150, d));            // zero-length segment: nothing between
+    NEAR(seg_point_dist(a, b, beyond), 500.0, 1e-9);           // clamped: distance to the end point
+    NEAR(seg_point_dist(a, b, front), 100.0, 1e-9);
+    // the blocker nearest along the path is returned
+    std::vector<PathRock> rk(2);
+    rk[0].c[0] = 800; rk[0].c[1] = 0; rk[0].c[2] = 0; rk[0].r = 100;
+    rk[1].c[0] = 300; rk[1].c[1] = 0; rk[1].c[2] = 0; rk[1].r = 50;
+    double dd = -1.0;
+    CHECK(path_first_blocker(a, b, rk, dd) == 1);
+    CHECK(path_first_blocker(a, b, {rk[0]}, dd) == 0);
+    rk[0].r = 0.0; rk[1].r = 0.0;
+    CHECK(path_first_blocker(a, b, rk, dd) == -1);             // radius 0 never blocks
+}
+
+// waypoint and stand-off geometry
+static void t_path_waypoint()
+{
+    const double a[3] = {0, 0, 0}, b[3] = {1000, 0, 0};
+    const double c[3] = {500, 100, 0};
+    double w[3] = {0, 0, 0};
+    path_waypoint(a, b, c, 400.0, w);
+    NEAR(w[0], 500.0, 1e-9); NEAR(w[1], 500.0, 1e-9); NEAR(w[2], 0.0, 1e-9);   // beside the blocker, away from the path
+    const double v[3] = {w[0] - c[0], w[1] - c[1], w[2] - c[2]};
+    NEAR(v[0] * 1000.0 + v[1] * 0.0 + v[2] * 0.0, 0.0, 1e-6);                 // perpendicular to the path
+    NEAR(std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]), 400.0, 1e-9);     // exactly radius + clearance from the blocker
+    // blocker exactly on the path line: still perpendicular, still at radius
+    const double on[3] = {500, 0, 0};
+    path_waypoint(a, b, on, 300.0, w);
+    NEAR(w[0], 500.0, 1e-9); NEAR(w[1], -300.0, 1e-9); NEAR(w[2], 0.0, 1e-9);
+    // stand-off: from the rock centre toward the ship, at the given distance
+    const double rc[3] = {1000, 0, 0};
+    double so[3] = {0, 0, 0};
+    standoff_point(a, rc, 200.0, so);
+    NEAR(so[0], 800.0, 1e-9); NEAR(so[1], 0.0, 1e-9); NEAR(so[2], 0.0, 1e-9);
+}
+
+// shield and hull drop with regeneration: a rise is never a drop; the baseline follows each sample
+static void t_shield_drop()
+{
+    CHECK(!shield_dropped(-1, 50));            // no baseline yet
+    CHECK(!shield_dropped(50, -1));            // unreadable shield
+    CHECK(!shield_dropped(50, 60));            // regeneration
+    CHECK(shield_dropped(60, 55));             // loss measured from the regenerated value
+    CHECK(!shield_dropped(60, 60));
+    CHECK(damage_drop_kind(350, 320, 40, 0, false) == DMG_HULL);
+    CHECK(damage_drop_kind(350, 350, 40, 20, false) == DMG_SHIELD);
+    CHECK(damage_drop_kind(350, 350, 40, 20, true) == DMG_NONE);   // docked: ignored
+    CHECK(damage_drop_kind(350, 350, -1, -1, false) == DMG_NONE);
+    CHECK(damage_drop_kind(350, 360, 40, 60, false) == DMG_NONE);  // both rose
+    int drops = 0;
+    int32_t base = 50;
+    const int32_t seq[] = {60, 70, 55, 55, 80};
+    for (int32_t s : seq) { if (shield_dropped(base, s)) ++drops; base = s; }
+    CHECK(drops == 1);
+}
+
+// fast sample period: a rock within SLOW_ZONE_M (500 m, surface) of the ship
+static void t_fast_sample()
+{
+    CHECK(fast_sample_due(0.0));
+    CHECK(fast_sample_due(500.0));
+    CHECK(!fast_sample_due(500.5));
+    CHECK(!fast_sample_due(1500.0));
+    NEAR(FAST_SAMPLE_S, 0.25, 1e-12);
+}
+
 // ---------- runner ----------
 
 struct Case { const char* name; void (*fn)(); };
@@ -1134,6 +1212,7 @@ int main()
         {"net_clear_expired", t_net_clear_expired}, {"net_unload_first", t_net_unload_first}, {"dock_undock_first", t_dock_undock_first},
         {"combat_flee", t_combat_flee}, {"combat_log", t_combat_log},
         {"hazard_flee", t_hazard_flee}, {"targett_entry", t_targett_entry},
+        {"path_block", t_path_block}, {"path_waypoint", t_path_waypoint}, {"shield_drop", t_shield_drop}, {"fast_sample", t_fast_sample},
     };
     for (const Case& c : cases)
     {

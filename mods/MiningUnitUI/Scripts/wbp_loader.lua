@@ -1109,6 +1109,11 @@ local function sendSeq(cmds)
     end
   end
 end
+-- command listed in MiningCaps.txt (written by the DLL at load): an older DLL without it = false
+local function hasCap(name)
+  for _, l in ipairs(rdlines(M.DATA .. "MiningCaps.txt") or {}) do if l == name then return true end end
+  return false
+end
 
 local function fmtEta(sec)
   sec = math.floor(sec + 0.5)
@@ -1820,7 +1825,9 @@ function M.open(ship)
       bind("Btn_LoopStart", function() sendSeq({ "mine_start" }); S.pend = { k = "start", dl = S.tick + 12 }; S.arm = nil; refresh() end)
       bind("Btn_LoopStop", function() sendSeq({ "mine_stop" }); S.pend = { k = "stop", dl = S.tick + 12 }; S.arm = nil; refresh() end)
       bind("Btn_EmergencyStop", function()
-        sendSeq({ "stop_all" })                          -- hard stop for THIS ship (lasers/scooper off, jobs cancelled, loop halted); All ships: every ship
+        -- hard stop (lasers/scooper off, jobs cancelled, loop halted). One command: the DLL stops every bench ship in the same tick
+        -- (stop_all_ships). Old DLL (not in MiningCaps.txt): per ship stop_all, 400 ms apart.
+        if hasCap("stop_all_ships") then sendCmd("stop_all_ships", S.sid or 0) else sendSeq({ "stop_all" }) end
         S.arm = nil; S.pend = nil; S.estop = S.tick + 12
         L("emergency stop sent ship=" .. tostring(S.sid))
         refresh()

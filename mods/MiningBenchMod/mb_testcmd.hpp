@@ -38,6 +38,15 @@ namespace
         if (cmd == "mine_start_all" || cmd == "mine_stop_all") g_dock_pick.clear();
         // 0. Start all / Stop all (sid 0): every bench ship, before any ship lookup
         if (cmd == "mine_start_all" || cmd == "mine_stop_all") return mine_cmd_all(cmd == "mine_start_all");
+        // 0b. Emergency stop, all bench ships: stop_all for each bench ship inside this one command (one tick, no 400 ms fan-out)
+        if (cmd == "stop_all_ships")
+        {
+            const std::vector<int> ids = g_bench_ids;   // copy: the list is not changed by stop_all, kept safe anyway
+            int bad = 0;
+            for (int s : ids) if (run_cmd(-1, s, "stop_all").rfind(STR("error"), 0) == 0) ++bad;
+            tlog(STR("stop_all_ships ships=") + std::to_wstring(ids.size()) + STR(" errors=") + std::to_wstring(bad));
+            return bad == 0 ? STR("ok ships=") + std::to_wstring(ids.size()) : STR("error: stop_all_ships failed for ") + std::to_wstring(bad);
+        }
         // Dock picker: dock_to:<id> = the Dock button flow (trip/hold states) with the chosen dock; ini untouched
         if (cmd.rfind("dock_to:", 0) == 0)
         {
@@ -176,6 +185,8 @@ namespace
         int seq = 0, sid = 0;
         if (read_cmd_line(line) && parse_cmd_line(line, seq, sid, cmd)) g_cmd.seq = seq;
         tlog(STR("poller ready, last seq=") + std::to_wstring(g_cmd.seq));
+        // command capabilities for the Lua side: one name per line. The emergency stop uses stop_all_ships only when it is listed (else the old per-ship sequence).
+        try { write_atomic(get_dll_dir() / "MiningCaps.txt", "stop_all_ships\n"); } catch (...) {}
     }
 
     // WHAT: engine tick driver for the Test tab. Steps: 1 bump the actor_ok() frame (set rebuilt once per tick).
@@ -221,6 +232,8 @@ namespace
             jobs_tick(step);
             set_last_step(STR("warp_wait_tick"));
             warp_wait_tick();
+            set_last_step(STR("fast_watch_tick"));   // hull/shield samples every 0.25 s for ships near rock (mb_mining.hpp)
+            fast_watch_tick();
             set_last_step(STR("mining_tick"));   // per-ship labels are set inside (mine ship=N state)
             mining_tick(step);
             set_last_step(STR("station_destroy_tick"));

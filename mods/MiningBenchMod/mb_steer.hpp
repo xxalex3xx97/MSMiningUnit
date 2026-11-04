@@ -74,6 +74,10 @@ namespace
     // WHY: fixed step 1 made the ship crawl at about 2 m/s (observed), so the approach uses steps up to this.
     constexpr int MV_APPROACH_MAX_THR = 10;
 
+    // WHAT: Throttle step cap while a non-target rock is inside SLOW_ZONE_M of the approach path (MoveJob::slow).
+    // WHY: slow-down zone of the clear-path rule. Value is a choice (about 1/5 of the full approach speed); not measured.
+    constexpr int MV_SLOW_THR = 2;
+
     // WHAT: the applied Throttle step rises by 1 at most once per this many seconds (s). It falls straight to the target.
     // WHY: gradual acceleration, so the 1.1x speed abort is not hit far from the rock.
     constexpr double MV_THR_RAMP_S = 0.5;
@@ -175,6 +179,7 @@ namespace
         UObject* rock_act = nullptr;    // rock ACTOR for face/approach (game list); alive-checked each tick, 'rock lost' when gone
         bool pt_on = false;             // point move: target is ptg (no actor). Named pt_on: pt is the phase timer.
         PtTarget ptg;
+        bool slow = false;              // approach: a non-target rock is within SLOW_ZONE_M of the path (set by path_watch): Throttle cap MV_SLOW_THR
     };
 
     // WHAT: move jobs per ship (sid -> job). Empty kind = no job for that ship. Each ship can steer on its own.
@@ -513,7 +518,7 @@ namespace
         {
             // 9. still before the stop distance: ramped forward step toward the target
             if (mv.thr < 0) mv.thr = 0;   // only if pushed back out after a brake: restart forward from 0
-            const int cap = std::min(MV_APPROACH_MAX_THR, mv.steps);
+            const int cap = std::min(mv.slow ? MV_SLOW_THR : MV_APPROACH_MAX_THR, mv.steps);
             target = err > MV_APPROACH_HEAD_DEG ? 0 : std::clamp(static_cast<int>(std::floor(remaining / MV_APPROACH_M_PER_STEP)), 1, cap);
             if (target > mv.thr)
             {
