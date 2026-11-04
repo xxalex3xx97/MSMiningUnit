@@ -365,7 +365,7 @@ namespace
     }
 
     // WHAT: mining stops (leftover collect, then unload) when the cargo fill reaches this % (was 100). Also the CHECK rule, so the ship does not undock again at once.
-    constexpr int CARGO_STOP_PCT = 95;
+    constexpr int CARGO_STOP_PCT = 90;
 
     // WHAT: cargo fill % from slot counts: other / (isz - fuel) * 100, clamped 0..100. 0 when no non-fuel slot is used, -1 when the cargo has no free slot base.
     int cargo_pct_calc(int isz, int fuel_s, int other_s)
