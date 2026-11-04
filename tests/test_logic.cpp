@@ -1436,6 +1436,36 @@ static void t_bubble_scope()
     CHECK(s.wp == 1 && s.resume && s.dst[0] == 5.0);
 }
 
+// far-trip warp for our flights: decision order, landing candidates, sweep reachability
+static void t_flight_warp()
+{
+    // 10 km, warp_trip_km 5, same system and sector, 100 warp items in the drive: warp
+    CHECK(flight_warp_why(10000.0, 5, true, 3, 3, false, false, false, false, 100, 4.88) == FW_WARP);
+    CHECK(flight_warp_why(4000.0, 5, true, 3, 3, false, false, false, false, 100, 1.95) == FW_NEAR);   // inside the trip distance
+    CHECK(flight_warp_why(10000.0, 0, true, 3, 3, false, false, false, false, 100, 4.88) == FW_OFF);   // km 0: warp off
+    CHECK(flight_warp_why(10000.0, 5, true, 3, 3, false, false, true, false, 100, 4.88) == FW_AUTOPILOT);   // game autopilot (or docking, passed as one)
+    CHECK(flight_warp_why(10000.0, 5, true, 3, 3, false, true, false, false, 100, 4.88) == FW_TRAVEL);
+    CHECK(flight_warp_why(10000.0, 5, true, 3, 3, true, false, false, false, 100, 4.88) == FW_DOCKED);
+    CHECK(flight_warp_why(10000.0, 5, true, 3, 3, false, false, false, true, 100, 4.88) == FW_PILOTED);
+    CHECK(flight_warp_why(10000.0, 5, false, 3, 3, false, false, false, false, 100, 4.88) == FW_OTHER_SYSTEM);
+    CHECK(flight_warp_why(10000.0, 5, true, 0, 3, false, false, false, false, 100, 4.88) == FW_UNKNOWN_SECTOR);
+    CHECK(flight_warp_why(10000.0, 5, true, 3, 0, false, false, false, false, 100, 4.88) == FW_UNKNOWN_SECTOR);
+    CHECK(flight_warp_why(10000.0, 5, true, 3, 4, false, false, false, false, 100, 4.88) == FW_OTHER_SECTOR);
+    CHECK(flight_warp_why(10000.0, 5, true, 3, 3, false, false, false, false, 0, 4.88) == FW_NO_FUEL);
+    CHECK(flight_unreachable(FW_OTHER_SECTOR) && flight_unreachable(FW_OTHER_SYSTEM));
+    CHECK(!flight_unreachable(FW_NO_FUEL) && !flight_unreachable(FW_UNKNOWN_SECTOR) && !flight_unreachable(FW_WARP));
+    // landing candidates toward T = (5000,0,0) from the origin: base 300 m short, 600 m short, 200 m sideways both ways
+    const double T[3] = {5000, 0, 0}, dir[3] = {1, 0, 0};
+    double L[3];
+    landing_candidate(0, T, dir, L); CHECK(std::fabs(L[0] - 4700) < 1e-9 && std::fabs(L[1]) < 1e-9);
+    landing_candidate(1, T, dir, L); CHECK(std::fabs(L[0] - 4400) < 1e-9);
+    landing_candidate(2, T, dir, L); CHECK(std::fabs(L[0] - 4700) < 1e-9 && std::fabs(L[1] + 200) < 1e-9);
+    landing_candidate(3, T, dir, L); CHECK(std::fabs(L[0] - 4700) < 1e-9 && std::fabs(L[1] - 200) < 1e-9);
+    CHECK(!point_blocked(20.0, 8.0, 8.0));    // 20 m from an 8 m rock with 8 m clearance: block radius 14.4
+    CHECK(point_blocked(10.0, 8.0, 8.0));
+    CHECK(point_blocked(30.0, 35.0, 8.0));    // big rock: block radius 36
+}
+
 // tuning (fix/0.2.3-tune): block radius, leg clearance, waypoint candidates and pick, retarget score, 60 s approach cap
 static void t_tune_geom()
 {
@@ -1893,7 +1923,7 @@ int main()
         {"path_block", t_path_block}, {"path_perf", t_path_perf}, {"path_waypoint", t_path_waypoint}, {"shield_drop", t_shield_drop}, {"fast_sample", t_fast_sample},
         {"rock_depleted", t_rock_depleted},
         {"reg_table", t_reg_table}, {"reg_events", t_reg_events}, {"reg_within_nearest", t_reg_within_nearest}, {"reg_surface_block", t_reg_surface_block_radius},
-        {"approach_throttle", t_approach_throttle}, {"bubble", t_bubble}, {"bubble_ladder", t_bubble_ladder}, {"bubble_scope", t_bubble_scope}, {"tune_geom", t_tune_geom},
+        {"approach_throttle", t_approach_throttle}, {"bubble", t_bubble}, {"bubble_ladder", t_bubble_ladder}, {"bubble_scope", t_bubble_scope}, {"tune_geom", t_tune_geom}, {"flight_warp", t_flight_warp},
         {"reg_targeted_ore_budget", t_reg_targeted_ore_budget}, {"reg_bench", t_reg_bench}, {"reg_abs_m", t_reg_abs_m},
         {"box_probe_parse", t_box_probe_parse}, {"box_probe_uu_fwd", t_box_probe_uu_fwd}, {"reg_check_summary", t_reg_check_summary},
         {"reg_cache_round_trip", t_reg_cache_round_trip}, {"reg_cache_reject", t_reg_cache_reject}, {"reg_cache_verdict", t_reg_cache_verdict},

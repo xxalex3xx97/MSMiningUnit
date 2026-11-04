@@ -368,6 +368,48 @@ namespace
         return (dock_dist_m >= 0.0 && dock_dist_m <= WARP_ARRIVE_M) || t >= WARP_SETTLE_MAX_S;
     }
 
+    // ---------- far-trip warp for our flights (WARPFLIGHT) ----------
+    constexpr double WARP_LAND_M = 300.0;            // a flight warp lands this far short of its destination (m)
+    constexpr double WARP_LAND_SIDE_M = 200.0;       // landing candidates 2 and 3: this far sideways from the base landing point (m)
+    // WHAT: why a flight of ours warps or flies. Order: off (km 0), near (inside the trip distance), autopilot, travelling, docked, piloted (player flies),
+    //       other system, unknown sector (fly as before), other sector, no warp fuel, else warp. Autopilot and travel never warp.
+    enum FlightWhy { FW_WARP = 0, FW_NEAR = 1, FW_OFF = 2, FW_AUTOPILOT = 3, FW_DOCKED = 4, FW_TRAVEL = 5, FW_PILOTED = 6,
+                     FW_OTHER_SYSTEM = 7, FW_UNKNOWN_SECTOR = 8, FW_OTHER_SECTOR = 9, FW_NO_FUEL = 10, FW_LANDING = 11 };
+    inline FlightWhy flight_warp_why(double dist_m, int km, bool same_sys, int ship_sec, int dest_sec, bool docked, bool travelling,
+                                     bool autopilot, bool piloted, long long drive, double dist_chunks)
+    {
+        if (km <= 0) return FW_OFF;
+        if (!trip_warp_wanted(dist_m, km)) return FW_NEAR;
+        if (autopilot) return FW_AUTOPILOT;
+        if (travelling) return FW_TRAVEL;
+        if (docked) return FW_DOCKED;
+        if (piloted) return FW_PILOTED;
+        if (!same_sys) return FW_OTHER_SYSTEM;
+        if (ship_sec <= 0 || dest_sec <= 0) return FW_UNKNOWN_SECTOR;
+        if (!trip_same_sector(ship_sec, dest_sec)) return FW_OTHER_SECTOR;
+        if (!warp_fuel_ok(true, dist_chunks, 0, drive)) return FW_NO_FUEL;
+        return FW_WARP;
+    }
+    // WHAT: the destination cannot be reached by our flight at all here (other system or other sector): a sweep ore like that is skipped.
+    inline bool flight_unreachable(FlightWhy w) { return w == FW_OTHER_SYSTEM || w == FW_OTHER_SECTOR; }
+    inline const char* flight_warp_name(FlightWhy w)
+    {
+        switch (w)
+        {
+        case FW_WARP: return "warp";
+        case FW_NEAR: return "near";
+        case FW_OFF: return "warp off";
+        case FW_AUTOPILOT: return "game autopilot";
+        case FW_DOCKED: return "docked";
+        case FW_TRAVEL: return "travelling";
+        case FW_PILOTED: return "player flies";
+        case FW_OTHER_SYSTEM: return "other system";
+        case FW_UNKNOWN_SECTOR: return "sector unknown";
+        case FW_OTHER_SECTOR: return "other sector";
+        case FW_NO_FUEL: return "no warp fuel";
+        default: return "landing blocked";
+        }
+    }
     // WHAT: mining stops (leftover collect, then unload) when the cargo fill reaches this % (was 100). Also the CHECK rule, so the ship does not undock again at once.
     constexpr int CARGO_STOP_PCT = 90;
 
@@ -675,6 +717,19 @@ namespace
     }
     // WHAT: retarget score of a candidate rock: its distance (m) plus PATH_BLOCK_PENALTY_M when its straight path is blocked. Lower is better.
     inline double pick_score(double dist_m, bool blocked) { return dist_m + (blocked ? PATH_BLOCK_PENALTY_M : 0.0); }
+    // WHAT: landing point candidate k (0..3) of a warp toward T (m) along unit dir (ship -> T): 0 = WARP_LAND_M short of T, 1 = 2 x WARP_LAND_M short,
+    //       2 / 3 = the base point sideways by WARP_LAND_SIDE_M on either side.
+    inline void landing_candidate(int k, const double T[3], const double dir[3], double out[3])
+    {
+        double base[3];
+        for (int i = 0; i < 3; ++i) base[i] = T[i] - dir[i] * WARP_LAND_M;
+        if (k == 0) { for (int i = 0; i < 3; ++i) out[i] = base[i]; }
+        else if (k == 1) { for (int i = 0; i < 3; ++i) out[i] = T[i] - dir[i] * 2.0 * WARP_LAND_M; }
+        else side_point(base, dir, WARP_LAND_SIDE_M, k == 2 ? 1 : -1, out);
+    }
+    // WHAT: a point at dist (m) from a rock centre is inside the rock block radius (block_r_m(rad, clear)).
+    inline bool point_blocked(double dist_m, double rad_m, double clear_m) { return dist_m < block_r_m(rad_m, clear_m); }
+
     // WHAT: waypoint candidate k (0..3) beside a blocker: k 0 = +side at 1.0 x block radius, 1 = -side at 1.0x, 2 = +side at 1.6x, 3 = -side at 1.6x.
     //       c = blocker centre (m), u = unit ship->target direction, br = blocker block radius (m). out = point (m).
     inline void waypoint_candidate(int k, const double c[3], const double u[3], double br, double out[3])

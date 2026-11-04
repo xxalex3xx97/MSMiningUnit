@@ -117,6 +117,8 @@ namespace
         double sw_t = 0.0;                     // MS_SWEEP: seconds in the current phase
         UObject* sw_ore = nullptr;             // MS_SWEEP: ore actor being picked up
         std::vector<SwOre> sw_list;            // MS_SWEEP: floating ore cache (nearest first when picking)
+        double sw_prev[3] = {0, 0, 0};         // MS_SWEEP: position of the ore picked last (the next pick prefers ore near it)
+        bool sw_prev_ok = false;               // sw_prev is set
         int sw_found = -1;                     // MS_SWEEP: BP_FloatingOre_C count of the last scan (-1 none yet)
         bool sw_frame = false;                 // MS_SWEEP: ship frame readable at the last scan
         int sw_undock_n = 0;                   // MS_SWEEP: undock tries while docked and position unreadable (guard)
@@ -864,6 +866,7 @@ namespace
 
     bool hazard_away(int sid, MineSt& m, double radius_m = HAZARD_RADIUS_M);   // defined after dock_job_on
     void dock_add_m(const int64_t ch0[3], const double loc0[3], const double off_m[3], int64_t ch[3], double loc[3]);   // defined below
+    FlightWhy flight_why_to(int sid, UObject* ship, const double T[3], int dsys, double dist_m);   // defined below (far-trip warp)
 
     // WHAT: starts the flee: stop work, dock trip (purpose P_FLEE), trip_end halts at the dock. why = trigger text ("hull hit 350 -> 320", "targeted by 2, combat 1").
     //       The attacker record is written before the stop, so it shows the state the ship was in when it was hit.
@@ -1330,7 +1333,7 @@ namespace
     void path_watch(UObject* ship, int sid, MineSt& m, double dt, const Config& c, UObject* item)
     {
         auto it = g_mvs.find(sid);
-        if (it == g_mvs.end() || it->second.kind != "approach_rock" || it->second.pt_on || it->second.ore_on) return;
+        if (it == g_mvs.end() || it->second.kind != "approach_rock" || it->second.pt_on || it->second.ore_on || it->second.warp_wait) return;
         m.path_t += dt;
         if (!path_watch_due(m.path_t)) return;
         const ULONGLONG now = GetTickCount64();
@@ -1588,6 +1591,7 @@ namespace
         m.sw_frame = act_frame(ship, f);
         const OreScan& sc = ore_scan(true);   // the sweep always takes a fresh scan (start, rescans)
         m.sw_list.clear();
+        m.sw_prev_ok = false;
         for (const OreEnt& e : sc.list)
         {
             SwOre o;
@@ -1767,20 +1771,41 @@ namespace
                 mset(sid, m, STR("ERROR: cannot read ship position"), STR("ERROR: cannot read ship position"));
                 return;
             }
-            std::vector<double> d(m.sw_list.size(), 0.0);
+            std::vector<double> d(m.sw_list.size(), 0.0), dsel(m.sw_list.size(), 0.0);
             std::vector<char> done(m.sw_list.size(), 0);
             for (size_t i = 0; i < m.sw_list.size(); ++i)
             {
                 const SwOre& o = m.sw_list[i];
                 const double dv[3] = {o.p[0] - f.loc[0], o.p[1] - f.loc[1], o.p[2] - f.loc[2]};
                 d[i] = norm3(dv);
+                // the choice: from the ore collected last when there is one (no zig-zag), else from the ship; km logs use the ship distance
+                const double pv[3] = {o.p[0] - m.sw_prev[0], o.p[1] - m.sw_prev[1], o.p[2] - m.sw_prev[2]};
+                dsel[i] = m.sw_prev_ok ? norm3(pv) : d[i];
                 done[i] = o.done;   // alive_seh only on the chosen entry below (per-entry checks on 9000 actors every pick = lag)
             }
-            int i = sweep_nearest(d, done);
-            while (i >= 0 && !ore_ok(m.sw_list[(size_t)i].a))   // picked entry is gone: mark it, take the next nearest
+            int i = sweep_nearest(dsel, done);
+            while (i >= 0)
             {
-                m.sw_list[(size_t)i].done = true; done[(size_t)i] = 1;
-                i = sweep_nearest(d, done);
+                SwOre& pick = m.sw_list[(size_t)i];
+                if (!ore_ok(pick.a))   // picked entry is gone: mark it, take the next
+                {
+                    pick.done = true; done[(size_t)i] = 1;
+                    i = sweep_nearest(dsel, done);
+                    continue;
+                }
+                const double T[3] = {pick.p[0] / MV_UU_PER_M, pick.p[1] / MV_UU_PER_M, pick.p[2] / MV_UU_PER_M};
+                const double km = d[(size_t)i] / MV_UU_PER_M / 1000.0;
+                const FlightWhy fw = flight_why_to(sid, ship, T, sys_id(ship), d[(size_t)i] / MV_UU_PER_M);
+                if (!flight_unreachable(fw))
+                {
+                    if (fw != FW_NEAR && fw != FW_OFF)
+                        log_line(STR("SWEEP target ore at ") + std::to_wstring(km) + STR(" km -> ") +
+                                 (fw == FW_WARP ? STR("warp") : STR("fly(") + widen(flight_warp_name(fw)) + STR(")")));
+                    break;
+                }
+                log_line(STR("SWEEP target ore at ") + std::to_wstring(km) + STR(" km -> skip(") + widen(flight_warp_name(fw)) + STR(")"));
+                pick.done = true; done[(size_t)i] = 1;   // unreachable from here: out for this sweep, the next one is picked
+                i = sweep_nearest(dsel, done);
             }
             if (i < 0)
             {
@@ -1804,6 +1829,8 @@ namespace
                 return;
             }
             m.sw_ore = m.sw_list[(size_t)i].a;
+            std::copy(m.sw_list[(size_t)i].p, m.sw_list[(size_t)i].p + 3, m.sw_prev);
+            m.sw_prev_ok = true;
             g_mv_res.erase(sid);   // SW_APPROACH reads the result of this job only
             const std::wstring r = move_start(sid, "approach_rock", -1, m.sw_ore, nullptr);
             if (r == STR("waiting"))
@@ -1819,9 +1846,11 @@ namespace
         case SW_APPROACH:
         {
             if (mv_active(sid)) return;   // any result: a rock lost here means the tractor already took it
-            if (g_mv_res[sid].find(STR("target lost")) != std::wstring::npos)   // the job faulted (move_tick SEH): this ore is no target
+            const std::wstring res = g_mv_res[sid];
+            if (!ok_res(res))   // approach timeout, lost target or a cancelled job: not an arrival. This ore is done; the next one is picked (no SW_PULL wait)
             {
                 for (SwOre& o : m.sw_list) if (o.a == m.sw_ore) o.done = true;
+                mlog(sid, STR("Collect: ore approach failed (") + res + STR("), next ore"));
                 m.sw_ore = nullptr;
                 sw_phase(ship, sid, m, SW_PICK);
                 return;
@@ -2095,6 +2124,120 @@ namespace
         log_line(STR("TRIPWARP ship=") + std::to_wstring(sid) + STR(" dock=") + std::to_wstring(dock) +
                  STR(" dist_m=") + std::to_wstring(dist) + STR(" km_limit=") + std::to_wstring(c.warp_trip_km));
         mlog(sid, STR("Far trip: warping to dock"));
+        return true;
+    }
+
+    // WHAT: why a flight of ship sid to T (m, system dsys, dist_m) warps or flies. Reads only; the far check comes first, so near flights read nothing.
+    FlightWhy flight_why_to(int sid, UObject* ship, const double T[3], int dsys, double dist_m)
+    {
+        const Config c = eff_cfg(sid);
+        if (c.warp_trip_km <= 0 || !trip_warp_wanted(dist_m, c.warp_trip_km))
+            return flight_warp_why(dist_m, c.warp_trip_km, true, 0, 0, false, false, false, false, 0, 0.0);
+        const int ssys = sys_id(ship);
+        int64_t ch[3] = {0, 0, 0};
+        get_chunk(ship, ch);
+        int64_t tch[3] = {0, 0, 0};
+        for (int i = 0; i < 3; ++i) tch[i] = static_cast<int64_t>(std::floor(T[i] / REG_CHUNK_M));
+        int ssec = 0, dsec = 0;
+        {
+            const std::vector<SecInfo> secs = sectors_read();
+            const SecInfo* ss = sector_of(secs, ssys, ch);
+            const SecInfo* ds = sector_of(secs, dsys, tch);
+            ssec = ss ? ss->id : 0;
+            dsec = ds ? ds->id : 0;
+        }
+        bool trav = false, ap = false, dap = false;
+        get_bool_prop(ship, STR("bTravelling"), trav);
+        get_bool_prop(ship, STR("bAutopilot"), ap);
+        get_bool_prop(ship, STR("bDockingAutopilot"), dap);
+        int32_t drive = 0;
+        call_int(ship, STR("GetAvailableJumpFuel"), drive);
+        return flight_warp_why(dist_m, c.warp_trip_km, ssys == dsys, ssec, dsec, ship_docked(ship), trav, ap || dap, player_flies(ship),
+                               drive, dist_m / DOCK_CHUNK_M);
+    }
+
+    // WHAT: no rock blocks point p (m) of system sys: each registry rock within 1 km is tested with block_r_m (scale + path clearance, hazard extra).
+    bool landing_clear(int sys, const double p[3])
+    {
+        const RockReg& t = reg_st().tab;
+        const double lo[3] = {p[0] - 1000.0, p[1] - 1000.0, p[2] - 1000.0}, hi[3] = {p[0] + 1000.0, p[1] + 1000.0, p[2] + 1000.0};
+        bool clear = true;
+        t.for_box(sys, lo, hi, [&](size_t i)
+        {
+            if (!clear) return;
+            const RegRock& rk = t.rocks[i];
+            if (!rk.alive || rk.sys != sys) return;
+            const double d[3] = {rk.c[0] - p[0], rk.c[1] - p[1], rk.c[2] - p[2]};
+            const double clr = path_clear_m() + (g_hazard_rocks.count(rk.id) ? HAZARD_CLEAR_EXTRA_M : 0.0);
+            if (point_blocked(std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]), reg_eff_rad(rk), clr)) clear = false;
+        });
+        return clear;
+    }
+
+    // WHAT: far-trip warp of one approach flight (move_start hook, cmd approach_rock). Destination: the rock stand-off point, the point target, or the
+    //       floating ore (actor position). Far (warp_trip_km) and allowed (flight_why_to): the ship warps to WARP_LAND_M short of the destination on the
+    //       line, the landing point checked against the registry (4 candidates, else fly), and the job waits (warp_wait) until it has landed.
+    //       Logs WARPFLIGHT for every far decision. true = warp sent.
+    bool move_warp_begin(int sid, UObject* ship, MoveJob& mv)
+    {
+        ActFrame f;
+        if (!alive(ship) || !act_frame(ship, f)) return false;
+        const double ps[3] = {f.loc[0] / MV_UU_PER_M, f.loc[1] / MV_UU_PER_M, f.loc[2] / MV_UU_PER_M};
+        double T[3] = {0, 0, 0};
+        int dsys = sys_id(ship);
+        std::string phase;
+        if (mv.pt_on) { reg_abs_m(mv.ptg.ch, mv.ptg.loc, g_raw_per_m, T); dsys = mv.ptg.sys; phase = "point"; }
+        else if (mv.ore_on)
+        {
+            double l[3] = {0, 0, 0};
+            std::wstring w;
+            if (!actor_vec_call(mv.rock_act, STR("K2_GetActorLocation"), l, w)) return false;
+            for (int i = 0; i < 3; ++i) T[i] = l[i] / MV_UU_PER_M;
+            phase = "ore";
+        }
+        else if (mv.rock_id > 0)
+        {
+            double so[3], tc[3], tr = 0.0;
+            if (!standoff_of(sid, mv.rock_id, ps, so, tc, tr)) return false;
+            std::copy(so, so + 3, T);
+            if (const RegRock* rr = reg_st().tab.get(mv.rock_id)) dsys = rr->sys;
+            phase = "rock";
+        }
+        else return false;
+        const double v[3] = {T[0] - ps[0], T[1] - ps[1], T[2] - ps[2]};
+        const double dist = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+        if (dist <= 0.0) return false;
+        const FlightWhy w = flight_why_to(sid, ship, T, dsys, dist);
+        if (w == FW_NEAR || w == FW_OFF) return false;
+        const double u[3] = {v[0] / dist, v[1] / dist, v[2] / dist};
+        FlightWhy res = w;
+        double L[3] = {0, 0, 0};
+        if (w == FW_WARP)
+        {
+            bool ok = false;
+            for (int k = 0; k < 4 && !ok; ++k) { landing_candidate(k, T, u, L); ok = landing_clear(dsys, L); }
+            if (!ok) res = FW_LANDING;
+        }
+        log_line(STR("WARPFLIGHT ship=") + std::to_wstring(sid) + STR(" phase=") + widen(phase) + STR(" dist_km=") +
+                 std::to_wstring(dist / 1000.0) + STR(" -> ") + (res == FW_WARP ? STR("warp") : STR("fly(") + widen(flight_warp_name(res)) + STR(")")));
+        if (res != FW_WARP) return false;
+        int64_t lch[3] = {0, 0, 0}, lloc[3] = {0, 0, 0};
+        for (int i = 0; i < 3; ++i)
+        {
+            lch[i] = static_cast<int64_t>(std::floor(L[i] / REG_CHUNK_M));
+            lloc[i] = static_cast<int64_t>(std::llround((L[i] - static_cast<double>(lch[i]) * REG_CHUNK_M) * g_raw_per_m));
+        }
+        chunk_hold_target(sid, dsys, lch);
+        std::wstring e;
+        if (!warp_send(sid, dsys, lch, lloc, false, e))
+        {
+            chunk_hold_target_clear(sid);
+            log_line(STR("WARPFLIGHT ship=") + std::to_wstring(sid) + STR(" warp failed: ") + e);
+            return false;
+        }
+        mv.warp_wait = true;
+        mv.warp_t = 0.0;
+        mlog(sid, STR("Far flight: warping closer, landing short of the target"));
         return true;
     }
 

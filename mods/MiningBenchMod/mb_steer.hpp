@@ -171,10 +171,14 @@ namespace
         UObject* rock_act = nullptr;    // rock ACTOR for face/approach (game list); alive-checked each tick, 'rock lost' when gone
         bool pt_on = false;             // point move: target is ptg (no actor). Named pt_on: pt is the phase timer.
         PtTarget ptg;
+        bool warp_wait = false;         // far-trip warp sent for this flight: wait until it has landed (warp_settle_done), no thrust, no aim
+        double warp_t = 0.0;            // time since the warp was sent (s)
     };
 
     // WHAT: move jobs per ship (sid -> job). Empty kind = no job for that ship. Each ship can steer on its own.
     std::map<int, MoveJob> g_mvs;
+    // WHAT: far-trip warp of an approach flight (mb_mining.hpp): sends the warp when the destination is far, sets mv.warp_wait. true = warp sent.
+    bool move_warp_begin(int sid, UObject* ship, MoveJob& mv);
     bool mv_active(int sid) { auto it = g_mvs.find(sid); return it != g_mvs.end() && !it->second.kind.empty(); }
 
     // WHAT: bubble ladder state per ship (mb_bubble.hpp). braking = the move job holds Throttle 0 (see move_aim_step).
@@ -457,9 +461,40 @@ namespace
     // WHY: the ship only approaches when it is roughly aligned; the Throttle slows down step by step, so the stop is smooth and the speed
     //      safety (spd_update) is not triggered. Stop on SURFACE distance (user choice, Update 28).
     //      Caveat (ported as is): when no speed sample exists (spd_of(sid).have false) the speed is taken as 0, so a brake ends at once.
+    // WHAT: remaining distance (m) of job mv to its destination (registry rock surface, point, or ore), for the warp settle. 1e9 when unknown.
+    double warp_remain_m(const MoveJob& mv, UObject* ship)
+    {
+        ActFrame f;
+        if (!act_frame(ship, f)) return 1e9;
+        const double p[3] = {f.loc[0] / MV_UU_PER_M, f.loc[1] / MV_UU_PER_M, f.loc[2] / MV_UU_PER_M};
+        double q[3] = {0, 0, 0}, rad = 0.0;
+        if (mv.pt_on) reg_abs_m(mv.ptg.ch, mv.ptg.loc, g_raw_per_m, q);
+        else if (mv.rock_id > 0)
+        {
+            const RegRock* r = reg_st().tab.get(mv.rock_id);
+            if (!r) return 1e9;
+            std::copy(r->c, r->c + 3, q);
+            rad = reg_eff_rad(*r);
+        }
+        else for (int i = 0; i < 3; ++i) q[i] = mv.ore_loc[i] / MV_UU_PER_M;
+        return std::sqrt((p[0] - q[0]) * (p[0] - q[0]) + (p[1] - q[1]) * (p[1] - q[1]) + (p[2] - q[2]) * (p[2] - q[2])) - rad;
+    }
+    // WHAT: one tick of a flight with warp_wait: no thrust, the job ends the wait when warp_settle_done (2 s minimum, near the destination or 30 s).
+    void warp_wait_step(MoveJob& mv, UObject* ship, double dt)
+    {
+        mv.warp_t += dt;
+        set_int_prop(ship, STR("Throttle"), 0);
+        mv.thr = 0;
+        mv.thr_t = 0.0;
+        if (!warp_settle_done(mv.warp_t, warp_remain_m(mv, ship))) return;
+        mv.warp_wait = false;
+        tlog(STR("far warp landed ship=") + std::to_wstring(mv.sid) + STR(" after ") + std::to_wstring(mv.warp_t) + STR(" s"));
+    }
+
     void move_aim_step(MoveJob& mv, UObject* ship, double dt)
     {
         const int sid = mv.sid;
+        if (mv.warp_wait) { warp_wait_step(mv, ship, dt); return; }
         // 1. rock still valid, aim numbers
         double a[3] = {0, 0, 0}, dist = 0.0, rad = 0.0, err = 0.0;
         if (mv.pt_on) { if (!aim_calc_pt(ship, mv, err, a, dist, rad)) { mv_finish(sid, STR("error: point lost")); return; } }
@@ -645,6 +680,7 @@ namespace
         // WHY: aiming starts at once (no forward-axis test phase before it)
         m.phase = 1;
         if (sid == g_cmd.ship) g_last_err = -1.0;
+        if (cmd == "approach_rock") move_warp_begin(sid, ship, m);   // far-trip warp first (mb_mining.hpp): the job then waits for the landing
         g_mvs[sid] = m;
         tlog(STR("start ") + widen(cmd) + STR(" ship=") + std::to_wstring(sid) + STR(" seq=") + std::to_wstring(seq) +
              STR(" cid=") + std::to_wstring(m.cid) +

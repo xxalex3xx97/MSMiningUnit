@@ -232,6 +232,7 @@ namespace
             const bool thrust = mv && mv->kind == "approach_rock";
             const SpeedMon& sp = spd_of(sid);
             const double v = sp.have ? sp.v / g_raw_per_m : 0.0;
+            if (mv && mv->warp_wait) continue;   // far-trip warp in progress: the teleport is not ours to brake
             const BubbleWhy why = bubble_why(fl.ap, fl.dap, fl.trav, thrust, v);
             bs.why = why;
             if (why == BW_AUTOPILOT || why == BW_DOCK_AUTOPILOT || why == BW_TRAVEL) { g_bubble.erase(sid); continue; }
