@@ -79,12 +79,7 @@ namespace
         const double L = bubble_look_ahead(speed);
         const double b[3] = {p[0] + f.fw[0] * L, p[1] + f.fw[1] * L, p[2] + f.fw[2] * L};
         reg_area_seeded(sys_id(ship), p);   // unseeded area: the look-ahead below sees the seeded rocks only (logged once per pass)
-        const RockReg& t = reg_st().tab;
-        const size_t i = t.first_blocker(sys_id(ship), p, b, bubble_clear_m(bubble_ship_r(sid)), nullptr, skip_id, nullptr, 0.0, out_d);
-        if (i == RockReg::npos) return 0;
-        out_r = reg_eff_rad(t.rocks[i]);
-        return t.rocks[i].id;
-    }
+    }
 
     // WHAT: destination (m) of the current flight of a move job: point target or floating ore. false when the job has neither.
     bool flight_dst(const MoveJob& mv, double out[3])
@@ -144,7 +139,7 @@ namespace
             double dst[3] = {0, 0, 0}, bc[3] = {0, 0, 0}, br = 0.0, wp[3] = {0, 0, 0};
             if (flight_dst(cur, dst) && reg_geom(bs.blk, bc, br))
             {
-                path_waypoint(p, dst, bc, br + bubble_clear_m(cr), wp);
+                path_waypoint(p, dst, bc, block_r_m(br, bubble_clear_m(cr, g_cfg.bubble_clearance_m)), wp);
                 if (bub_move_to(sid, ship, wp))
                 {
                     ++bs.wp;
@@ -299,7 +294,7 @@ namespace
             const BubbleWhy why = bubble_why(fl.ap, fl.dap, fl.trav, thrust, v);
             const BubblePhase ph = bubble_phase(thrust, mv && mv->pt_on, mv && mv->ore_on, !thrust);
             std::snprintf(buf, sizeof(buf), "ship=%d sys=%d pos=(%.1f,%.1f,%.1f) m speed=%.2f m/s throttle=%d ship_r=%.1f m look_ahead=%.1f m clear=%.1f m\r\n",
-                          sid, sys, p[0], p[1], p[2], v, static_cast<int>(thr), cr, L, bubble_clear_m(cr));
+                          sid, sys, p[0], p[1], p[2], v, static_cast<int>(thr), cr, L, bubble_clear_m(cr, g_cfg.bubble_clearance_m));
             out += buf;
             std::snprintf(buf, sizeof(buf), "active=%s\r\nwhy=%s\r\nphase=%s state=%s move_job=%s pt=%d ore=%d target=%d\r\n",
                           why == BW_ACTIVE ? "1" : "0", bubble_why_name(why), bubble_phase_name(ph),
@@ -328,7 +323,7 @@ namespace
                 const double cosb = (f.fw[0] * dv[0] + f.fw[1] * dv[1] + f.fw[2] * dv[2]) / cd;
                 const double bearing = std::acos(std::clamp(cosb, -1.0, 1.0)) * 180.0 / 3.14159265358979;
                 double pd = 0.0;
-                const double rr = reg_eff_rad(rk) + bubble_clear_m(cr);
+                const double rr = block_r_m(reg_eff_rad(rk), bubble_clear_m(cr, g_cfg.bubble_clearance_m));
                 const bool in_bubble = seg_sphere_blocks(p, b, rk.c, rr, pd);
                 std::snprintf(buf, sizeof(buf), "rock=%d dist=%.1f surf=%.1f rad=%.1f bearing=%.1f ahead=%d in_bubble=%d\r\n", rk.id, cd,
                               cd - reg_eff_rad(rk), reg_eff_rad(rk), bearing, cosb > 0.0 ? 1 : 0, in_bubble ? 1 : 0);
@@ -349,7 +344,7 @@ namespace
             {
                 const RegRock& rk = t.rocks[i];
                 if (!rk.alive || rk.sys != sys || rk.id == rock) return;
-                const double rr = reg_eff_rad(rk) + bubble_clear_m(cr);
+                const double rr = block_r_m(reg_eff_rad(rk), bubble_clear_m(cr, g_cfg.bubble_clearance_m));
                 double pd = 0.0;
                 if (!seg_sphere_blocks(p, bt, rk.c, rr, pd)) return;
                 const double w[3] = {rk.c[0] - p[0], rk.c[1] - p[1], rk.c[2] - p[2]};

@@ -327,12 +327,15 @@ namespace
         return true;
     }
 
-    // WHAT: blocking radius (m) of rock id for the path check: radius + SHIP_CLEARANCE_M, + HAZARD_CLEAR_EXTRA_M for a hazard rock. 0 for an unknown id.
+    // WHAT: path clearance (m) from the config key path_clearance_m.
+    double path_clear_m() { return static_cast<double>(g_cfg.path_clearance_m); }
+
+    // WHAT: blocking radius (m) of rock id for the path check: block_r_m(radius, path clearance), + HAZARD_CLEAR_EXTRA_M for a hazard rock. 0 for an unknown id.
     double block_radius_id(int id)
     {
         double c[3] = {0, 0, 0}, r = 0.0;
         if (!reg_geom(id, c, r)) return 0.0;
-        return r + SHIP_CLEARANCE_M + (g_hazard_rocks.count(id) ? HAZARD_CLEAR_EXTRA_M : 0.0);
+        return block_r_m(r, path_clear_m()) + (g_hazard_rocks.count(id) ? HAZARD_CLEAR_EXTRA_M : 0.0);
     }
 
     // WHAT: nearest rock of any ore to the ship by surface distance (m), from the registry. skip_id is left out (0 = none).
@@ -348,17 +351,42 @@ namespace
         return i == RockReg::npos ? 0 : t.rocks[i].id;
     }
 
-    // WHAT: the rock that blocks the straight path a->goal in system sys (registry, first_blocker). skip_id is left out (0 = none).
-    //       Returns the blocker id, 0 = clear. dist_m = blocker centre to path (m); c_out = its centre (m).
+    // WHAT: the first rock (registry, all ores) whose blocking sphere cuts the segment a->b in system sys. skip_id is left out (0 = none).
+    //       Block radius = block_r_m(rock radius, clear_m), + HAZARD_CLEAR_EXTRA_M when hazard is set and the rock is a hazard rock.
+    //       Returns the id, 0 = clear. dist_m = blocker centre to segment (m); c_out = its centre (m); r_out = its block radius (m).
+    //       Own query instead of registry first_blocker: that one uses the full rock radius (registry data unchanged here).
+    int seg_blocker(int sys, const double a[3], const double b[3], int skip_id, double clear_m, bool hazard, double& dist_m, double c_out[3], double& r_out)
+    {
+        static std::vector<PathRock> pr;   // scratch, reused (game thread only)
+        static std::vector<int> ids;
+        pr.clear();
+        ids.clear();
+        const RockReg& t = reg_st().tab;
+        const double lo[3] = {std::min(a[0], b[0]) - PATH_RMAX_M, std::min(a[1], b[1]) - PATH_RMAX_M, std::min(a[2], b[2]) - PATH_RMAX_M};
+        const double hi[3] = {std::max(a[0], b[0]) + PATH_RMAX_M, std::max(a[1], b[1]) + PATH_RMAX_M, std::max(a[2], b[2]) + PATH_RMAX_M};
+        t.for_box(sys, lo, hi, [&](size_t i)
+        {
+            const RegRock& rk = t.rocks[i];
+            if (!rk.alive || rk.sys != sys || rk.id == skip_id) return;
+            if (path_box_reject(a, b, rk.c, PATH_RMAX_M) || seg_point_dist(a, b, rk.c) > PATH_RMAX_M) return;
+            PathRock p;
+            std::copy(rk.c, rk.c + 3, p.c);
+            p.r = block_r_m(reg_eff_rad(rk), clear_m) + (hazard && g_hazard_rocks.count(rk.id) ? HAZARD_CLEAR_EXTRA_M : 0.0);
+            pr.push_back(p);
+            ids.push_back(rk.id);
+        });
+        const int k = path_first_blocker(a, b, pr.data(), pr.size(), dist_m);
+        if (k < 0) return 0;
+        std::copy(pr[static_cast<size_t>(k)].c, pr[static_cast<size_t>(k)].c + 3, c_out);
+        r_out = pr[static_cast<size_t>(k)].r;
+        return ids[static_cast<size_t>(k)];
+    }
+
+    // WHAT: the rock that blocks the straight path a->goal (path clearance, hazard extra). skip_id left out. Returns the id, 0 = clear. dist_m / c_out as seg_blocker.
     int path_blocker(int sys, const double a[3], const double goal[3], int skip_id, double& dist_m, double c_out[3])
     {
         reg_area_seeded(sys, a);   // unseeded area: the check uses the seeded rocks only (logged once per pass)
-        const RockReg& t = reg_st().tab;
-        const size_t i = t.first_blocker(sys, a, goal, SHIP_CLEARANCE_M, nullptr, skip_id, &g_hazard_rocks, HAZARD_CLEAR_EXTRA_M, dist_m);
-        if (i == RockReg::npos) return 0;
-        std::copy(t.rocks[i].c, t.rocks[i].c + 3, c_out);
-        return t.rocks[i].id;
-    }
+    }
 
     // WHAT: chunk (system + 3 ints) of the save-data asteroid nearest to the ship that holds `item` and is alive; the ore list is shared by all ships and refreshed at most once a minute.
     // WHY: the rock ACTORS only exist in loaded chunks (the player's scan list and the world scan never see the rest), but the save objects of every rock exist always.
@@ -1120,8 +1148,9 @@ namespace
         return true;
     }
 
-    // WHAT: next-nearest live rock of ore item (registry; not skip, no-yield, hazard, depleted or path-skipped) whose own straight path from ps is clear.
-    //       0 when none. WHY: the PATH_CANDIDATES nearest within PATH_PICK_M are tried in turn.
+    // WHAT: next rock of ore item (registry; not skip, no-yield, hazard, depleted or path-skipped) to retarget to. The PATH_CANDIDATES nearest
+    //       within PATH_PICK_M are scored pick_score(distance, straight path blocked). Returns the best one when its path is clear, else 0 (the caller
+    //       then plans a waypoint, or gives the target up). WHY: a clear route is always preferred to a waypoint plan.
     int clear_rock_pick(int sid, const MineSt& m, int sys, const double ps[3], UObject* item, int skip_id)
     {
         if (!item) return 0;
@@ -1134,14 +1163,19 @@ namespace
         const RockReg& t = reg_st().tab;
         std::vector<std::pair<double, size_t>> cand;
         t.nearest_n(sys, item, ps, m.abandon, &skip, PATH_PICK_M, PATH_CANDIDATES, cand);
+        int best = 0;
+        double best_score = 1e300;
+        bool best_blocked = false;
         for (const auto& pr : cand)
         {
             const RegRock& rk = t.rocks[pr.second];
-            double so[3], tc[3], tr = 0.0, dist = 0.0, bc[3];
-            if (!standoff_of(sid, rk.id, ps, so, tc, tr)) return 0;
-            if (path_blocker(sys, ps, so, rk.id, dist, bc) == 0) return rk.id;
+            double so[3], tc[3], tr = 0.0, dist = 0.0, bc[3], rr = 0.0;
+            if (!standoff_of(sid, rk.id, ps, so, tc, tr)) continue;
+            const bool blocked = seg_blocker(sys, ps, so, rk.id, path_clear_m(), true, dist, bc, rr) != 0;
+            const double sc = pick_score(pr.first, blocked);
+            if (sc < best_score) { best_score = sc; best = rk.id; best_blocked = blocked; }
         }
-        return 0;
+        return best_blocked ? 0 : best;
     }
 
     // WHAT: one PATH log line (UE4SS log + Log tab): blocker, its distance to the path (m), what was done.
@@ -1151,12 +1185,38 @@ namespace
                  STR(" (dist ") + std::to_wstring(static_cast<long long>(std::llround(dist))) + STR(" m) -> ") + what);
     }
 
+    // WHAT: per ship approach record of the current target: rock, start time, first path event (cap), waypoints, retargets.
+    struct ApprRec { int rock = 0; ULONGLONG t0 = 0, first_ms = 0; int wps = 0, retargets = 0; };
+    std::map<int, ApprRec> g_appr;
+
+    // WHAT: closes the target of ship sid with one APPROACH line: secs, waypoints, retargets, result (mining or skipped). No open target: nothing.
+    void appr_done(int sid, const std::wstring& result)
+    {
+        auto it = g_appr.find(sid);
+        if (it == g_appr.end() || it->second.rock == 0) return;
+        const ApprRec& r = it->second;
+        log_line(STR("APPROACH done ship=") + std::to_wstring(sid) + STR(" rock=") + std::to_wstring(r.rock) + STR(" secs=") +
+                 std::to_wstring((GetTickCount64() - r.t0) / 1000) + STR(" waypoints=") + std::to_wstring(r.wps) + STR(" retargets=") +
+                 std::to_wstring(r.retargets) + STR(" result=") + result);
+        it->second = ApprRec();
+    }
+    // WHAT: a target approach of ship sid starts (rock picked, move started). An open previous target is closed as skipped first.
+    void appr_begin(int sid, int rock)
+    {
+        if (g_appr[sid].rock == rock) return;
+        appr_done(sid, STR("skipped"));
+        ApprRec& n = g_appr[sid];
+        n.rock = rock;
+        n.t0 = GetTickCount64();
+    }
+
     // WHAT: gives the target rock tid up for this visit (path_guard step 3, bubble RETARGET): skip list, approach cancelled, next pick.
     void path_give_up(UObject* ship, int sid, MineSt& m, int tid, int bid, double dist)
     {
         log_path(sid, tid, bid, dist, STR("skip"));
         mlog(sid, STR("Path blocked by rock ") + std::to_wstring(bid) + STR(": rock ") + std::to_wstring(tid) + STR(" skipped"));
         g_path_skip[sid].insert(tid);
+        appr_done(sid, STR("skipped"));
         mv_cancel(sid); zero_all(ship);
         g_sel_rocks.erase(sid);
         m.wp_on = false; m.wp_n = 0; m.seek_started = false; m.path_t = 0.0;
@@ -1164,8 +1224,9 @@ namespace
     }
 
     // WHAT: clear-path check of an approach to target (rock actor) from the ship current position. false = the path is clear (or the check
-    //       cannot run): the caller goes on. true = it acted and the caller returns. Order: 1 retarget to the next-nearest rock of the ore whose path is
-    //       clear; 2 waypoint beside the blocker (move job, PATH_WP_MAX per target); 3 skip the target for this visit (g_path_skip).
+    //       cannot run): the caller goes on. true = it acted and the caller returns. Order: 1 retarget to the nearest rock of the ore with a clear path;
+    //       2 one waypoint plan beside the blocker (4 candidates, both legs clear); 3 skip the target for this visit (g_path_skip).
+    //       A target whose first path event is APPR_CAP_S old is skipped at once (no more replanning time).
     // WHY: the ship must not fly into an intermediate rock. Runs before the approach (st_seek) and every PATH_CHECK_S during it (path_watch).
     bool path_guard(UObject* ship, int sid, MineSt& m, const Config& c, UObject* target, UObject* item)
     {
@@ -1179,6 +1240,17 @@ namespace
         double dist = 0.0, bc[3] = {0, 0, 0};
         const int bid = path_blocker(sys, ps, so, tid, dist, bc);
         if (!bid) return false;
+        if (g_appr[sid].rock != tid) appr_begin(sid, tid);
+        ApprRec& ar = g_appr[sid];
+        const ULONGLONG now = GetTickCount64();
+        if (ar.first_ms == 0) ar.first_ms = now;
+        if (appr_capped(ar.first_ms, now))
+        {
+            log_line(STR("APPROACH cap ship=") + std::to_wstring(sid) + STR(" rock=") + std::to_wstring(tid) + STR(" after ") +
+                     std::to_wstring(static_cast<long long>(APPR_CAP_S)) + STR(" s of path events: skipped"));
+            path_give_up(ship, sid, m, tid, bid, dist);
+            return true;
+        }
         // 1. retarget
         const int aid = alive(item) ? clear_rock_pick(sid, m, sys, ps, item, tid) : 0;
         if (aid)
@@ -1188,37 +1260,61 @@ namespace
             mv_cancel(sid); zero_all(ship);
             g_sel_rocks[sid] = aid;
             g_path_skip[sid].insert(tid);   // the blocked rock is out for this visit: each retarget removes one rock, so the chain ends
+            const int rt = ar.retargets + 1;
+            appr_done(sid, STR("skipped"));
             m.wp_n = 0; m.wp_on = false; m.path_t = 0.0;
             const std::wstring r = move_start(sid, "approach_rock", -1);
-            if (r == STR("waiting")) { m.rock = aid; m.seek_started = true; mset(sid, m, STR("approaching rock ") + std::to_wstring(aid)); }
+            if (r == STR("waiting"))
+            {
+                m.rock = aid; m.seek_started = true;
+                appr_begin(sid, aid);
+                g_appr[sid].retargets = rt;
+                mset(sid, m, STR("approaching rock ") + std::to_wstring(aid));
+            }
             else { m.seek_started = false; m.chk_t = MINE_ROCK_CHECK_S; mset(sid, m, STR("approach not started: ") + r); }
             return true;
         }
-        // 2. waypoint beside the blocker (the flight to it is an approach move job with a point target)
+        // 2. one waypoint plan beside the blocker: 4 candidates (2 offsets x 2 sides); the first whose legs ship->wp and wp->target are clear
         if (m.wp_n < PATH_WP_MAX)
         {
-            double wp[3];
-            path_waypoint(ps, so, bc, block_radius_id(bid), wp);
-            int64_t ch[3] = {0, 0, 0};
-            double raw[3] = {0, 0, 0};
-            if (sys > 0 && get_chunk(ship, ch) && get_loc(ship, raw))
+            const double dir[3] = {so[0] - ps[0], so[1] - ps[1], so[2] - ps[2]};
+            const double dn = std::max(1e-9, std::sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]));
+            const double u[3] = {dir[0] / dn, dir[1] / dn, dir[2] / dn};
+            const double br = block_radius_id(bid);
+            bool legs[4] = {false, false, false, false};
+            double wps[4][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
+            for (int k = 0; k < 4; ++k)
             {
-                const double off[3] = {wp[0] - ps[0], wp[1] - ps[1], wp[2] - ps[2]};
-                PtTarget pt;
-                pt.sys = sys;
-                dock_add_m(ch, raw, off, pt.ch, pt.loc);
-                mv_cancel(sid); zero_all(ship);
-                const std::wstring r = move_start(sid, "approach_rock", -1, nullptr, &pt);
-                if (r == STR("waiting"))
+                waypoint_candidate(k, bc, u, br, wps[k]);
+                double d2 = 0.0, c2[3], r2 = 0.0;
+                legs[k] = seg_blocker(sys, ps, wps[k], tid, path_clear_m(), true, d2, c2, r2) == 0 &&
+                          seg_blocker(sys, wps[k], so, tid, path_clear_m(), true, d2, c2, r2) == 0;
+            }
+            const int pick = waypoint_pick(legs, 4);
+            if (pick >= 0)
+            {
+                const double* wp = wps[pick];
+                int64_t ch[3] = {0, 0, 0};
+                double raw[3] = {0, 0, 0};
+                if (sys > 0 && get_chunk(ship, ch) && get_loc(ship, raw))
                 {
-                    ++m.wp_n; m.wp_on = true; m.seek_started = true; m.path_t = 0.0;
-                    log_path(sid, tid, bid, dist, STR("waypoint ") + std::to_wstring(m.wp_n));
-                    mlog(sid, STR("Path blocked by rock ") + std::to_wstring(bid) + STR(": waypoint ") + std::to_wstring(m.wp_n));
-                    return true;
+                    const double off[3] = {wp[0] - ps[0], wp[1] - ps[1], wp[2] - ps[2]};
+                    PtTarget pt;
+                    pt.sys = sys;
+                    dock_add_m(ch, raw, off, pt.ch, pt.loc);
+                    mv_cancel(sid); zero_all(ship);
+                    const std::wstring r = move_start(sid, "approach_rock", -1, nullptr, &pt);
+                    if (r == STR("waiting"))
+                    {
+                        ++m.wp_n; ++ar.wps; m.wp_on = true; m.seek_started = true; m.path_t = 0.0;
+                        log_path(sid, tid, bid, dist, STR("waypoint ") + std::to_wstring(m.wp_n) + STR(" candidate ") + std::to_wstring(pick));
+                        mlog(sid, STR("Path blocked by rock ") + std::to_wstring(bid) + STR(": waypoint ") + std::to_wstring(m.wp_n));
+                        return true;
+                    }
                 }
             }
         }
-        // 3. give the target up for this visit
+        // 3. no clear route and no clear waypoint: the target is given up for this visit
         path_give_up(ship, sid, m, tid, bid, dist);
         return true;
     }
@@ -1302,6 +1398,7 @@ namespace
                     begin_collect(ship, sid, m, 0, STR("leftovers collected, seeking next rock"));
                     return;
                 }
+                appr_done(sid, STR("mining"));
                 m.st = MS_MINE; m.t = 0.0; m.idle_t = 0.0; m.chk_t = 0.0;
                 m.rock_got = 0; m.abandon = nullptr;   // new rock: its own ore count (depletion rule), no rock abandoned yet
                 mine_fire(sid, true);
@@ -1353,7 +1450,7 @@ namespace
                 if (path_guard(ship, sid, m, c, rock, item)) return;   // blocked: retarget / waypoint / skip (the path is clear otherwise)
                 g_mv_res.erase(sid);
                 const std::wstring r = move_start(sid, "approach_rock", -1);
-                if (r == STR("waiting")) { m.seek_started = true; m.rock = g_mvs[sid].rock_id; mset(sid, m, STR("approaching rock ") + std::to_wstring(m.rock), STR("Approaching ") + item_name(c.resource) + STR(" rock ") + std::to_wstring(m.rock)); }
+                if (r == STR("waiting")) { m.seek_started = true; m.rock = g_mvs[sid].rock_id; appr_begin(sid, m.rock); mset(sid, m, STR("approaching rock ") + std::to_wstring(m.rock), STR("Approaching ") + item_name(c.resource) + STR(" rock ") + std::to_wstring(m.rock)); }
                 else
                 {
                     mset(sid, m, STR("approach not started: ") + r);

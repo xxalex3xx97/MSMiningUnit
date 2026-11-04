@@ -60,6 +60,8 @@ namespace
             {STR("record_interval_seconds"), std::to_wstring(c.record_interval_seconds)},
             {STR("kill_switch"), std::to_wstring(c.kill_switch ? 1 : 0)},
             {STR("flee_on_target"), std::to_wstring(c.flee_on_target)},
+            {STR("path_clearance_m"), std::to_wstring(c.path_clearance_m)},
+            {STR("bubble_clearance_m"), std::to_wstring(c.bubble_clearance_m)},
             {STR("mining_distance"), STR("'") + widen(c.mining_distance) + STR("'")},
             {STR("fuel_margin"), std::to_wstring(c.fuel_margin)},
             {STR("fuel_amount"), std::to_wstring(c.fuel_amount)},
@@ -151,6 +153,10 @@ namespace
                      "record_interval_seconds=2\n"
                      "# flee_on_target: 1 = a ship targeted by a hostile (2 samples in a row) or in combat flees to a dock like after a hull hit (global only)\n"
                      "flee_on_target=1\n"
+                     "# path_clearance_m: clear-path check, metres kept from a rock beyond its block radius (0-100, global only)\n"
+                     "path_clearance_m=8\n"
+                     "# bubble_clearance_m: bubble reflex, metres beyond ship radius + rock block radius (0-100, global only)\n"
+                     "bubble_clearance_m=10\n"
                      "# refuel_dock_id: numeric dock id OR in-game dock name of the refuel dock (empty = none; per-ship key allowed)\n"
                      "refuel_dock_id=\n";
                 Output::send<LogLevel::Normal>(STR("[MiningBenchMod] created default {}\n"), path.wstring());
@@ -203,6 +209,8 @@ namespace
             ensure_key("kill_switch", "0", "kill_switch: 1 = the mod stops touching the game completely (hot reload, global only)");
             ensure_key("watchdog", "1", "watchdog: 1 = freeze watchdog: if the game thread does not tick for 10 s, MiningFreeze.txt gets its stack (max 20 lines); 0 = off (global only)");
             ensure_key("flee_on_target", "1", "flee_on_target: 1 = a ship targeted by a hostile or in combat flees to a dock like after a hull hit (global only)");
+            ensure_key("path_clearance_m", "8", "path_clearance_m: clear-path check clearance in m beyond the rock block radius, 0-100 (global only)");
+            ensure_key("bubble_clearance_m", "10", "bubble_clearance_m: bubble reflex clearance in m beyond ship radius + rock block radius, 0-100 (global only)");
             ensure_key("warp_range", "50km", "warp_range: belt mode: a rock farther than this from the ship is not flown to, the ship warps to the next sector instead; also caps radius (m/km, empty/0 = 50km; per-ship key allowed)");
             ensure_key("mining_distance", "50m", "mining_distance: distance from the rock in m/km, e.g. 200m (empty = 50m; per-ship key allowed)");
             ensure_key("fuel_margin", "0", "fuel_margin: int fuel margin, 0 = unset (per-ship key allowed)");
@@ -263,6 +271,8 @@ namespace
             if (kv.count("kill_switch")) nc.kill_switch = to_int(kv["kill_switch"], 0) != 0;
             if (kv.count("watchdog")) nc.watchdog = to_int(kv["watchdog"], 1) != 0;
             if (kv.count("flee_on_target")) nc.flee_on_target = to_int(kv["flee_on_target"], 1) != 0 ? 1 : 0;
+            if (kv.count("path_clearance_m")) nc.path_clearance_m = std::clamp(to_int(kv["path_clearance_m"], 8), 0, 100);
+            if (kv.count("bubble_clearance_m")) nc.bubble_clearance_m = std::clamp(to_int(kv["bubble_clearance_m"], 10), 0, 100);
             if (nc.log_interval_seconds < 1) nc.log_interval_seconds = 1;
             // WHAT: wait and per-fuel keys (global only). An empty or non-number value falls back to the struct default (to_int).
             // WHY: the INI may predate these keys; ensure_key below adds them on first load.

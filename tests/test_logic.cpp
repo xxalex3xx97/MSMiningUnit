@@ -1360,7 +1360,7 @@ static void t_bubble()
     CHECK(bubble_look_ahead(20.0) == 100.0);               // 80 m < minimum
     CHECK(bubble_look_ahead(50.0) == 200.0);               // 4 s x 50 m/s
     CHECK(bubble_look_ahead(-5.0) == 100.0);
-    CHECK(bubble_clear_m(12.0) == 42.0);                   // ship radius + 30 m
+    CHECK(bubble_clear_m(12.0, 30.0) == 42.0);             // ship radius + 30 m clearance
     RockReg g;
     reg_add(g, 1, 7, 150, 0, 0, nullptr, 8.0);             // on the nose
     reg_add(g, 2, 7, 150, 60, 0, nullptr, 8.0);            // 60 m off: 8 + 42 = 50 < 60, clear
@@ -1368,16 +1368,16 @@ static void t_bubble()
     reg_add(g, 4, 7, 400, 0, 0, nullptr, 8.0);             // beyond the look-ahead
     const double a[3] = {0, 0, 0}, b[3] = {200, 0, 0};
     double d = 0.0;
-    size_t i = g.first_blocker(7, a, b, bubble_clear_m(12.0), nullptr, 0, nullptr, 0.0, d);
+    size_t i = g.first_blocker(7, a, b, bubble_clear_m(12.0, 30.0), nullptr, 0, nullptr, 0.0, d);
     CHECK(i != RockReg::npos && g.rocks[i].id == 1 && std::fabs(d) < 1e-9);
-    i = g.first_blocker(7, a, b, bubble_clear_m(12.0), nullptr, 1, nullptr, 0.0, d);   // target excluded (stand-off phase)
+    i = g.first_blocker(7, a, b, bubble_clear_m(12.0, 30.0), nullptr, 1, nullptr, 0.0, d);   // target excluded (stand-off phase)
     CHECK(i != RockReg::npos && g.rocks[i].id == 3 && std::fabs(d - 49.0) < 1e-9);
     RockReg u;
     reg_add(u, 9, 7, 150, 60, 0);                          // radius unknown: 35 m until read, 35 + 42 = 77 > 60 blocks
-    CHECK(u.first_blocker(7, a, b, bubble_clear_m(12.0), nullptr, 0, nullptr, 0.0, d) != RockReg::npos);
+    CHECK(u.first_blocker(7, a, b, bubble_clear_m(12.0, 30.0), nullptr, 0, nullptr, 0.0, d) != RockReg::npos);
     RockReg v;
     reg_add(v, 9, 7, 150, 0, 0, nullptr, 8.0);
-    CHECK(v.first_blocker(7, a, b, bubble_clear_m(12.0), nullptr, 9, nullptr, 0.0, d) == RockReg::npos);   // only the target is there
+    CHECK(v.first_blocker(7, a, b, bubble_clear_m(12.0, 30.0), nullptr, 9, nullptr, 0.0, d) == RockReg::npos);   // only the target is there
 }
 
 // bubble ladder (bubble_step): brake on a hit, replan after the stop, give up after BUBBLE_MAX_REPLAN replans
@@ -1434,6 +1434,50 @@ static void t_bubble_scope()
     BubbleState s;
     s.wp = 1; s.resume = true; s.dst[0] = 5.0;
     CHECK(s.wp == 1 && s.resume && s.dst[0] == 5.0);
+}
+
+// tuning (fix/0.2.3-tune): block radius, leg clearance, waypoint candidates and pick, retarget score, 60 s approach cap
+static void t_tune_geom()
+{
+    CHECK(std::fabs(block_r_m(10.0, 8.0) - 16.0) < 1e-9);          // 10 x 0.8 + 8
+    CHECK(std::fabs(block_r_m(35.0, 8.0) - 36.0) < 1e-9);          // 35 x 0.8 + 8
+    CHECK(std::fabs(block_r_m(-1.0, 8.0) - 8.0) < 1e-9);           // negative radius counts as 0
+    // side points: dir along +X, centre at (100,0,0), offset 50: side +1 is -Y, side -1 is +Y
+    const double c[3] = {100, 0, 0}, dx[3] = {1, 0, 0}, dz[3] = {0, 0, 1};
+    double o[3];
+    side_point(c, dx, 50.0, 1, o);
+    CHECK(std::fabs(o[0] - 100) < 1e-9 && std::fabs(o[1] + 50) < 1e-9 && std::fabs(o[2]) < 1e-9);
+    side_point(c, dx, 50.0, -1, o);
+    CHECK(std::fabs(o[1] - 50) < 1e-9);
+    side_point(c, dz, 50.0, 1, o);                                  // dir along Z: +Y fallback
+    CHECK(std::fabs(o[1] - 50) < 1e-9 && std::fabs(o[0] - 100) < 1e-9);
+    // candidates: 0 = +1.0x, 1 = -1.0x, 2 = +1.6x, 3 = -1.6x (block radius 20)
+    double w[3];
+    waypoint_candidate(0, c, dx, 20.0, w); CHECK(std::fabs(w[1] + 20) < 1e-9);
+    waypoint_candidate(1, c, dx, 20.0, w); CHECK(std::fabs(w[1] - 20) < 1e-9);
+    waypoint_candidate(2, c, dx, 20.0, w); CHECK(std::fabs(w[1] + 32) < 1e-9);
+    waypoint_candidate(3, c, dx, 20.0, w); CHECK(std::fabs(w[1] - 32) < 1e-9);
+    const bool none[4] = {false, false, false, false};
+    const bool second[4] = {false, true, false, true};
+    CHECK(waypoint_pick(none, 4) == -1);
+    CHECK(waypoint_pick(second, 4) == 1);                            // first clear candidate in order
+    // leg clearance through path_first_blocker: rock at 20 m off a 1 km leg blocks (block 36), at 50 m does not (block 14.4)
+    const double a[3] = {0, 0, 0}, b[3] = {1000, 0, 0};
+    PathRock pr[2];
+    pr[0].c[0] = 500; pr[0].c[1] = 20; pr[0].c[2] = 0; pr[0].r = block_r_m(35.0, 8.0);
+    pr[1].c[0] = 500; pr[1].c[1] = 50; pr[1].c[2] = 0; pr[1].r = block_r_m(8.0, 8.0);
+    double dd = 0.0;
+    CHECK(path_first_blocker(a, b, pr, 1, dd) == 0);
+    CHECK(path_first_blocker(a, b, pr + 1, 1, dd) == -1);
+    // retarget score: a blocked candidate loses to a clear one unless it is 1500 m nearer
+    CHECK(std::fabs(pick_score(100.0, false) - 100.0) < 1e-9);
+    CHECK(pick_score(500.0, true) > pick_score(1000.0, false));
+    CHECK(pick_score(2000.0, true) > pick_score(1000.0, false));
+    // 60 s cap from the first path event
+    CHECK(!appr_capped(0, 999999));                                  // no path event yet
+    CHECK(!appr_capped(10000, 69999));
+    CHECK(appr_capped(10000, 70000));
+    CHECK(!appr_capped(70000, 80000) && appr_capped(70000, 130000));
 }
 
 static void t_reg_targeted_ore_budget()
@@ -1849,7 +1893,7 @@ int main()
         {"path_block", t_path_block}, {"path_perf", t_path_perf}, {"path_waypoint", t_path_waypoint}, {"shield_drop", t_shield_drop}, {"fast_sample", t_fast_sample},
         {"rock_depleted", t_rock_depleted},
         {"reg_table", t_reg_table}, {"reg_events", t_reg_events}, {"reg_within_nearest", t_reg_within_nearest}, {"reg_surface_block", t_reg_surface_block_radius},
-        {"approach_throttle", t_approach_throttle}, {"bubble", t_bubble}, {"bubble_ladder", t_bubble_ladder}, {"bubble_scope", t_bubble_scope},
+        {"approach_throttle", t_approach_throttle}, {"bubble", t_bubble}, {"bubble_ladder", t_bubble_ladder}, {"bubble_scope", t_bubble_scope}, {"tune_geom", t_tune_geom},
         {"reg_targeted_ore_budget", t_reg_targeted_ore_budget}, {"reg_bench", t_reg_bench}, {"reg_abs_m", t_reg_abs_m},
         {"box_probe_parse", t_box_probe_parse}, {"box_probe_uu_fwd", t_box_probe_uu_fwd}, {"reg_check_summary", t_reg_check_summary},
         {"reg_cache_round_trip", t_reg_cache_round_trip}, {"reg_cache_reject", t_reg_cache_reject}, {"reg_cache_verdict", t_reg_cache_verdict},

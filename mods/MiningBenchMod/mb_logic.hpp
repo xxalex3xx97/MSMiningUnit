@@ -85,6 +85,8 @@ namespace
         bool kill_switch = false;            // 1 = the mod stops touching the game completely (hot reload). Global only. (INI: kill_switch)
         bool watchdog = true;                // 1 = freeze watchdog on: MiningFreeze.txt lines when the game thread stalls 10 s. Global only. (INI: watchdog)
         int flee_on_target = 1;              // 1 = a ship targeted by a hostile (or in combat) flees to a dock like after a hull hit. Global only. (INI: flee_on_target)
+        int path_clearance_m = 8;            // clear-path check: extra clearance (m) beyond the rock block radius. Global only. (INI: path_clearance_m)
+        int bubble_clearance_m = 10;         // bubble reflex: extra clearance (m) beyond ship radius + rock block radius. Global only. (INI: bubble_clearance_m)
         // text distance, e.g. 50km: belt mode only. Rocks farther than this from the ship count as none (the ship warps instead of flying there), and radius is capped by it. Empty/0/bad = 50 km. Per-ship. (INI: warp_range)
         std::string warp_range = "50km";
         std::string mining_distance = "50m";    // per-ship: mining distance from the rock, e.g. 200m / 0.2km (empty = unset)
@@ -544,12 +546,16 @@ namespace
     }
 
     // ---------- clear-path check for approaches (segment ship -> stand-off point against rock spheres) ----------
-    constexpr double SHIP_CLEARANCE_M = 300.0;       // a rock blocks when its centre is closer than radius + this to the path (m)
-    constexpr double HAZARD_CLEAR_EXTRA_M = 500.0;   // hazard rocks: extra clearance on top of SHIP_CLEARANCE_M (m)
+    // Clearance of the path check is the config key path_clearance_m (Config, default 8 m). A rock blocks when its centre is closer than
+    // block_r_m(rock radius, clearance) to the segment. The rock radius is scaled by ROCK_BLOCK_SCALE (rocks are not perfect spheres).
+    constexpr double ROCK_BLOCK_SCALE = 0.8;         // blocking radius = rock radius x this + clearance (registry data unchanged)
+    constexpr double HAZARD_CLEAR_EXTRA_M = 100.0;   // hazard rocks: extra clearance on top of the path clearance (m)
+    constexpr double PATH_BLOCK_PENALTY_M = 1500.0;  // retarget scoring: a candidate whose straight path is blocked is this many m farther away
     constexpr double SLOW_ZONE_M = 500.0;            // fast-sample range: a rock this close (surface, m) to a ship gets the fast hull/shield watch
     constexpr double HAZARD_BLOCK_M = 1500.0;        // hazard hit: rocks this close (surface, m) are marked; the back-out distance is HAZARD_BACKOUT_M
     constexpr double HAZARD_BACKOUT_M = 1500.0;
-    constexpr int PATH_WP_MAX = 3;                   // waypoints per approach before the target is skipped for this visit
+    constexpr int PATH_WP_MAX = 1;                   // waypoints per approach before the target is skipped for this visit (one plan, 4 candidates)
+    constexpr double APPR_CAP_S = 60.0;              // a target not mined within this many s of its first path event is skipped (s)
     constexpr double PATH_CHECK_S = 1.0;             // clear-path re-check period while an approach runs (s)
     constexpr double FAST_SAMPLE_S = 0.25;           // hull/shield sample period near rock (s); elsewhere 1 s
     constexpr double APPROACH_RAMP_M = 500.0;        // approach: full Throttle beyond this distance to the stand-off point (m), linear ramp inside
@@ -643,7 +649,6 @@ namespace
     inline bool path_watch_due(double t) { return t >= PATH_WATCH_S; }
 
     // ---------- bubble: reflex brake before a rock on the nose (mb_bubble.hpp) ----------
-    constexpr double BUBBLE_CLEARANCE_M = 30.0;      // bubble = ship CollisionRadius + rock radius + this (m)
     constexpr double BUBBLE_LOOK_MIN_M = 100.0;      // look-ahead never shorter than this (m)
     constexpr double BUBBLE_LOOK_S = 4.0;            // look-ahead = speed x this (s), along the nose
     constexpr double BUBBLE_BRAKE_V = 3.0;           // braking ends below this speed (m/s)
@@ -653,8 +658,39 @@ namespace
 
     // WHAT: look-ahead length (m) for speed_mps (m/s): speed x BUBBLE_LOOK_S, at least BUBBLE_LOOK_MIN_M.
     inline double bubble_look_ahead(double speed_mps) { return std::max(BUBBLE_LOOK_MIN_M, std::max(0.0, speed_mps) * BUBBLE_LOOK_S); }
-    // WHAT: clearance (m) passed to the registry first_blocker for a ship of collision radius ship_r (m): the rock radius is added by the query.
-    inline double bubble_clear_m(double ship_r) { return ship_r + BUBBLE_CLEARANCE_M; }
+    // WHAT: clearance (m) for a ship of collision radius ship_r (m) and bubble clearance clr (m, config bubble_clearance_m). The rock block radius is added by block_r_m.
+    inline double bubble_clear_m(double ship_r, double clr) { return ship_r + clr; }
+
+    // ---------- blocking geometry and waypoint plan (stage tune) ----------
+    // WHAT: blocking radius (m) of a rock: its radius x ROCK_BLOCK_SCALE + clear_m (clearance, m).
+    inline double block_r_m(double rock_r, double clear_m) { return std::max(0.0, rock_r) * ROCK_BLOCK_SCALE + clear_m; }
+    // WHAT: waypoint candidate beside a blocker: point at distance off (m) from its centre c, perpendicular to the ship->target direction dir (unit),
+    //       on side (+1 / -1). The perpendicular is dir x Z (+Y when dir is along Z).
+    inline void side_point(const double c[3], const double dir[3], double off, int side, double out[3])
+    {
+        double u[3] = {dir[1], -dir[0], 0.0};
+        double n = std::sqrt(u[0] * u[0] + u[1] * u[1]);
+        if (n < 1e-9) { u[0] = 0.0; u[1] = 1.0; n = 1.0; }
+        for (int i = 0; i < 3; ++i) out[i] = c[i] + static_cast<double>(side) * u[i] / n * off;
+    }
+    // WHAT: retarget score of a candidate rock: its distance (m) plus PATH_BLOCK_PENALTY_M when its straight path is blocked. Lower is better.
+    inline double pick_score(double dist_m, bool blocked) { return dist_m + (blocked ? PATH_BLOCK_PENALTY_M : 0.0); }
+    // WHAT: waypoint candidate k (0..3) beside a blocker: k 0 = +side at 1.0 x block radius, 1 = -side at 1.0x, 2 = +side at 1.6x, 3 = -side at 1.6x.
+    //       c = blocker centre (m), u = unit ship->target direction, br = blocker block radius (m). out = point (m).
+    inline void waypoint_candidate(int k, const double c[3], const double u[3], double br, double out[3])
+    {
+        const double factor = (k / 2) ? 1.6 : 1.0;
+        const int side = (k % 2) ? -1 : 1;
+        side_point(c, u, br * factor, side, out);
+    }
+    // WHAT: index of the first waypoint candidate whose two legs are clear (leg_clear[k] = ship->wp and wp->target both clear), -1 when none.
+    inline int waypoint_pick(const bool* leg_clear, int n)
+    {
+        for (int k = 0; k < n; ++k) if (leg_clear[k]) return k;
+        return -1;
+    }
+    // WHAT: the approach of a target has run APPR_CAP_S since its first path event (first_ms, 0 = no event yet). now_ms in GetTickCount64 ms.
+    inline bool appr_capped(uint64_t first_ms, uint64_t now_ms) { return first_ms != 0 && now_ms - first_ms >= static_cast<uint64_t>(APPR_CAP_S * 1000.0); }
 
     // WHAT: bubble ladder action. NONE = nothing; BRAKE = hit seen, throttle cut (the log line names the next action); REPLAN = after braking,
     //       path_guard against the target with the blocker skipped; RETARGET = after BUBBLE_MAX_REPLAN replans, the target is given up.
@@ -1338,6 +1374,8 @@ namespace
         {"warp_range", 1000, 100000, true, true},
         {"mining_distance", 1, 5000, false, true},
         {"flee_on_target", 0, 1, true, false},
+        {"path_clearance_m", 0, 100, true, false},
+        {"bubble_clearance_m", 0, 100, true, false},
     };
 
     // WHAT: the bound row for key, nullptr when the key is not bounded.
