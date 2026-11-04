@@ -98,6 +98,7 @@ namespace
         std::wstring col_why;                  // MS_COLLECT: reason it started (text shown at the end)
         double col_t = 0.0, col_stall = 0.0, col_scan_t = 0.0;   // MS_COLLECT: seconds total / since ore count dropped / since the last scan
         int col_last = -1;                     // MS_COLLECT: floating ore count at the last scan (-1 none, 0 scan failed)
+        UObject* abandon = nullptr;            // rock left by the idle watchdog: the next SEEK skips it once (mined anyway when it is the only rock)
         bool sweep = false;                    // MS_SWEEP active (collect ore action)
         int sw_ph = 0, sw_rescans = 0, sw_sys = 0;   // MS_SWEEP phase (SW_*), rescans left, saved system id
         int64_t sw_ch[3] = {0, 0, 0};          // MS_SWEEP: saved ship chunk (return point)
@@ -109,8 +110,25 @@ namespace
         int sw_found = -1;                     // MS_SWEEP: BP_FloatingOre_C count of the last scan (-1 none yet)
         bool sw_frame = false;                 // MS_SWEEP: ship frame readable at the last scan
         int sw_undock_n = 0;                   // MS_SWEEP: undock tries while docked and position unreadable (guard)
+        int noy_run = 0;                       // consecutive MINE idle-watchdog exits with no ore gained (reset: ore gained, dock/unload, Start)
+        std::map<int, int> noy_visits;         // per rock id: consecutive no-yield visits (reset when ore is gained on it; cleared on a new row and Start)
+        std::set<int> noy_skip;                // rock ids the rock search leaves out after NOY_SKIP_VISITS no-yield visits (cleared on a new row and Start)
+        int lost_n = 0;                        // consecutive "rock lost" approach results in SEEK (reset on approach ok and Start)
+        int idle_polls = 0;                    // consecutive CHECK returns to OFF with nothing in range (belt off); reset on rock found and Start
+        double dwait_total = 0.0;              // seconds waited for a dock in this trip (dwait); reset per trip, capped by MINE_DWAIT_MAX_S
+        // combat (target_sample, hull_watch, combat_record): sampled once a second; the flee trigger reads tgt_streak / combat_now / tgt_latch
+        int tgt_streak = 0, tgt_n = 0;         // consecutive samples with a hostile targeter; hostile targeters at the last sample
+        bool combat_now = false;               // IsShipInCombat() at the last sample
+        bool tgt_latch = false;                // a flee for this attack already started (cleared when the attack is over)
+        bool atk_on = false;                   // an attack episode is running (sector text is read once per episode and per 30 s summary)
+        int32_t hw = -1, hull_max = 0;         // Health at the last 1 s sample (hull watch: logs drops, separate from the flee baseline hull); MaxHealth
+        double flee_t = -1.0;                  // seconds since the flee started (-1 = no flee running)
+        double atk_acc = 0.0;                  // seconds in an attack since the last 30 s summary
+        std::wstring atk_txt = STR("none");    // attackers at the last attacked sample (kept after the attack: the destroyed record uses it)
+        std::wstring chunk_txt = STR("n/a"), sec_txt = STR("n/a");   // ship chunk (last attacked sample) / sector id and name
     };
     std::map<int, MineSt> g_mine;
+    std::map<int, int> g_mine_fault_n;   // per ship: SEH faults since its Start (mine_fault); reset by Start
 
     // WHAT: Log tab. Per ship, the last MINE_LOG_KEEP lines (local time hh:mm:ss + user-readable text), oldest first. Written to MiningLog.txt.
     constexpr size_t MINE_LOG_KEEP = 20;
@@ -145,6 +163,11 @@ namespace
     std::vector<int> g_bench_ids;
     std::map<int, std::wstring> g_bench_names;   // ship display name per bench ship id (status file)
     double g_mine_status_acc = 0.0;
+    // WHAT: last 5 state lines per ship (state name: text), oldest first. Written into the destroyed record.
+    std::map<int, std::vector<std::wstring>> g_state_ring;
+    // WHAT: destroyed bench ships of this session: "<name> (destroyed)" and the Log tab lines kept at the purge (MiningLog.txt). Cleared by a game restart (the DLL reloads).
+    struct DestroyedLog { std::wstring name; std::vector<MineLogLine> lines; };
+    std::map<int, DestroyedLog> g_destroyed;
 
     // WHAT: m.trip is the refuel trip (dock_refuel); else unload (dock_mining).
     bool is_refuel(const MineSt& m) { return m.trip == "dock_refuel"; }
@@ -158,8 +181,39 @@ namespace
         if (m.result == text) return;
         m.result = text;
         log_line(STR("MINE ship=") + std::to_wstring(sid) + STR(" [") + mine_state_name(m.st) + STR("] ") + text);
+        auto& ring = g_state_ring[sid];
+        ring.push_back(std::wstring(mine_state_name(m.st)) + STR(": ") + text);
+        if (ring.size() > 5) ring.erase(ring.begin());
         if (!shown.empty()) mlog(sid, shown);
         else if (text.rfind(STR("at dock, waiting"), 0) != 0) mlog(sid, m.st == MS_HALT ? STR("Stopped: ") + text : text);   // per-item countdown would flood the 20-line ring
+    }
+
+    // WHAT: one combat line for ship sid (UE4SS log + MiningCombat.txt): head (trigger), hull, chunk, sector, position, speed, state, the attackers at the last attacked sample.
+    //       full = also the last 5 states and the last 10 Log tab lines (the destroyed record).
+    // WHY: a loss must be explainable from MiningCombat.txt alone; a destroyed ship cannot be read, so the attackers are the last-known ones (MineSt values).
+    void combat_record(int sid, const MineSt& m, const std::wstring& head, bool full)
+    {
+        const auto nm = g_bench_names.find(sid);
+        std::wstring s = STR("COMBAT ") + head + STR(" ship=") + std::to_wstring(sid) + STR(" '") + (nm != g_bench_names.end() ? nm->second : STR("?")) + STR("'") +
+                         STR(" hull=") + std::to_wstring(m.hw) + STR("/") + std::to_wstring(m.hull_max) +
+                         STR(" chunk=") + m.chunk_txt + STR(" sector=") + m.sec_txt +
+                         STR(" pos=") + std::to_wstring(static_cast<long long>(m.pos[0] / 100.0)) + STR(",") + std::to_wstring(static_cast<long long>(m.pos[1] / 100.0)) + STR(",") + std::to_wstring(static_cast<long long>(m.pos[2] / 100.0)) + STR("m") +
+                         STR(" speed=") + std::to_wstring(static_cast<long long>(m.spd)) + STR("m/s state=") + mine_state_name(m.st) + STR(" result='") + m.result + STR("'") +
+                         STR(" hostile=") + std::to_wstring(m.tgt_n) + STR(" combat=") + (m.combat_now ? STR("1") : STR("0")) + STR(" attackers: ") + m.atk_txt;
+        if (full)
+        {
+            s += STR(" | states:");
+            const auto rg = g_state_ring.find(sid);
+            if (rg != g_state_ring.end()) for (const auto& x : rg->second) s += STR(" [") + x + STR("]");
+            s += STR(" | log tail:");
+            const auto lg = g_mine_log.find(sid);
+            if (lg != g_mine_log.end())
+            {
+                const size_t from = lg->second.size() > 10 ? lg->second.size() - 10 : 0;
+                for (size_t i = from; i < lg->second.size(); ++i) s += STR(" [") + lg->second[i].hms + STR(" ") + lg->second[i].text + STR("]");
+            }
+        }
+        combat_log(s);
     }
 
     // laser + tractor on/off through the Test-command code (seq -1: no command result is touched)
@@ -181,13 +235,14 @@ namespace
 
 
     // nearest rock holding `item` measured from the anchor (not the ship); nullptr when none or outside the radius
-    UObject* rock_in_range(int sid, const double anchor[3], UObject* item, double rad_m)
+    // skip_ids: no-yield rock ids left out (MineSt::noy_skip)
+    UObject* rock_in_range(int sid, const double anchor[3], UObject* item, double rad_m, UObject* skip = nullptr, const std::set<int>* skip_ids = nullptr)
     {
         rock_list_ensure();
         ActFrame f;
         std::copy(anchor, anchor + 3, f.loc);
         ActAim r;
-        UObject* a = nearest_item_actor(sid, f, item, r);
+        UObject* a = nearest_item_actor(sid, f, item, r, skip, skip_ids);
         if (!a || !actor_ok(a)) return nullptr;
         if (rad_m > 0.0 && r.dist_m > rad_m) return nullptr;
         return a;
@@ -296,23 +351,34 @@ namespace
         try { write_atomic(get_dll_dir() / "MiningOre.txt", std::to_string(n) + "|" + std::to_string(static_cast<long long>(std::time(nullptr))) + "\n"); } catch (...) {}
     }
 
+    // WHAT: the ore pass under SEH (see ore_scan): FindAllOf, then one K2 position per live actor into list.
+    // WHY a plain function with a context: seh_run needs a function without __try-blocking objects; the vector work is in here.
+    struct OrePassCtx { std::vector<UObject*>* v; std::vector<OreEnt>* list; };
+    void ore_pass_fn(void* p)
+    {
+        auto* c = static_cast<OrePassCtx*>(p);
+        UObjectGlobals::FindAllOf(STR("BP_FloatingOre_C"), *c->v);
+        for (UObject* a : *c->v)
+        {
+            g_ore_gone.erase(a);           // the engine lists it now: a re-used address is live again
+            if (!alive_seh(a)) continue;   // ore actors are not in the rock lists: actor_ok would always fail
+            OreEnt e;
+            e.a = a;
+            std::wstring why;
+            if (!actor_vec_call(a, STR("K2_GetActorLocation"), e.p, why)) continue;
+            c->list->push_back(e);
+        }
+    }
+
     // WHAT: the shared scan. Refreshed when forced or older than ORE_SCAN_MS (ore_scan_due). Returns the cache (valid until the next call).
     OreScan& ore_scan(bool force)
     {
         const ULONGLONG now = GetTickCount64();
         if (!ore_scan_due(force, g_ore_scan.ms, now, ORE_SCAN_MS)) return g_ore_scan;
         std::vector<UObject*> v;
-        UObjectGlobals::FindAllOf(STR("BP_FloatingOre_C"), v);
         g_ore_scan.list.clear();
-        for (UObject* a : v)
-        {
-            if (!alive_seh(a)) continue;   // ore actors are not in the rock lists: actor_ok would always fail
-            OreEnt e;
-            e.a = a;
-            std::wstring why;
-            if (!actor_vec_call(a, STR("K2_GetActorLocation"), e.p, why)) continue;
-            g_ore_scan.list.push_back(e);
-        }
+        OrePassCtx oc{&v, &g_ore_scan.list};
+        if (!seh_run(ore_pass_fn, &oc)) log_line(STR("MINE ore scan faulted: ") + seh_describe(g_seh));
         g_ore_scan.found = (int)v.size();
         g_ore_scan.ms = now;
         ore_publish(g_ore_scan.list.size());
@@ -333,7 +399,7 @@ namespace
             double d[3] = {e.p[0] - f.loc[0], e.p[1] - f.loc[1], e.p[2] - f.loc[2]};
             if (norm3(d) / MV_UU_PER_M <= range_m)
             {
-                if (!alive_seh(e.a)) { sc.list.erase(sc.list.begin() + (std::ptrdiff_t)i); continue; }   // picked up / gone
+                if (!ore_ok(e.a)) { sc.list.erase(sc.list.begin() + (std::ptrdiff_t)i); continue; }   // picked up / gone
                 ++n;
             }
             ++i;
@@ -470,8 +536,18 @@ namespace
         log_line(STR("NET dock=") + std::to_wstring(did) + STR(" FULL by=") + std::to_wstring(sid));
         cancel_dock_job(ship, sid);
         g_job_res.erase(sid);
+        // WHY: each full-dock redock counts as a dock time limit round (dl_n, same limit as MINE_DOCK_RETRIES), so the cycle ends in HALT
+        const bool give_up = dock_limit_giveup(m.dl_n);
+        if (!give_up) ++m.dl_n;
         const std::wstring ur = job_start(sid, "undock", -1);
         if (undock_failed(ur)) { m.st = MS_HALT; m.err = true; mset(sid, m, STR("ERROR: undock failed: ") + ur, STR("ERROR: undock failed: ") + ur); return; }
+        if (give_up)
+        {
+            const std::wstring idle = STR("Dock full ") + std::to_wstring(MINE_DOCK_RETRIES) + STR(" times, undocked, idle");
+            m.dl_n = 0; m.fin = false; m.st = MS_HALT;
+            mset(sid, m, idle, idle);
+            return;
+        }
         m.st = MS_DLWAIT; m.dl_wait_t = MINE_DOCK_RETRY_WAIT_S; m.left_last.clear();   // MS_DLWAIT: undock finishes, then the dock trip runs again at once
         mset(sid, m, STR("Dock full, undocking to try the next dock"), STR("Dock full, next dock"));
     }
@@ -515,7 +591,7 @@ namespace
         g_job_res.erase(sid);
         const std::wstring r = job_start(sid, m.trip, -1);
         m.t = 0.0; m.seek_started = false; m.no_rock = false;
-        m.err = false; m.dwait = false; m.warp_to = 0;
+        m.err = false; m.dwait = false; m.warp_to = 0; m.dwait_total = 0.0;
         m.wait_gate = LogGate(); m.q_gate = LogGate();   // a new trip starts its own wait lines
         if (r == STR("waiting dock")) { m.st = MS_TRIP; m.dwait = true; m.dwait_t = 0.0; m.dwait_shown = -1.0; dock_wait_text(sid, m); return; }
         if (r == STR("nothing to unload")) { g_flee_pick.erase(sid); m.st = MS_HALT; mset(sid, m, STR("Nothing to unload")); return; }
@@ -542,6 +618,7 @@ namespace
         run_cmd(-1, sid, "tractor_on");
         mv_cancel(sid);
         zero_all(ship);
+        ore_scan(true);   // fresh floating ore list: the shared cache can be a minute old
         m.st = MS_COLLECT; m.t = 0.0; m.col_t = 0.0; m.col_stall = 0.0; m.col_scan_t = COLLECT_SCAN_S; m.col_last = -1;
         m.col_next = kind; m.col_why = text;
         mset(sid, m, STR("collecting leftover ore"), STR("Collecting leftover ore"));
@@ -581,10 +658,17 @@ namespace
     void trip_end(UObject* ship, int sid, MineSt& m, const Config& c)
     {
         std::wstring err;
+        m.noy_run = 0;   // unloaded: the no-yield run starts over
         set_autopilot(sid, false, err);
         zero_all(ship);
         // hull hit: fled to dock, the trip is over for good
-        if (m.flee) { m.flee = false; m.fin = false; m.err = true; m.st = MS_HALT; mset(sid, m, STR("ERROR: hull damaged, fled, holding near dock, stopped"), STR("ERROR: ship was attacked, fled, holding near dock, stopped")); return; }
+        if (m.flee)
+        {
+            combat_log(STR("COMBAT flee arrived ship=") + std::to_wstring(sid) + STR(" docked after ") + std::to_wstring(static_cast<int>(m.flee_t)) + STR(" s, trip done"));
+            m.flee = false; m.flee_t = -1.0; m.fin = false; m.err = true; m.st = MS_HALT;
+            mset(sid, m, STR("ERROR: hull damaged, fled, holding near dock, stopped"), STR("ERROR: ship was attacked, fled, holding near dock, stopped"));
+            return;
+        }
         // unload chain: another dock trip while docked ores are still in cargo and it shrank; an ore with no dock left = HALT
         if (!is_refuel(m) && !g_dock_pick.count(sid))
         {
@@ -636,15 +720,28 @@ namespace
         return alive(ctrl) && get_int_prop(ship, STR("PilotID"), p) && p == obj_id(ctrl);
     }
 
-    void flee_now(UObject* ship, int sid, MineSt& m, int32_t was, int32_t h)
+    // WHAT: starts the flee: stop work, dock trip (purpose P_FLEE), trip_end halts at the dock. why = trigger text ("hull hit 350 -> 320", "targeted by 2, combat 1").
+    //       The attacker record is written before the stop, so it shows the state the ship was in when it was hit.
+    void flee_now(UObject* ship, int sid, MineSt& m, const std::wstring& why)
     {
+        combat_record(sid, m, STR("FLEE ") + why, false);
         m.hull = -1;
         mine_stop_work(ship, sid);
-        m.flee = true; m.leave = false;
-        mlog(sid, STR("ERROR: hull hit (") + std::to_wstring(was) + STR(" -> ") + std::to_wstring(h) + STR("), fleeing to dock"));
+        m.flee = true; m.leave = false; m.flee_t = 0.0;
+        mlog(sid, STR("ERROR: ") + why + STR(", fleeing to dock"));
         g_flee_pick.insert(sid);   // dock pick purpose P_FLEE (mb_net.hpp)
-        trip_begin(ship, sid, m, STR("hull hit ") + std::to_wstring(was) + STR(" -> ") + std::to_wstring(h), "dock_mining");
-        if (m.st == MS_HALT) { m.err = true; m.flee = false; }
+        trip_begin(ship, sid, m, why, "dock_mining");
+        if (m.st == MS_HALT) { m.err = true; m.flee = false; m.flee_t = -1.0; }
+    }
+
+    // WHAT: the target trigger of step_pre: flee when the target sample says so (flee_on_target, streak or combat, not latched). true = flee started.
+    // WHY: same states and exclusions as the hull hit; the latch (set here) keeps one flee per attack.
+    bool tgt_flee(UObject* ship, int sid, MineSt& m)
+    {
+        if (!target_flee_trigger(g_cfg.flee_on_target != 0, m.tgt_streak, m.tgt_latch)) return false;
+        m.tgt_latch = true;
+        flee_now(ship, sid, m, STR("targeted by ") + std::to_wstring(m.tgt_n) + STR(", combat ") + (m.combat_now ? STR("1") : STR("0")));
+        return true;
     }
 
     // WHAT: true when the ship is parked at a dock (Dock object alive and DockID set).
@@ -667,7 +764,8 @@ namespace
             int32_t h = 0;
             const bool docked = ship_docked(ship);
             if (m.flee || m.since_stop < MINE_FLEE_GRACE_S || docked || !get_int_prop(ship, STR("Health"), h) || player_flies(ship)) m.hull = -1;
-            else if (hull_dropped(m.hull, h)) { flee_now(ship, sid, m, m.hull, h); return true; }
+            else if (hull_dropped(m.hull, h)) { flee_now(ship, sid, m, STR("hull hit ") + std::to_wstring(m.hull) + STR(" -> ") + std::to_wstring(h)); return true; }
+            else if (tgt_flee(ship, sid, m)) return true;
             else m.hull = h;
         }
         // 1. switched off: idle states reset; flying states stop work and fly home; trip states finish and park
@@ -686,7 +784,8 @@ namespace
             if (get_int_prop(ship, STR("Health"), h))
             {
                 if (m.hull < 0) log_line(STR("MINE ship=") + std::to_wstring(sid) + STR(" hull baseline ") + std::to_wstring(h));
-                if (hull_dropped(m.hull, h)) { flee_now(ship, sid, m, m.hull, h); return true; }
+                if (hull_dropped(m.hull, h)) { flee_now(ship, sid, m, STR("hull hit ") + std::to_wstring(m.hull) + STR(" -> ") + std::to_wstring(h)); return true; }
+                if (tgt_flee(ship, sid, m)) return true;
                 m.hull = h;
             }
         }
@@ -738,7 +837,7 @@ namespace
         std::wstring w;
         if (auto_rule(sid, ship, w) == "dock_refuel") { trip_begin(ship, sid, m, STR("fuel low")); return; }
         if (m.fin) { trip_begin(ship, sid, m, STR("queue done, unloading")); return; }
-        if (cargo_full(ship, item) || m.cargo_pct >= 100)   // pct 100 = every non-fuel slot used (a partial stack can still take 1: HasSpaceForItems says yes)
+        if (cargo_full(ship, item) || m.cargo_pct >= CARGO_STOP_PCT)   // same stop rule as MS_MINE; HasSpaceForItems still catches a full cargo
         {
             // loop guard: a second unload from CHECK without mining in between means the cargo is not in the unload list
             if (unl_guard_fire(ship, sid, m, item)) { m.st = MS_HALT; mset(sid, m, STR("cargo still full after unload (does the ore have an unload dock?)")); return; }
@@ -748,7 +847,16 @@ namespace
         ActFrame f;
         if (!act_frame(ship, f)) { m.st = MS_OFF; m.chk_t = 0.0; mset(sid, m, STR("ship actor unreadable")); return; }
         std::copy(f.loc, f.loc + 3, m.anchor);
-        const bool in_range = rock_in_range(sid, m.anchor, item, mine_radius_m(c));   // one scan for all the checks below
+        const double rad = mine_radius_m(c);
+        const bool in_range = rock_in_range(sid, m.anchor, item, rad, nullptr, &m.noy_skip);   // one scan for all the checks below
+        if (in_range) m.idle_polls = 0;   // a rock was found: the idle poll count starts over
+        if (!in_range && !m.noy_skip.empty() && all_rocks_skipped(rock_in_range(sid, m.anchor, item, rad) != nullptr, in_range))
+        {
+            // every rock in range is no-yield: no belt = HALT (not an error); with a belt this sector counts as empty, the belt picks the next one
+            if (noy_all_halt(c.belt)) { m.st = MS_HALT; mset(sid, m, STR("rocks give no ore")); return; }
+            const int c0 = cur_sector_id(ship);
+            if (c0 > 0) m.tried.insert(c0);
+        }
         // belt: ship not in the target sector -> warp after the undock (after_undock); HALT when no sector has the ore
         if (!belt_off(c.belt) && !in_range)   // rock in range here -> mine it, warp only when none
         {
@@ -772,6 +880,8 @@ namespace
             {
                 if (m.empty_t >= MINE_BELT_EMPTY_S && !in_range && belt_go(ship, sid, m, c, item, true) != 0) return;
             }
+            // belt off: this many empty checks in a row = HALT (IDLE_POLL_MAX)
+            if (belt_off(c.belt) && idle_poll_halt(++m.idle_polls)) { m.st = MS_HALT; mset(sid, m, STR("no rock in range")); return; }
             m.st = MS_OFF; m.chk_t = 0.0; mset(sid, m, STR("nothing in range")); return;   // Update 15: do not undock
         }
         m.empty_t = 0.0;
@@ -812,7 +922,7 @@ namespace
             const std::wstring r = g_mv_res[sid];
             if (ok_res(r))
             {
-                m.fails = 0; m.unl_chk = 0;
+                m.fails = 0; m.unl_chk = 0; m.lost_n = 0;
                 m.tried.clear();   // a rock is being mined: every sector may be searched again later
                 chunk_hold_target_clear(sid); save_rock_picks().erase(sid);   // at the rock: hold the ship's own chunks again
                 m.last_ore = inv_total(ship, item);
@@ -827,8 +937,12 @@ namespace
                 mset(sid, m, STR("mining rock ") + std::to_wstring(m.rock), STR("Mining ") + item_name(c.resource) + STR(" (rock ") + std::to_wstring(m.rock) + STR(")"));
                 return;
             }
-            // rock lost (another ship mined it) = free retry, not a failed attempt
-            if (r.find(STR("rock lost")) == std::wstring::npos && ++m.fails >= std::max(1, c.max_attempts)) { mine_stop_work(ship, sid); m.st = MS_HALT; mset(sid, m, STR("approach failed ") + std::to_wstring(m.fails) + STR("x: ") + r); return; }
+            if (r.find(STR("rock lost")) != std::wstring::npos || r.find(STR("target lost")) != std::wstring::npos)
+            {   // target lost = the move job faulted (move_tick SEH): same free retry
+                // rock lost (another ship mined it) = free retry, not a failed attempt; ROCK_LOST_MAX in a row = HALT
+                if (rock_lost_halt(++m.lost_n)) { mine_stop_work(ship, sid); m.st = MS_HALT; mset(sid, m, STR("rock lost ") + std::to_wstring(ROCK_LOST_MAX) + STR("x")); return; }
+            }
+            else if (++m.fails >= std::max(1, c.max_attempts)) { mine_stop_work(ship, sid); m.st = MS_HALT; mset(sid, m, STR("approach failed ") + std::to_wstring(m.fails) + STR("x: ") + r); return; }
             mset(sid, m, STR("approach ended: ") + r + STR(", retrying"));
         }
         // cargo full with ore still floating: the next seek returns to that rock first (set in st_mine)
@@ -838,7 +952,20 @@ namespace
         if (m.chk_t >= MINE_ROCK_CHECK_S)
         {
             m.chk_t = 0.0;
-            UObject* rock = rock_in_range(sid, m.anchor, item, mine_radius_m(c));
+            const double rad = mine_radius_m(c);
+            UObject* rock = rock_in_range(sid, m.anchor, item, rad, m.abandon, &m.noy_skip);
+            if (!rock && m.abandon) rock = rock_in_range(sid, m.anchor, item, rad, nullptr, &m.noy_skip);   // the abandoned rock is the only one: mine it anyway
+            // every rock in range is no-yield (skipped): no belt = HALT (not an error); with a belt, warp to the next sector with the ore
+            if (!rock && all_rocks_skipped(rock_in_range(sid, m.anchor, item, rad) != nullptr, false))
+            {
+                m.abandon = nullptr; m.col_rock = 0; g_sel_rocks.erase(sid);
+                if (noy_all_halt(c.belt)) { mine_stop_work(ship, sid); m.st = MS_HALT; mset(sid, m, STR("rocks give no ore")); return; }
+                if (belt_go(ship, sid, m, c, item, true) != 0) return;   // warp started, or HALT / go home (no sector left)
+            }
+            // approach_rock picks the nearest rock by itself: pin the chosen one when it is not the nearest (the abandoned one)
+            if (m.abandon && rock) g_sel_rocks[sid] = rock_id_of(rock);
+            m.abandon = nullptr;
+            if (rock) m.idle_polls = 0;
             m.no_rock = !rock;
             if (!rock)
             {
@@ -877,11 +1004,11 @@ namespace
         const int64_t inv = inv_total(ship, item);
         if (inv >= 0)
         {
-            if (inv > m.last_ore) { m.got += got_delta(inv, m.last_ore); m.idle_t = 0.0; }
+            if (inv > m.last_ore) { m.got += got_delta(inv, m.last_ore); m.idle_t = 0.0; m.noy_run = 0; m.noy_visits.erase(m.rock); }   // ore gained: not a no-yield visit
             else m.idle_t += dt;
             m.last_ore = inv;
         }
-        const bool full = cargo_full(ship, item) || m.cargo_pct >= 100;   // m.cargo_pct: sampled every status second (mine_sample)
+        const bool full = cargo_full(ship, item) || m.cargo_pct >= CARGO_STOP_PCT;   // m.cargo_pct: sampled every status second (mine_sample)
         m.chk_t += dt;
         if (m.chk_t >= MINE_ROCK_CHECK_S)
         {
@@ -903,6 +1030,7 @@ namespace
             const std::wstring from = item_name(c.resource);
             item_advance(sid, wrapped);
             m.got = 0;
+            m.noy_skip.clear(); m.noy_visits.clear(); m.noy_run = 0;   // a new ore row: no rock is skipped yet
             if (wrapped && !c.repeat) { m.fin = true; begin_collect(ship, sid, m, 1, c.has_items ? STR("queue done") : STR("amount reached")); return; }
             if (wrapped) { begin_collect(ship, sid, m, 1, STR("queue done, repeat")); return; }   // repeat loop = mine, dock + unload, mine again
             if (c.has_items) mlog(sid, STR("Row done: ") + from + STR(" -> ") + item_name(eff_cfg(sid).resource));
@@ -917,7 +1045,22 @@ namespace
             return;
         }
         // no gain = rock spent/destroyed, not a reason to dock: look for another rock (SEEK goes home itself when none is in range)
-        if (c.idle_seconds > 0 && m.idle_t >= c.idle_seconds) { begin_collect(ship, sid, m, 0, STR("no ore gained for ") + std::to_wstring(c.idle_seconds) + STR(" s, seeking next rock")); return; }
+        const bool rock_alive = m.rock > 0 && actor_ok(rock_actor_by_id(m.rock));
+        const double idle_lim = idle_limit(c.idle_seconds, rock_alive);
+        if (idle_lim > 0.0 && m.idle_t >= idle_lim)
+        {
+            m.abandon = rock_actor_by_id(m.rock);   // the next seek must not pick this rock again at once
+            // no-yield: counted for the ship (noy_run) and for this rock; NOY_SKIP_VISITS visits in a row = the rock is skipped by the search
+            ++m.noy_run;
+            if (m.rock > 0 && noy_skip_now(++m.noy_visits[m.rock]))
+            {
+                m.noy_skip.insert(m.rock);
+                mlog(sid, STR("Rock ") + std::to_wstring(m.rock) + STR(" gave no ore ") + std::to_wstring(NOY_SKIP_VISITS) + STR(" times, skipped"));
+            }
+            log_line(STR("MINE ship=") + std::to_wstring(sid) + STR(" no-yield rock=") + std::to_wstring(m.rock) + STR(" run=") + std::to_wstring(m.noy_run));
+            begin_collect(ship, sid, m, 0, STR("no ore gained for ") + std::to_wstring((int)idle_lim) + STR(" s, seeking next rock"));
+            return;
+        }
         if (m.rock > 0 && !actor_ok(rock_actor_by_id(m.rock))) { begin_collect(ship, sid, m, 0, STR("rock gone, seeking next rock")); return; }
         return;
     }
@@ -929,10 +1072,12 @@ namespace
         std::wstring why;
         UObject* item = item_c(c.resource, why);
         const int64_t inv = alive(item) ? inv_total(ship, item) : -1;
-        if (inv >= 0) { if (m.last_ore >= 0 && inv > m.last_ore) m.got += got_delta(inv, m.last_ore); m.last_ore = inv; }
+        if (inv >= 0) { if (m.last_ore >= 0 && inv > m.last_ore) { m.got += got_delta(inv, m.last_ore); m.noy_run = 0; m.noy_visits.erase(m.rock); } m.last_ore = inv; }
         m.col_t += dt; m.col_stall += dt; m.col_scan_t += dt;
         if (m.col_scan_t < COLLECT_SCAN_S) return;
         m.col_scan_t = 0.0;
+        // stale list = wrong count (picked-up ore counted, new drops missing): rescan when the shared cache is older than the scan period
+        if (GetTickCount64() - g_ore_scan.ms >= static_cast<ULONGLONG>(COLLECT_SCAN_S * 1000.0)) ore_scan(true);
         const int n = ore_near(ship, COLLECT_RANGE_M);
         if (n < 0) m.col_last = 0;
         else { if (m.col_last < 0 || n < m.col_last) m.col_stall = 0.0; m.col_last = n; }
@@ -1152,7 +1297,7 @@ namespace
                 done[i] = o.done;   // alive_seh only on the chosen entry below (per-entry checks on 9000 actors every pick = lag)
             }
             int i = sweep_nearest(d, done);
-            while (i >= 0 && !alive_seh(m.sw_list[(size_t)i].a))   // picked entry is gone: mark it, take the next nearest
+            while (i >= 0 && !ore_ok(m.sw_list[(size_t)i].a))   // picked entry is gone: mark it, take the next nearest
             {
                 m.sw_list[(size_t)i].done = true; done[(size_t)i] = 1;
                 i = sweep_nearest(d, done);
@@ -1179,6 +1324,7 @@ namespace
                 return;
             }
             m.sw_ore = m.sw_list[(size_t)i].a;
+            g_mv_res.erase(sid);   // SW_APPROACH reads the result of this job only
             const std::wstring r = move_start(sid, "approach_rock", -1, m.sw_ore, nullptr);
             if (r == STR("waiting"))
             {
@@ -1193,6 +1339,13 @@ namespace
         case SW_APPROACH:
         {
             if (mv_active(sid)) return;   // any result: a rock lost here means the tractor already took it
+            if (g_mv_res[sid].find(STR("target lost")) != std::wstring::npos)   // the job faulted (move_tick SEH): this ore is no target
+            {
+                for (SwOre& o : m.sw_list) if (o.a == m.sw_ore) o.done = true;
+                m.sw_ore = nullptr;
+                sw_phase(ship, sid, m, SW_PICK);
+                return;
+            }
             sw_phase(ship, sid, m, SW_PULL);
             run_cmd(-1, sid, "tractor_on");
             run_cmd(-1, sid, "laser_off");
@@ -1201,7 +1354,7 @@ namespace
         case SW_PULL:
         {
             m.sw_t += dt;
-            const bool gone = !alive_seh(m.sw_ore);
+            const bool gone = !ore_ok(m.sw_ore);
             std::wstring w;
             UObject* item = item_c(c.resource, w);
             const bool full = (alive(item) && cargo_full(ship, item)) || m.cargo_pct >= 100;
@@ -1464,6 +1617,12 @@ namespace
         {
             if (m.leave && !m.btn) { net_leave_slot(sid); m.dwait = false; m.st = MS_HALT; mset(sid, m, STR("stopped while waiting for dock")); return; }
             m.dwait_t += dt;
+            m.dwait_total += dt;
+            if (dwait_halt(m.dwait_total))   // longest dock wait of this trip (MINE_DWAIT_MAX_S): HALT, not an error
+            {
+                net_leave_slot(sid); m.dwait = false; m.st = MS_HALT; mset(sid, m, STR("waited 15 min for a dock"));
+                return;
+            }
             const auto gi = g_net_ships.find(sid);
             const bool granted = gi != g_net_ships.end() && gi->second.granted;
             if (!granted && m.dwait_t < 60.0)
@@ -1525,7 +1684,7 @@ namespace
             dock_wait_text(sid, m);
             return;
         }
-        if (ok_res(r)) { m.st = MS_HOLD; m.t = 0.0; m.hold_idle = 0.0; m.hold_last = -1; m.chk_t = MINE_HOLD_CHECK_S; m.hold_seen = false; m.left_last.clear(); mset(sid, m, STR("docked, waiting for orders to finish"), is_refuel(m) ? STR("Docked, refueling") : STR("Docked, unloading")); }
+        if (ok_res(r)) { m.st = MS_HOLD; m.noy_run = 0; m.t = 0.0; m.hold_idle = 0.0; m.hold_last = -1; m.chk_t = MINE_HOLD_CHECK_S; m.hold_seen = false; m.left_last.clear(); mset(sid, m, STR("docked, waiting for orders to finish"), is_refuel(m) ? STR("Docked, refueling") : STR("Docked, unloading")); }
         else if (r.find(STR("seems stuck")) != std::wstring::npos)
         {
             m.err = true; m.st = MS_HALT;
@@ -1828,6 +1987,126 @@ namespace
         return left;
     }
 
+    // ---------- combat sampling: target read, hull watch, attacker records (once a second per bench ship, from mine_sample) ----------
+
+    // WHAT: "name" of a game object for the combat line: display name, else the object name.
+    std::wstring who_text(UObject* o)
+    {
+        if (!o) return STR("n/a");
+        std::wstring n = obj_display(o);
+        return n.empty() ? std::wstring(o->GetName()) : n;
+    }
+
+    // WHAT: "<id> <name>" of the sector the ship is in, "n/a" when unknown. Reads the sector list (mb_belt), so call it rarely (attack start, 30 s summary).
+    std::wstring sector_text(UObject* ship)
+    {
+        const int id = cur_sector_id(ship);
+        if (id <= 0) return STR("n/a");
+        for (const SecInfo& s : sectors_read()) if (s.id == id) return std::to_wstring(id) + STR(" ") + s.name;
+        return std::to_wstring(id);
+    }
+
+    // WHAT: target read of one ship (ctx for seh_run). combat = IsShipInCombat() (bool getter). TargettedBy: total entries, hostile entries (not one of our bench ships;
+    //       an entry that cannot be read counts as hostile), txt = the first 8 entries described (attacker_text). Read-only.
+    // WHY: the entries are game objects that can be freed at any time, so the whole read runs under SEH; a fault leaves the sample empty.
+    struct TgtCtx { UObject* ship; bool arr_ok; bool combat_ok; bool combat; int total; int hostile; std::wstring txt; };
+    void tgt_read_fn(void* p)
+    {
+        auto* c = static_cast<TgtCtx*>(p);
+        UObject* ship = c->ship;
+        UFunction* fn = ship->GetFunctionByNameInChain(STR("IsShipInCombat"));
+        FProperty* rp = fn ? fn->GetReturnProperty() : nullptr;
+        if (rp && CastField<FBoolProperty>(rp))
+        {
+            std::vector<uint8_t> buf(fn->GetParmsSize() + 16, 0);
+            ship->ProcessEvent(fn, buf.data());
+            c->combat = buf[rp->GetOffset_Internal()] != 0;
+            c->combat_ok = true;
+        }
+        FProperty* tp = ship->GetPropertyByNameInChain(STR("TargettedBy"));
+        auto* ap = (tp && CastField<FArrayProperty>(tp)) ? CastField<FArrayProperty>(tp) : nullptr;
+        auto* arr = ap ? ship->GetValuePtrByPropertyNameInChain<TArray<uint8_t>>(STR("TargettedBy")) : nullptr;
+        if (!arr) return;
+        c->arr_ok = true;
+        FProperty* inner = ap->GetInner();
+        const bool objs = inner && CastField<FObjectProperty>(inner);
+        const int32_t stride = inner ? inner->GetElementSize() : 0;
+        double sp[3] = {0, 0, 0};
+        const bool sp_ok = get_loc(ship, sp);
+        c->total = arr->Num();
+        for (int32_t i = 0; i < c->total; ++i)
+        {
+            UObject* e = nullptr;
+            if (objs && stride > 0) e = *reinterpret_cast<UObject**>(&(*arr)[0] + static_cast<size_t>(i) * static_cast<size_t>(stride));
+            const bool live = e && alive(e);
+            const int32_t id = live ? obj_id(e) : -1;
+            const bool own = id > 0 && std::find(g_bench_ids.begin(), g_bench_ids.end(), id) != g_bench_ids.end();
+            if (!own) c->hostile++;
+            if (i >= 8) continue;
+            const std::wstring cls = live ? std::wstring(e->GetClassPrivate()->GetName()) : std::wstring(STR("unreadable ")) + (inner ? type_text(inner) : std::wstring(STR("?")));
+            const std::wstring name = live ? who_text(e) : std::wstring(STR("n/a"));
+            const std::wstring owner = who_text(live ? get_obj_prop(e, STR("Owner")) : nullptr) + STR(" / ") + who_text(live ? get_obj_prop(e, STR("Faction")) : nullptr);
+            double ep[3] = {0, 0, 0};
+            const double dm = (live && sp_ok && get_loc(e, ep)) ? dist3(sp, ep) / 100.0 : -1.0;
+            c->txt += (c->txt.empty() ? STR("") : STR("; ")) + attacker_text(i + 1, cls, id, name, owner, dm, own);
+        }
+    }
+
+    // WHAT: target sample of one bench ship: sets tgt_n, combat_now, tgt_streak and the latch (flee trigger input, step_pre / tgt_flee), keeps the attackers text,
+    //       logs one attacker record when an attack starts and one every 30 s while it lasts.
+    // WHY: an attack with a hostile targeter (or IsShipInCombat) is the early warning; the hull drop only comes after the first hit.
+    void target_sample(UObject* ship, int sid, MineSt& m, double el)
+    {
+        static std::set<int> warned;   // a read fault is logged once per ship per session
+        TgtCtx c{ship, false, false, false, 0, 0, std::wstring()};
+        if (!seh_run(tgt_read_fn, &c))
+        {
+            if (warned.insert(sid).second) log_line(STR("COMBAT target read faulted ship=") + std::to_wstring(sid) + STR(" ") + seh_describe(g_seh));
+            c = TgtCtx{ship, false, false, false, 0, 0, std::wstring()};
+        }
+        const int hostile = c.arr_ok ? c.hostile : 0;
+        const bool combat = c.combat_ok && c.combat;
+        const bool attacked = hostile > 0 || combat;
+        m.tgt_n = hostile;
+        m.combat_now = combat;
+        m.tgt_streak = target_streak_next(m.tgt_streak, hostile);
+        m.tgt_latch = target_latch_next(m.tgt_latch, attacked);
+        if (!attacked) { m.atk_on = false; m.atk_acc = 0.0; return; }
+        m.atk_txt = c.txt.empty() ? STR("none") : c.txt;
+        m.chunk_txt = pvec_text(ship, STR("ChunkLocation"));
+        if (!m.atk_on)
+        {
+            m.atk_on = true;
+            m.sec_txt = sector_text(ship);
+            // combat=1 with TargettedBy empty: IsShipInCombat alone (no flee); logged to learn whether it fires while mining
+            combat_record(sid, m, hostile > 0 ? STR("attack started, targeted") : STR("combat=1 without TargettedBy"), false);
+        }
+        m.atk_acc += el;
+        if (m.atk_acc >= 30.0)
+        {
+            m.atk_acc = 0.0;
+            m.sec_txt = sector_text(ship);
+            combat_record(sid, m, STR("30 s combat summary"), false);
+        }
+    }
+
+    // WHAT: hull watch, once a second per bench ship, in every state (docked and fleeing too): logs each hull drop (before -> after, state, docked / fleeing flags)
+    //       and keeps MaxHealth. The flee baseline (MineSt.hull) is cleared while docked, fleeing or in grace, so hits there would not be logged otherwise.
+    void hull_watch(UObject* ship, int sid, MineSt& m)
+    {
+        int32_t h = 0;
+        if (!get_int_prop(ship, STR("Health"), h)) return;
+        int32_t mx = 0;
+        if (get_int_prop(ship, STR("MaxHealth"), mx)) m.hull_max = mx;
+        if (m.hw >= 0 && h < m.hw)
+        {
+            const bool docked = ship_docked(ship);
+            combat_log(STR("COMBAT hull drop ship=") + std::to_wstring(sid) + STR(" ") + std::to_wstring(m.hw) + STR(" -> ") + std::to_wstring(h) + STR(" of ") + std::to_wstring(m.hull_max) +
+                       STR(" state=") + mine_state_name(m.st) + (docked ? STR(" docked") : STR("")) + (m.flee ? STR(" fleeing") : STR("")) + (m.tgt_n > 0 ? STR(" targeted") : STR("")));
+        }
+        m.hw = h;
+    }
+
     // WHAT: once per status second per bench ship: cargo probe (first time only), position and speed (m/s) from the actor location delta
     //       (uu = cm: delta / el / 100), cargo fill %. Read-only: no game writes. el = seconds since the last sample.
     // ponytail: no glitch filter here (spd_update has one for the speed monitor); add it if floating-origin jumps show as speed spikes.
@@ -1851,6 +2130,9 @@ namespace
             const Config c = eff_cfg(sid);
             int slots = 0, fuel_s = 0, other_s = 0;
             m.cargo_pct = cargo_pct(ship, slots, fuel_s, other_s);
+            hull_watch(ship, sid, m);
+            if (m.flee_t >= 0.0) m.flee_t += el;
+            target_sample(ship, sid, m, el);
             m.clog_t += el;
             if (m.clog_t >= 30.0)
             {
@@ -1953,14 +2235,75 @@ namespace
             if (it == g_mine_log.end()) continue;
             for (const MineLogLine& l : it->second) s += std::to_string(sid) + "|" + u8(l.hms) + "|" + u8(l.text) + "\n";
         }
+        // destroyed ships (session): a "name" row gives the name, the lines follow. Lua reads them in All ships mode only (not in the selector, cards or fan-out).
+        for (const auto& d : g_destroyed)
+        {
+            s += std::to_string(d.first) + "|name|" + u8(d.second.name + STR(" (destroyed)")) + "\n";
+            for (const MineLogLine& l : d.second.lines) s += std::to_string(d.first) + "|" + u8(l.hms) + "|" + u8(l.text) + "\n";
+        }
         static std::string last = "\x01";
         if (s == last) return;
         last = s;
         try { write_atomic(get_dll_dir() / "MiningLog.txt", s); } catch (...) {}
     }
 
-    void mine_set_bench(const std::vector<std::pair<UObject*, int>>& bench)
+    // WHAT: a bench ship was destroyed (confirmed by the scan, mb_ships.hpp): every per-ship state of the mod is dropped, one log line.
+    // WHY: a destroyed ship must not stay in the bench, the status/log files, the selector, or hold a dock reservation or queue place other ships wait for.
+    // NOTE: the ship's UObject is not read (it may be a dead ghost): only maps are erased, net_leave_slot frees the dock slot (net_release_ship).
+    //       No-op for a ship the mod does not know (repeat scans of a dead ship cost nothing). INI sections (g_ship_kv) are not touched.
+    // WHAT: the calls of mine_forget_ship that may touch the destroyed ship's UObject (warp, move aim, dock slot, chunk). Plain function for seh_run.
+    struct ForgetCtx { int sid; };
+    void mine_forget_calls_fn(void* p)
     {
+        const int sid = static_cast<ForgetCtx*>(p)->sid;
+        warp_cancel(sid);
+        net_leave_slot(sid);                    // queue place + dock reservation (waiters proceed); also slot_clear
+        chunk_hold_release(sid);                // the cube and its target
+        mv_cancel(sid);                         // move job (aim offset stopped if the ship answers)
+    }
+
+    void mine_forget_ship(int sid)
+    {
+        if (!g_bench_names.count(sid) && !g_mine.count(sid) && !g_mine_log.count(sid)) return;
+        const std::wstring name = g_bench_names.count(sid) ? g_bench_names[sid] : std::wstring(STR("?"));
+        // destroyed record (session): last-known attackers, hull, position, states and the Log tab lines are kept before the maps are erased.
+        // The lines go to MiningLog.txt as "<name> (destroyed)" (20 lines + a final line with the attackers); the combat line goes to MiningCombat.txt.
+        {
+            DestroyedLog d;
+            d.name = name;
+            MineSt last;
+            const auto mi = g_mine.find(sid);
+            if (mi != g_mine.end()) last = mi->second;
+            combat_record(sid, last, STR("DESTROYED"), true);
+            const auto lg = g_mine_log.find(sid);
+            if (lg != g_mine_log.end()) d.lines = lg->second;
+            d.lines.push_back({clock_hms(), STR("Ship destroyed (attackers: ") + last.atk_txt + STR(")")});
+            g_destroyed[sid] = d;
+        }
+        // the ghost-touching calls run under SEH: a fault is logged once, the map erases below still run
+        ForgetCtx fc{sid};
+        if (!seh_run(mine_forget_calls_fn, &fc)) log_line(STR("purge fault ship=") + std::to_wstring(sid) + STR(" ") + seh_describe(g_seh));
+        for (size_t i = 0; i < g_jobs.size();)  // dock job (no result: the ship is gone)
+        {
+            if (g_jobs[i].sid == sid) g_jobs.erase(g_jobs.begin() + static_cast<std::ptrdiff_t>(i));
+            else ++i;
+        }
+        g_mine.erase(sid); g_mine_fault_n.erase(sid); g_mine_log.erase(sid); g_state_ring.erase(sid);
+        g_sel_rocks.erase(sid); g_item_idx.erase(sid);
+        g_flee_pick.erase(sid); g_dock_pick.erase(sid); g_unl_ores.erase(sid);
+        g_job_res.erase(sid); g_mv_res.erase(sid); g_skip.erase(sid);
+        g_ob.erase(sid); g_pf.erase(sid); g_spds.erase(sid); g_mvs.erase(sid);
+        g_warp_wait.erase(sid); g_wr_wait.erase(sid);
+        g_net_ship_names.erase(sid);
+        save_rock_picks().erase(sid);
+        for (auto it = g_pick_cache.begin(); it != g_pick_cache.end();) it = it->first.first == sid ? g_pick_cache.erase(it) : std::next(it);
+        g_bench_names.erase(sid);
+        log_line(STR("ship ") + std::to_wstring(sid) + STR(" ") + name + STR(" destroyed, removed"));
+    }
+
+    void mine_set_bench(const std::vector<std::pair<UObject*, int>>& bench, const std::vector<int>& dead)
+    {
+        for (int sid : dead) mine_forget_ship(sid);   // before the rebuild: a destroyed ship is in neither list below
         g_bench_ids.clear();
         for (const auto& p : bench)
             if (p.second > 0)
@@ -2028,8 +2371,10 @@ namespace
             m.btn = false;             g_item_idx[sid] = 0; m.got = 0; m.fin = false; m.noore = false; m.unl_prev = -1; m.unl_undock = false;   // always: a stale queue position must not survive a Start
             m.sweep = false;
             m.flee = false; m.warp_to = 0; m.tried.clear(); m.hull = -1; m.dl_n = 0;    // a new run starts with no flee, no pending warp, no sector blacklist, no dock time limit rounds
+            m.noy_run = 0; m.noy_visits.clear(); m.noy_skip.clear(); m.lost_n = 0; m.idle_polls = 0; m.dwait_total = 0.0;   // and no no-yield skips, rock lost or idle poll counts
             if (m.st == MS_HALT) m.st = MS_OFF;
             m.chk_t = MINE_ROCK_CHECK_S; m.fails = 0; m.unl_chk = 0; m.leave = false;
+            g_mine_fault_n.erase(sid);   // a new Start: the SEH fault count of this ship starts again
             mset(sid, m, STR("starting"), STR("Loop started"));
         }
         else mlog(sid, STR("Loop stop requested"));
@@ -2149,12 +2494,36 @@ namespace
         }
     }
 
+    struct MineStepCtx { int sid; MineSt* m; double dt; };
+    void mine_step_fn(void* p) { auto* c = static_cast<MineStepCtx*>(p); mine_step(c->sid, *c->m, c->dt); }
+    void mine_halt_fn(void* p) { mine_halt(*static_cast<int*>(p)); }
+
+    // WHAT: a ship's mine_step hit an SEH fault. Only this ship stops: log (ship, state, fault, last step), mine_halt(sid), red ERROR
+    //       "internal fault <state>". Not counted in the compat SafeMode streak (that counts whole-tick faults), so the other ships run on.
+    //       3 faults in a row after Start: logged as left halted. Start clears the count; nothing restarts the ship by itself.
+    // WHY: before this, a fault in one ship's step counted toward SafeMode, which stopped every ship after 5 in a row.
+    void mine_fault(int sid, MineSt& m, const SehInfo& f, const std::wstring& step)
+    {
+        const std::wstring state = mine_state_name(m.st);
+        const int n = ++g_mine_fault_n[sid];
+        log_line(STR("MINE ship=") + std::to_wstring(sid) + STR(" [") + state + STR("] FAULT n=") + std::to_wstring(n) + STR(" ") + seh_describe(f) + STR(" step=") + step);
+        int halt_sid = sid;
+        if (!seh_run(mine_halt_fn, &halt_sid)) log_line(STR("MINE ship=") + std::to_wstring(sid) + STR(" halt faulted too: ") + seh_describe(g_seh));
+        m.st = MS_HALT; m.run = false; m.err = true; m.flee = false; m.sweep = false; m.warp_to = 0;
+        if (n >= 3) log_line(STR("MINE ship=") + std::to_wstring(sid) + STR(" faulted ") + std::to_wstring(n) + STR("x in a row, left halted"));
+        const std::wstring text = STR("ERROR: internal fault ") + state;
+        mset(sid, m, text, text);
+    }
+
     void mining_tick(double dt)
     {
         for (int sid : g_bench_ids)
         {
             MineSt& m = g_mine[sid];
-            try { mine_step(sid, m, dt); }
+            const std::wstring step = STR("mine ship=") + std::to_wstring(sid) + STR(" ") + mine_state_name(m.st);
+            set_last_step(step);
+            MineStepCtx sc{sid, &m, dt};
+            try { if (!seh_run(mine_step_fn, &sc)) mine_fault(sid, m, g_seh, step); }
             catch (...) { m.st = MS_HALT; m.result = STR("exception in mining step"); log_line(STR("MINE ship=") + std::to_wstring(sid) + STR(" exception")); }
         }
         g_mine_status_acc += dt;
@@ -2162,8 +2531,11 @@ namespace
         {
             const double el = g_mine_status_acc;
             g_mine_status_acc = 0.0;
+            set_last_step(STR("mine_sample"));
             mine_sample(el);
+            set_last_step(STR("net_tick"));
             net_tick();
+            set_last_step(STR("net_holder_orders"));
             net_holder_orders();
             mine_status_write();
             mine_status_x_write();

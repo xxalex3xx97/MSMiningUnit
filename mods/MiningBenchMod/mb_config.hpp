@@ -59,6 +59,7 @@ namespace
             {STR("record"), std::to_wstring(c.record)},
             {STR("record_interval_seconds"), std::to_wstring(c.record_interval_seconds)},
             {STR("kill_switch"), std::to_wstring(c.kill_switch ? 1 : 0)},
+            {STR("flee_on_target"), std::to_wstring(c.flee_on_target)},
             {STR("mining_distance"), STR("'") + widen(c.mining_distance) + STR("'")},
             {STR("fuel_margin"), std::to_wstring(c.fuel_margin)},
             {STR("fuel_amount"), std::to_wstring(c.fuel_amount)},
@@ -148,6 +149,8 @@ namespace
                      "record=0\n"
                      "# record_interval_seconds: seconds between recorder lines (global only)\n"
                      "record_interval_seconds=2\n"
+                     "# flee_on_target: 1 = a ship targeted by a hostile (2 samples in a row) or in combat flees to a dock like after a hull hit (global only)\n"
+                     "flee_on_target=1\n"
                      "# refuel_dock_id: numeric dock id OR in-game dock name of the refuel dock (empty = none; per-ship key allowed)\n"
                      "refuel_dock_id=\n";
                 Output::send<LogLevel::Normal>(STR("[MiningBenchMod] created default {}\n"), path.wstring());
@@ -198,6 +201,7 @@ namespace
             ensure_key("record", "0", "record: no effect since 0.0.1 (recorder removed)");
             ensure_key("record_interval_seconds", "2", "record_interval_seconds: seconds between recorder lines (global only)");
             ensure_key("kill_switch", "0", "kill_switch: 1 = the mod stops touching the game completely (hot reload, global only)");
+            ensure_key("flee_on_target", "1", "flee_on_target: 1 = a ship targeted by a hostile or in combat flees to a dock like after a hull hit (global only)");
             ensure_key("warp_range", "50km", "warp_range: belt mode: a rock farther than this from the ship is not flown to, the ship warps to the next sector instead; also caps radius (m/km, empty/0 = 50km; per-ship key allowed)");
             ensure_key("mining_distance", "50m", "mining_distance: distance from the rock in m/km, e.g. 200m (empty = 50m; per-ship key allowed)");
             ensure_key("fuel_margin", "0", "fuel_margin: int fuel margin, 0 = unset (per-ship key allowed)");
@@ -228,6 +232,19 @@ namespace
                 }
             }
 
+            // WHAT: bounds table (SETTING_BOUNDS, mb_logic.hpp) applied to the global section and to every [ship.<id>] section; one log line per clamped key, once per load.
+            // WHY: the mod never runs with an out-of-range value; the INI file itself is left as the user wrote it.
+            {
+                std::vector<std::string> clamps;
+                clamp_kv(kv, clamps);
+                for (const auto& c : clamps) log_line(STR("config clamped: ") + widen(c));
+                for (auto& [sid_, m_] : skv)
+                {
+                    std::vector<std::string> sc;
+                    clamp_kv(m_, sc);
+                    for (const auto& c : sc) log_line(STR("config clamped ship.") + std::to_wstring(sid_) + STR(": ") + widen(c));
+                }
+            }
             // WHAT: builds the new global config nc from kv.
             // WHY: parse into a fresh struct; g_cfg is swapped only at the end, so a failure leaves the old config in place.
             Config nc; apply_kv(nc, kv, false);
@@ -243,6 +260,7 @@ namespace
             if (kv.count("record_interval_seconds")) nc.record_interval_seconds = to_int(kv["record_interval_seconds"], 2);
             if (nc.record_interval_seconds < 1) nc.record_interval_seconds = 1;
             if (kv.count("kill_switch")) nc.kill_switch = to_int(kv["kill_switch"], 0) != 0;
+            if (kv.count("flee_on_target")) nc.flee_on_target = to_int(kv["flee_on_target"], 1) != 0 ? 1 : 0;
             if (nc.log_interval_seconds < 1) nc.log_interval_seconds = 1;
             // WHAT: wait and per-fuel keys (global only). An empty or non-number value falls back to the struct default (to_int).
             // WHY: the INI may predate these keys; ensure_key below adds them on first load.
@@ -253,6 +271,10 @@ namespace
                 if (kv.count(base + "_on")) nc.fuel[i].on = to_int(kv[base + "_on"], nc.fuel[i].on);
                 if (kv.count(base + "_threshold")) nc.fuel[i].threshold = to_int(kv[base + "_threshold"], nc.fuel[i].threshold);
                 if (kv.count(base + "_amount")) nc.fuel[i].amount = to_int(kv[base + "_amount"], nc.fuel[i].amount);
+                // WHAT: refuel amount raised to its threshold when lower (logged once per load). Per-ship sections have no fuel threshold of their own, so they use this one.
+                const int fl = fuel_amount_floor(nc.fuel[i].amount, nc.fuel[i].threshold);
+                if (fl != nc.fuel[i].amount) log_line(STR("config clamped: ") + widen(base) + STR("_amount ") + std::to_wstring(nc.fuel[i].amount) + STR(" -> ") + std::to_wstring(fl));
+                nc.fuel[i].amount = fl;
             }
             // raw per meter must be positive. The value also replaces g_raw_per_m, which the mod math uses.
             if (kv.count("raw_per_meter"))

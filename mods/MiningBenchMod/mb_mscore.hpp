@@ -103,7 +103,7 @@ namespace
                           m.update_order && m.delete_order && m.autopilot && m.skip_to && m.filter_send && m.filters_read &&
                           m.warp_send && m.arrival && m.jump_cost && m.chunk_of && m.axes_of && m.sys_id && m.sec_warp_dist &&
                           m.sectors && m.pin_ensure && m.pinned;
-        if (!h || !full || m.api() != 2)
+        if (!h || !full || m.api() < 2)
         {
             if (h) FreeLibrary(h);
             err = L"MSCore not installed or too old (needs API 2)";

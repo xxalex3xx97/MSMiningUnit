@@ -908,22 +908,23 @@ end
 
 -- ===== Operation tab: instant save per key. sc "ship" -> [ship.<id>]; sc "global" -> top level (C++ reads these only globally) =====
 -- kind: int (>=0 integer), dist (5km / 2500m / plain / empty, as old menu radiusVal), chk. empty=true: empty int allowed.
+-- min/max/zero: bounds mirror of mb_logic.hpp SETTING_BOUNDS (keep both in sync). Out of range = rejected with msg (dist: meters). zero = 0 allowed as off.
 local OPS = {
-  { w = "Edt_Radius", k = "radius", sc = "ship", kind = "dist", def = "50km", msg = "radius must be like 5km, 2500m or plain meters (or empty)" },
-  { w = "Edt_MiningDistance", k = "mining_distance", sc = "ship", kind = "dist", def = "50m", msg = "mining distance must be like 200m, 0.2km or plain meters (or empty)" },
-  { w = "Edt_WarpRange", k = "warp_range", sc = "ship", kind = "dist", def = "50km", msg = "warp range must be like 50km, 20000m or plain meters (or empty = 50km)" },
-  { w = "Edt_MaxRadius", k = "max_radius", sc = "global", kind = "dist", def = "50km", msg = "max_radius must be like 10km, 8000m or plain (or empty)" },
-  { w = "Edt_IdleSeconds", k = "idle_seconds", sc = "ship", kind = "int", msg = "idle seconds must be an integer >= 0" },
-  { w = "Edt_WaitSeconds", k = "wait_seconds", sc = "global", kind = "int", def = "10", msg = "wait must be an integer >= 0" },
-  { w = "Edt_DockHoldLimit", k = "dock_hold_limit", sc = "ship", kind = "int", def = "300", msg = "dock time limit must be an integer >= 0" },
-  { w = "Edt_WarpTripKm", k = "warp_trip_km", sc = "ship", kind = "int", def = "5", msg = "warp trip distance must be an integer >= 0" },
+  { w = "Edt_Radius", k = "radius", sc = "ship", kind = "dist", def = "50km", min = 100, max = 100000, zero = true, msg = "radius must be like 5km, 2500m or plain meters (or empty; 0 = off; 100m..100km)" },
+  { w = "Edt_MiningDistance", k = "mining_distance", sc = "ship", kind = "dist", def = "50m", min = 1, max = 5000, msg = "mining distance must be like 200m, 0.2km or plain meters (or empty; 1m..5km)" },
+  { w = "Edt_WarpRange", k = "warp_range", sc = "ship", kind = "dist", def = "50km", min = 1000, max = 100000, zero = true, msg = "warp range must be like 50km, 20000m or plain meters (or empty = 50km; 1km..100km)" },
+  { w = "Edt_MaxRadius", k = "max_radius", sc = "global", kind = "dist", def = "50km", min = 100, max = 100000, zero = true, msg = "max_radius must be like 10km, 8000m or plain (or empty; 0 = off; 100m..100km)" },
+  { w = "Edt_IdleSeconds", k = "idle_seconds", sc = "ship", kind = "int", min = 30, max = 3600, zero = true, msg = "idle seconds must be 0 (off) or 30..3600" },
+  { w = "Edt_WaitSeconds", k = "wait_seconds", sc = "global", kind = "int", def = "10", min = 0, max = 300, msg = "wait must be an integer 0..300" },
+  { w = "Edt_DockHoldLimit", k = "dock_hold_limit", sc = "ship", kind = "int", def = "300", min = 30, max = 3600, zero = true, msg = "dock time limit must be 0 (off) or 30..3600" },
+  { w = "Edt_WarpTripKm", k = "warp_trip_km", sc = "ship", kind = "int", def = "5", min = 1, max = 100, zero = true, msg = "warp trip distance must be 0 (off) or 1..100 km" },
   { w = "Chk_Enabled", k = "enabled", sc = "ship", kind = "chk", def = "1" },
   { w = "Chk_Repeat", k = "repeat", sc = "ship", kind = "chk", def = "0" },
 }
 for _, f in ipairs({ { "Deuterium", "deuterium", "0" }, { "Hydrogen", "hydrogen", "1" }, { "Warp", "warp", "1" } }) do
   OPS[#OPS + 1] = { w = "Chk_Fuel" .. f[1] .. "On", k = "fuel_" .. f[2] .. "_on", sc = "global", kind = "chk", def = f[3] }
-  OPS[#OPS + 1] = { w = "Edt_Fuel" .. f[1] .. "Threshold", k = "fuel_" .. f[2] .. "_threshold", sc = "global", kind = "int", def = "300", msg = f[1] .. " threshold must be an integer >= 0" }
-  OPS[#OPS + 1] = { w = "Edt_Fuel" .. f[1] .. "Amount", k = "fuel_" .. f[2] .. "_amount", sc = "global", kind = "int", def = "300", msg = f[1] .. " amount must be an integer >= 0" }
+  OPS[#OPS + 1] = { w = "Edt_Fuel" .. f[1] .. "Threshold", k = "fuel_" .. f[2] .. "_threshold", sc = "global", kind = "int", def = "300", min = 0, max = 5000, msg = f[1] .. " threshold must be an integer 0..5000" }
+  OPS[#OPS + 1] = { w = "Edt_Fuel" .. f[1] .. "Amount", k = "fuel_" .. f[2] .. "_amount", sc = "global", kind = "int", def = "300", min = 0, max = 5000, msg = f[1] .. " amount must be an integer 0..5000" }
 end
 -- Operation item icons (Image widgets; brush from bundled Img_ItemSrc_<id> texture, game Item.Icon only as fallback; hidden when no icon)
 local OPICONS = { Img_FuelDeuterium = "ITEM_EnrichedFuel", Img_FuelHydrogen = "ITEM_HydrogenFuel", Img_FuelWarp = "ITEM_WarpFuel",
@@ -937,15 +938,26 @@ for n, id in pairs(OPICONS) do
 end
 for n, id in pairs(extra) do OPICONS[n] = id end
 -- normalized string, or nil when invalid (rules = old menu int0 / radiusVal)
+-- bounds (e.min/e.max in the key's unit, meters for dist; e.zero: 0 = off allowed)
+local function inBounds(e, n)
+  if not e.max then return true end
+  if e.zero and n == 0 then return true end
+  return n >= (e.min or 0) and n <= e.max
+end
 local function opVal(e, t)
   if e.kind == "int" then
     if t == "" and e.empty then return "" end
     local n = tonumber(t)
-    if n and n == math.floor(n) and n >= 0 then return string.format("%d", n) end
+    if n and n == math.floor(n) and n >= 0 and inBounds(e, n) then return string.format("%d", n) end
     return nil
   end
   t = t:lower()
-  if t == "" or t:match("^%d+%.?%d*%s*km$") or t:match("^%d+%.?%d*%s*m$") or t:match("^%d+%.?%d*%s*$") then return t end
+  if t == "" then return t end
+  if t:match("^%d+%.?%d*%s*km$") or t:match("^%d+%.?%d*%s*m$") or t:match("^%d+%.?%d*%s*$") then
+    local num = tonumber(t:match("^(%d+%.?%d*)"))
+    local meters = t:match("km$") and num * 1000 or num
+    if inBounds(e, meters) then return t end
+  end
   return nil
 end
 -- effective value like old pick(): ship value (if non-empty), else global, else default
@@ -1162,13 +1174,15 @@ end
 
 -- ===== Log tab: MiningLog.txt lines "<ship id>|<hh:mm:ss>|<text>" (oldest first per ship, C++ keeps 20 per ship) =====
 local LOGN = 60  -- must equal the Txt_Log_1..N rows in the WBP (gen_paste)
+-- destroyed ships (C++ session record): header row "<id>|name|<name> (destroyed)" -> dn[id]; their lines are normal rows.
 local function logLoad()
-  local out = {}
+  local out, dn = {}, {}
   for _, l in ipairs(rdcached(M.DATA .. "MiningLog.txt") or {}) do
     local p = split(l)
-    if p[2] then out[#out + 1] = { sid = trim(p[1]), t = trim(p[2]), text = p[3] or "", i = #out + 1 } end
+    if p[2] and trim(p[2]) == "name" then dn[trim(p[1])] = p[3] or ""
+    elseif p[2] then out[#out + 1] = { sid = trim(p[1]), t = trim(p[2]), text = p[3] or "", i = #out + 1 } end
   end
-  return out
+  return out, dn
 end
 -- Single ship: Row_LogScroll list, that ship's lines newest first. All ships: Pnl_LogAll = one card per fleet ship (S.fleet.rows, filled by fleetPaint
 -- before this): name + status, then its newest LOGCARD_ROWS lines "hh:mm:ss text". Repaints only when the shown text changes.
@@ -1180,13 +1194,23 @@ local function logNewest(lines, sid)  -- this ship's lines, newest first
   table.sort(sel, function(a, b) if a.t ~= b.t then return a.t > b.t end return a.i > b.i end)
   return sel
 end
-local function logPaintAll(lines)
+local function logPaintAll(lines, dn)
   local rows, cards, key = S.fleet and S.fleet.rows or {}, {}, {}
+  -- destroyed ships (not on the bench) take the free cards after the bench ships: log view only, never in the selector, cards or fan-out
+  local bench, gone = {}, {}
+  for _, o in ipairs(benchShips()) do bench[o.id] = true end
+  for sid in pairs(dn) do if not bench[sid] then gone[#gone + 1] = sid end end
+  table.sort(gone, function(a, b) return (tonumber(a) or 0) < (tonumber(b) or 0) end)
   for f = 1, FN do
     local o = rows[f]
+    local sid = o and tostring(o.id) or nil
     local c = { on = o ~= nil, name = o and o.text or "", status = o and o.status or "", lines = {} }
-    if o then
-      local sel = logNewest(lines, tostring(o.id))
+    if not o and #gone > 0 then
+      sid = table.remove(gone, 1)
+      c = { on = true, name = dn[sid], status = "Destroyed (not selectable)", lines = {} }
+    end
+    if sid then
+      local sel = logNewest(lines, sid)
       for r = 1, math.min(#sel, LOGCARD_ROWS) do c.lines[r] = sel[r].t .. " " .. sel[r].text end
     end
     cards[f] = c
@@ -1210,8 +1234,8 @@ local function logPaint()
   local all = S.all and true or false
   setVis(w("Row_LogScroll"), all and 1 or 0)
   setVis(w("Pnl_LogAll"), all and 0 or 1)
-  local lines = logLoad()
-  if all then setVis(w("Txt_LogHint"), 1); return logPaintAll(lines) end
+  local lines, dn = logLoad()
+  if all then setVis(w("Txt_LogHint"), 1); return logPaintAll(lines, dn) end
   local rows = {}
   for k, e in ipairs(logNewest(lines, tostring(S.sid))) do
     if k > LOGN then break end
@@ -1303,6 +1327,8 @@ local function refresh()
   if S.sid and S.last and os.clock() - (S.docksAt or 0) > 5 then   -- dock renames in game show up without reopening the window
     S.docksAt = os.clock(); S.docks = loadDocks(); shipFill(); udRender()
   end
+  if not S.sid then return end
+  if M.dropGone then M.dropGone() end
   if not S.sid then return end
   S.tick = S.tick + 1
   modalTick()
@@ -1616,6 +1642,17 @@ local function applyAll(set, name)
   M.setText("Txt_SelRemote", name)
   paintAllUi()
   refresh()
+end
+-- destroyed bench ship: C++ writes it with has-bench 0 (ships.txt), so benchShips() drops it. Selected ship gone -> first remaining ship, or close when none is left.
+-- An empty list is not a signal (ships.txt is empty for a few seconds after a save load), so nothing happens then.
+function M.dropGone()
+  if S.all or not S.sid or os.clock() - (S.goneT or 0) < 2 then return end
+  S.goneT = os.clock()
+  local list, here = benchShips(), false
+  for _, o in ipairs(list) do if o.id == S.sid then here = true end end
+  if here or #list == 0 then return end
+  L("ship " .. tostring(S.sid) .. " left the bench list (destroyed?)")
+  if list[1] then onShipPick(list[1].id) else M.close() end
 end
 -- Remote X button: all bench ships
 local function setAll() applyAll(nil, "All ships") end

@@ -80,6 +80,37 @@ namespace
         __try { return alive(o); }
         __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
     }
+
+    // WHAT: actors the engine freed (queued by RockDeleteListener, drained into this set by rock_drain_dead). Never shrinks; a scan
+    //       that finds a live actor at such an address removes it again (ore_pass_fn).
+    // WHY: alive() cannot see a freed UObject: its memory stays mapped and the flags can still read as alive. The next property call
+    //      then faults inside UE4SS.dll (crash log 2026-11-04, move_tick). Ore actors are not in the HUD list, so this set is the exact check.
+    // ponytail: one pointer per freed rock/ore actor; add a cap if a session ever shows memory growth.
+    std::unordered_set<const void*> g_ore_gone;
+
+    // WHAT: true when a floating ore / rock actor (not in the HUD list) is still alive: not freed (g_ore_gone) and alive_seh.
+    bool ore_ok(UObject* a) { return a && g_ore_gone.count(a) == 0 && alive_seh(a); }
+
+    // WHAT: copies the actor pointers of ctrl.ScannableHUDMarkers into out. false = the read faulted (g_seh holds it).
+    // WHY: the array is read by index through a raw TArray pointer; a stale controller or array would crash here. Two SEH calls: count, then copy.
+    struct MarkersCtx { UObject* ctrl; UObject** buf; int cap; int n; };
+    void markers_fn(void* p)
+    {
+        auto* c = static_cast<MarkersCtx*>(p);
+        auto* arr = c->ctrl->GetValuePtrByPropertyNameInChain<TArray<FScriptInterface>>(STR("ScannableHUDMarkers"));
+        c->n = arr ? arr->Num() : 0;
+        for (int32_t i = 0; c->buf && arr && i < c->n && i < c->cap; ++i) c->buf[i] = (*arr)[i].ObjectPointer;
+    }
+    bool markers_read(UObject* ctrl, std::vector<UObject*>& out)
+    {
+        MarkersCtx c{ctrl, nullptr, 0, 0};
+        if (!seh_run(markers_fn, &c)) return false;
+        out.assign(static_cast<size_t>(c.n), nullptr);
+        c = MarkersCtx{ctrl, out.data(), static_cast<int>(out.size()), 0};
+        if (!seh_run(markers_fn, &c)) return false;
+        out.resize(static_cast<size_t>(std::min(c.n, static_cast<int>(out.size()))));
+        return true;
+    }
     struct RockDeadState { std::mutex mx; std::unordered_set<const void*> dead; };
     struct RockDeleteListener;
     RockDeleteListener* g_rock_listener = nullptr;
@@ -124,8 +155,8 @@ namespace
             UObject* ctrl = c_ctrl;
             if (alive(ctrl) && prop_is(ctrl, STR("ScannableHUDMarkers"), STR("ArrayProperty")))
             {
-                auto* arr = ctrl->GetValuePtrByPropertyNameInChain<TArray<FScriptInterface>>(STR("ScannableHUDMarkers"));
-                for (int32_t i = 0; arr && i < arr->Num(); ++i) if ((*arr)[i].ObjectPointer) g_actor_set.insert((*arr)[i].ObjectPointer);
+                std::vector<UObject*> marks;
+                if (markers_read(ctrl, marks)) for (UObject* a : marks) if (a) g_actor_set.insert(a);
             }
         }
         // 2. a must be in the live set and still alive
@@ -250,6 +281,7 @@ namespace
         std::unordered_set<const void*> dead;
         { RockDeadState& d = dead_state(); std::lock_guard<std::mutex> l(d.mx); if (d.dead.empty()) return; dead.swap(d.dead); }
         auto gone = [&](UObject* a) { return dead.count(a) != 0; };
+        g_ore_gone.insert(dead.begin(), dead.end());
         g_rock_actors.erase(std::remove_if(g_rock_actors.begin(), g_rock_actors.end(), gone), g_rock_actors.end());
         g_fb_list.erase(std::remove_if(g_fb_list.begin(), g_fb_list.end(), gone), g_fb_list.end());
         for (const void* d : dead)
@@ -343,11 +375,10 @@ namespace
         if (alive(ctrl) && prop_is(ctrl, STR("ScannableHUDMarkers"), STR("ArrayProperty")))
         {
             // 2. walk ScannableHUDMarkers. FScriptInterface = {UObject* ObjectPointer, void* InterfacePointer}: ObjectPointer is the actor.
-            auto* arr = ctrl->GetValuePtrByPropertyNameInChain<TArray<FScriptInterface>>(STR("ScannableHUDMarkers"));
-            for (int32_t i = 0; arr && i < arr->Num(); ++i)
+            std::vector<UObject*> marks;
+            if (markers_read(ctrl, marks)) for (UObject* a : marks)
             {
-                UObject* a = (*arr)[i].ObjectPointer;
-                if (!alive(a) || items.count(a)) continue;   // skip dead entries and duplicates
+                if (!alive_seh(a) || items.count(a)) continue;   // skip dead entries and duplicates
                 rock_add(a, list, items, ids, by_id);
             }
         }
@@ -471,11 +502,13 @@ namespace
 
     // WHAT: nearest rock actor whose ore == item, by game distance. out = its aim numbers. nullptr when none. Result cached per (sid, item).
     // WHY: filters by ore first (cheap map lookup), so only rocks of that ore have their location read.
-    UObject* nearest_item_actor(int sid, const ActFrame& f, UObject* item, ActAim& out)
+    // skip: this rock actor is left out; skip_ids: rock ids left out (no-yield list). No cache use when either is set: the cached pick may be a skipped one.
+    UObject* nearest_item_actor(int sid, const ActFrame& f, UObject* item, ActAim& out, UObject* skip = nullptr, const std::set<int>* skip_ids = nullptr)
     {
         const ULONGLONG now = GetTickCount64();
         PickCache& pc = g_pick_cache[std::make_pair(sid, item)];
-        if (pc.ms != 0 && now - pc.ms < static_cast<ULONGLONG>(MINE_ROCK_CHECK_S * 1000.0) && std::equal(f.loc, f.loc + 3, pc.origin) &&
+        const bool bypass = skip || (skip_ids && !skip_ids->empty());
+        if (!bypass && pc.ms != 0 && now - pc.ms < static_cast<ULONGLONG>(MINE_ROCK_CHECK_S * 1000.0) && std::equal(f.loc, f.loc + 3, pc.origin) &&
             (!pc.actor || actor_ok(pc.actor)))
         {
             if (pc.actor) out = pc.aim;
@@ -485,14 +518,15 @@ namespace
         ActAim best_aim;
         for (UObject* a : g_rock_actors)
         {
+            if (a == skip) continue;
             auto it = g_rock_item.find(a);
             if (it == g_rock_item.end() || it->second != item) continue;
+            if (skip_ids && skip_ids->count(rock_id_of(a))) continue;
             ActAim r;
             if (!act_aim(f, a, r)) continue;
             if (!best || r.dist_m < best_aim.dist_m) { best = a; best_aim = r; }
         }
-        pc.ms = now; pc.actor = best; pc.aim = best_aim;
-        std::copy(f.loc, f.loc + 3, pc.origin);
+        if (!bypass) { pc.ms = now; pc.actor = best; pc.aim = best_aim; std::copy(f.loc, f.loc + 3, pc.origin); }
         if (best) out = best_aim;
         return best;
     }
