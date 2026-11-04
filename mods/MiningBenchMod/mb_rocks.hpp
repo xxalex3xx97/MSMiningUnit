@@ -98,7 +98,7 @@ namespace
     {
         auto* c = static_cast<MarkersCtx*>(p);
         auto* arr = c->ctrl->GetValuePtrByPropertyNameInChain<TArray<FScriptInterface>>(STR("ScannableHUDMarkers"));
-        c->n = arr ? arr->Num() : 0;
+        c->n = arr ? clamp_tarray_num(arr->Num()) : 0;
         for (int32_t i = 0; c->buf && arr && i < c->n && i < c->cap; ++i) c->buf[i] = (*arr)[i].ObjectPointer;
     }
     bool markers_read(UObject* ctrl, std::vector<UObject*>& out)

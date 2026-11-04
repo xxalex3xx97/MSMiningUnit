@@ -50,8 +50,9 @@ namespace
     }
 
     // WHAT: scans all player ships. Each ship with bench blocks gets a log line (id, class, bench counts, DockID, MiningBeaconID), and an entry in bench_ships. Then writes ships.txt.
-    //       Destroyed ships (SHIP_DEAD_SCANS scans in a row with a signal) go to dead_ids instead, and are written with has-bench 0.
-    //       Signals: A = hull Health reads 0. B = the ship had a bench last scan and is missing from FindAllOf (skipped while the list is empty: save load).
+    //       Destroyed ships go to dead_ids instead, and are written with has-bench 0.
+    //       Signals: A = hull Health reads 0 (SHIP_DEAD_SCANS scans in a row). B = the ship had a bench last scan and is missing from FindAllOf
+    //       (SHIP_MISSING_SCANS scans in a row; skipped while the list is empty: save load).
     // WHY: a destroyed ship's UObject can still be listed and readable (log 2026-11-04: ships kept showing in the bench and the selector), so the scan decides, not the object's alive().
     // WHY bench_prev: the scan is the only place that sees the list each time; the mining state is cleared by the caller (mine_set_bench -> mine_forget_ship).
     // It calls FindAllOf on every call, so the caller runs it on a timer, not every frame.
@@ -105,9 +106,9 @@ namespace
             if (ships.empty()) { bench_now.insert(id); continue; }   // empty list = not filled yet (save load): no signal
             const int n = dead_scan_next(g_dead_n[id], true);
             g_dead_n[id] = n;
-            if (dead_confirmed(n))
+            if (dead_confirmed(n, SHIP_MISSING_SCANS))
             {
-                if (n == SHIP_DEAD_SCANS) log_line(STR("DEAD signal ship=") + std::to_wstring(id) + STR(" missing from the ship list on ") + std::to_wstring(SHIP_DEAD_SCANS) + STR(" scans"));
+                if (n == SHIP_MISSING_SCANS) log_line(STR("DEAD signal ship=") + std::to_wstring(id) + STR(" missing from the ship list on ") + std::to_wstring(SHIP_MISSING_SCANS) + STR(" scans"));
                 dead_ids.push_back(id);
                 g_dead_n.erase(id);
             }

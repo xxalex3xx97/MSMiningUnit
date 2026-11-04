@@ -464,14 +464,68 @@ namespace
 
     // WHAT: destroyed-ship debounce. A scan with the destroyed signal adds 1 to the ship's count, a scan without it sets 0.
     // WHY: one scan can read a transient value (hull 0, ship missing from the list), so a ship counts as destroyed only after SHIP_DEAD_SCANS scans in a row.
+    // signal A (hull Health 0) = SHIP_DEAD_SCANS; signal B (missing from FindAllOf) needs SHIP_MISSING_SCANS: a list read can miss a ship for a scan or two.
     constexpr int SHIP_DEAD_SCANS = 2;
+    constexpr int SHIP_MISSING_SCANS = 3;
     inline int dead_scan_next(int prev, bool signal)
     {
         return signal ? prev + 1 : 0;
     }
-    inline bool dead_confirmed(int count)
+    inline bool dead_confirmed(int count, int need = SHIP_DEAD_SCANS)
     {
-        return count >= SHIP_DEAD_SCANS;
+        return count >= need;
+    }
+
+    // WHAT: TArray Num read from game memory, clamped to 0..100000 before it sizes a buffer.
+    // WHY: a stale or wrong array count must not allocate or index past the array.
+    constexpr int32_t TARRAY_NUM_MAX = 100000;
+    inline int32_t clamp_tarray_num(int32_t n) { return std::clamp(n, static_cast<int32_t>(0), TARRAY_NUM_MAX); }
+
+    // WHAT: one TargettedBy entry is hostile. Our own bench ship: never. A readable entry: hostile unless it shares the ship's owner or faction.
+    //       An unreadable entry: hostile only when the array element type is a known object type (no owner can be read from it).
+    // WHY: an entry that shares our owner/faction is not an attacker; an unreadable non-object element is not counted either.
+    inline bool target_entry_hostile(bool live, bool own, bool same_side, bool object_type)
+    {
+        if (own) return false;
+        return live ? !same_side : object_type;
+    }
+
+    // ---------- hazard flee: hull drop with no hostile targeter ----------
+    // WHAT: the flee is a hazard flee when the hull drop had no hostile targeter at the sample (the damage has no attacker).
+    inline bool hazard_flee(int hostile_n) { return hostile_n <= 0; }
+    constexpr double HAZARD_STUCK_MPS = 1.0;     // speed below this = not moving (m/s)
+    constexpr size_t HAZARD_STUCK_N = 3;         // speed samples (1 s apart) below HAZARD_STUCK_MPS in a row = stuck
+    // WHAT: last HAZARD_STUCK_N speed samples (oldest first) all below HAZARD_STUCK_MPS.
+    inline bool speed_stuck(const std::vector<double>& hist)
+    {
+        if (hist.size() < HAZARD_STUCK_N) return false;
+        for (size_t i = hist.size() - HAZARD_STUCK_N; i < hist.size(); ++i)
+            if (hist[i] >= HAZARD_STUCK_MPS) return false;
+        return true;
+    }
+    // WHAT: hull lost per second over the samples (1 s apart, oldest first): (first - last) / (n - 1). 0 with fewer than 2 samples or no loss.
+    inline double hull_rate_per_s(const std::vector<int32_t>& hist)
+    {
+        if (hist.size() < 2) return 0.0;
+        const double d = static_cast<double>(hist.front() - hist.back()) / static_cast<double>(hist.size() - 1);
+        return d > 0.0 ? d : 0.0;
+    }
+    constexpr double HAZARD_MOVE_AFTER_S = 5.0;  // hull still dropping this long after the flee began: move away (no hold)
+    constexpr double HAZARD_DROP_FRESH_S = 2.0;  // a hull drop this recent counts as "still dropping"
+    constexpr double HAZARD_RADIUS_M = 5000.0;   // move-away point: this far from the damage start (m); circling keeps the ship >= 2 km away
+    constexpr double HAZARD_RETRY_S = 1.0;       // a refused or finished move-away is re-issued after this long (s)
+    // WHAT: the move-away is due: 5 s or more since the flee began, a hull drop in the last 2 s, and no move or dock job runs.
+    inline bool hazard_move_due(double flee_t, double drop_age, bool move_busy, bool dock_busy)
+    {
+        return flee_t >= HAZARD_MOVE_AFTER_S && drop_age < HAZARD_DROP_FRESH_S && !move_busy && !dock_busy;
+    }
+    // WHAT: direction k of the move-away circle: base turned k * 90 degrees about Z (XY plane; z kept). k = 0 is base.
+    inline void hazard_dir(const double base[3], int k, double out[3])
+    {
+        const int q = ((k % 4) + 4) % 4;
+        double x = base[0], y = base[1];
+        for (int i = 0; i < q; ++i) { const double nx = -y; y = x; x = nx; }   // +90 degrees per step
+        out[0] = x; out[1] = y; out[2] = base[2];
     }
 
     // ---------- combat: target flee trigger and combat log text (mb_mining.hpp samples the game, mb_common.hpp writes the file) ----------

@@ -993,6 +993,52 @@ static void t_combat_flee()
     CHECK(!target_latch_next(false, true));                    // never set without a flee
 }
 
+static void t_hazard_flee()
+{
+    // hazard = hull drop with no hostile targeter
+    CHECK(hazard_flee(0));
+    CHECK(!hazard_flee(1));
+    // stuck = last 3 speed samples below 1 m/s
+    CHECK(speed_stuck({5.0, 0.5, 0.2, 0.1}));
+    CHECK(!speed_stuck({0.1, 0.2, 5.0}));
+    CHECK(!speed_stuck({0.1, 0.2}));                           // fewer than 3 samples
+    CHECK(!speed_stuck({0.0, 0.0, 0.0, 0.0, 0.0, 1.0}));      // 1.0 is not below 1 m/s
+    // hull rate per second over 1 s samples
+    NEAR(hull_rate_per_s({100, 80, 60}), 20.0, 1e-9);
+    NEAR(hull_rate_per_s({214, 174, 134, 94, 54, 14}), 40.0, 1e-9);
+    CHECK(hull_rate_per_s({100}) == 0.0);
+    CHECK(hull_rate_per_s({50, 60}) == 0.0);                  // a gain is not a loss
+    // move-away due: 5 s after the flee, drop in the last 2 s, nothing else moving
+    CHECK(!hazard_move_due(4.9, 0.0, false, false));
+    CHECK(hazard_move_due(5.0, 0.0, false, false));
+    CHECK(!hazard_move_due(5.0, 3.0, false, false));          // no fresh drop
+    CHECK(!hazard_move_due(5.0, 0.0, true, false));           // move job running
+    CHECK(!hazard_move_due(5.0, 0.0, false, true));           // dock job running
+    // circle directions: base turned 90 deg per step, z kept
+    const double base[3] = {1.0, 0.0, 0.5};
+    double d[3];
+    hazard_dir(base, 0, d); CHECK(d[0] == 1.0 && d[1] == 0.0 && d[2] == 0.5);
+    hazard_dir(base, 1, d); NEAR(d[0], 0.0, 1e-9); NEAR(d[1], 1.0, 1e-9); CHECK(d[2] == 0.5);
+    hazard_dir(base, 2, d); NEAR(d[0], -1.0, 1e-9); NEAR(d[1], 0.0, 1e-9);
+    hazard_dir(base, 4, d); NEAR(d[0], 1.0, 1e-9); NEAR(d[1], 0.0, 1e-9);
+    hazard_dir(base, -1, d); NEAR(d[0], 0.0, 1e-9); NEAR(d[1], -1.0, 1e-9);
+}
+
+static void t_targett_entry()
+{
+    CHECK(!target_entry_hostile(true, true, false, true));    // our own bench ship
+    CHECK(!target_entry_hostile(true, false, true, true));    // same owner or faction as the ship
+    CHECK(target_entry_hostile(true, false, false, true));    // readable, other side
+    CHECK(target_entry_hostile(false, false, false, true));   // unreadable object entry
+    CHECK(!target_entry_hostile(false, false, false, false)); // unreadable, not an object type
+    CHECK(clamp_tarray_num(-5) == 0);
+    CHECK(clamp_tarray_num(7) == 7);
+    CHECK(clamp_tarray_num(250000) == TARRAY_NUM_MAX);
+    CHECK(SHIP_DEAD_SCANS == 2 && SHIP_MISSING_SCANS == 3);   // signal A stays at 2, signal B (missing from the list) needs 3
+    CHECK(!dead_confirmed(2, SHIP_MISSING_SCANS) && dead_confirmed(3, SHIP_MISSING_SCANS));
+    CHECK(dead_confirmed(2));
+}
+
 static void t_combat_log()
 {
     CHECK(combat_log_trim("abc\n", 10) == "abc\n");            // under cap: unchanged
@@ -1072,6 +1118,7 @@ int main()
         {"net_flee_no_slot", t_net_flee_no_slot}, {"net_slots", t_net_slots}, {"net_slot_pos", t_net_slot_pos}, {"net_offset_carry", t_net_offset_carry}, {"net_line_spacing", t_net_line_spacing},
         {"net_clear_expired", t_net_clear_expired}, {"net_unload_first", t_net_unload_first}, {"dock_undock_first", t_dock_undock_first},
         {"combat_flee", t_combat_flee}, {"combat_log", t_combat_log},
+        {"hazard_flee", t_hazard_flee}, {"targett_entry", t_targett_entry},
     };
     for (const Case& c : cases)
     {

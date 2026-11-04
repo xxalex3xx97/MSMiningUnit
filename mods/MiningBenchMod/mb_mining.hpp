@@ -125,7 +125,25 @@ namespace
         double flee_t = -1.0;                  // seconds since the flee started (-1 = no flee running)
         double atk_acc = 0.0;                  // seconds in an attack since the last 30 s summary
         std::wstring atk_txt = STR("none");    // attackers at the last attacked sample (kept after the attack: the destroyed record uses it)
-        std::wstring chunk_txt = STR("n/a"), sec_txt = STR("n/a");   // ship chunk (last attacked sample) / sector id and name
+        std::wstring chunk_txt = STR("n/a"), sec_txt = STR("n/a");   // ship chunk (last status sample) / sector id and name (or why n/a)
+        // hazard flee (hull drop, no hostile targeter): the ship keeps moving, circles HAZARD_RADIUS_M around the damage start
+        bool hazard = false;                   // this flee is a hazard flee (set in flee_now)
+        int32_t hz_drop = 0;                   // hull lost at the hazard trigger
+        bool hz_ok = false;                    // damage start (hz_*) known
+        int hz_sys = 0, hz_k = 0;              // damage start system; circle step (hazard_dir)
+        int64_t hz_ch[3] = {0, 0, 0};          // damage start chunk and raw location (dock_add_m input)
+        double hz_loc[3] = {0, 0, 0};
+        double hz_dir[3] = {1, 0, 0};          // away from the rock at the trigger (unit)
+        double hz_t = 0.0;                     // seconds since the last move-away try (HAZARD_RETRY_S)
+        double drop_age = 1e9;                 // seconds since the last hull drop (1 s samples)
+        std::vector<double> spd_h;             // speed (m/s) of the last 6 status samples, oldest first (5 s history)
+        std::vector<int32_t> hull_h;           // Health of the same samples
+        int sys = 0;                           // ship system, chunk and raw location at the last status sample
+        int64_t ch[3] = {0, 0, 0};
+        bool chunk_ok = false;                 // ch and raw valid
+        double raw[3] = {0, 0, 0};
+        double sec_clock = 0.0;                // seconds since the sector text was read (refreshed every 10 s and on each hull drop)
+        std::wstring dmg_txt = STR("n/a");     // Health/DamageState struct at the last status sample (raw ints)
     };
     std::map<int, MineSt> g_mine;
     std::map<int, int> g_mine_fault_n;   // per ship: SEH faults since its Start (mine_fault); reset by Start
@@ -188,7 +206,24 @@ namespace
         else if (text.rfind(STR("at dock, waiting"), 0) != 0) mlog(sid, m.st == MS_HALT ? STR("Stopped: ") + text : text);   // per-item countdown would flood the 20-line ring
     }
 
+    // WHAT: "<id> <name>" of the sector the ship is in, or "n/a (<reason>)" = why it is unknown (no system/chunk, sector list empty, no sector covers the chunk).
+    // WHY: the sector list comes from MSCore (ms_load); the reason tells a missing list from a missing sector. Reads the sector list: call it rarely.
+    std::wstring sector_text(UObject* ship)
+    {
+        int sys = 0;
+        int64_t ch[3] = {0, 0, 0};
+        if (!ship_pos(ship, sys, ch)) return STR("n/a (no system or chunk)");
+        const std::vector<SecInfo> secs = sectors_read();
+        if (secs.empty()) return STR("n/a (sector list empty)");
+        const SecInfo* s = sector_of(secs, sys, ch);
+        if (!s) return STR("n/a (no sector covers chunk ") + trio_text(ch) + STR(" sys ") + std::to_wstring(sys) + STR(")");
+        return std::to_wstring(s->id) + STR(" ") + s->name;
+    }
+
+    std::wstring combat_extra(int sid, const MineSt& m);   // defined before hull_watch (needs who_text and the dock geometry)
+
     // WHAT: one combat line for ship sid (UE4SS log + MiningCombat.txt): head (trigger), hull, chunk, sector, position, speed, state, the attackers at the last attacked sample.
+    //       combat_extra adds the 5 s speed history, hull rate, motion, rock, DamageState and the nearest objects.
     //       full = also the last 5 states and the last 10 Log tab lines (the destroyed record).
     // WHY: a loss must be explainable from MiningCombat.txt alone; a destroyed ship cannot be read, so the attackers are the last-known ones (MineSt values).
     void combat_record(int sid, const MineSt& m, const std::wstring& head, bool full)
@@ -213,6 +248,7 @@ namespace
                 for (size_t i = from; i < lg->second.size(); ++i) s += STR(" [") + lg->second[i].hms + STR(" ") + lg->second[i].text + STR("]");
             }
         }
+        s += combat_extra(sid, m);
         combat_log(s);
     }
 
@@ -234,14 +270,25 @@ namespace
     }
 
 
+    // WHAT: rock ids where a ship took hull damage with no hostile targeter (hazard flee). Global (all ships), cleared only by a game restart.
+    // WHY: the rock search and approach must never pick such a rock again.
+    std::set<int> g_hazard_rocks;
+
     // nearest rock holding `item` measured from the anchor (not the ship); nullptr when none or outside the radius
-    // skip_ids: no-yield rock ids left out (MineSt::noy_skip)
+    // skip_ids: no-yield rock ids left out (MineSt::noy_skip); g_hazard_rocks are always left out too
     UObject* rock_in_range(int sid, const double anchor[3], UObject* item, double rad_m, UObject* skip = nullptr, const std::set<int>* skip_ids = nullptr)
     {
         rock_list_ensure();
         ActFrame f;
         std::copy(anchor, anchor + 3, f.loc);
         ActAim r;
+        std::set<int> merged;
+        if (!g_hazard_rocks.empty())
+        {
+            if (skip_ids) merged = *skip_ids;
+            merged.insert(g_hazard_rocks.begin(), g_hazard_rocks.end());
+            skip_ids = &merged;
+        }
         UObject* a = nearest_item_actor(sid, f, item, r, skip, skip_ids);
         if (!a || !actor_ok(a)) return nullptr;
         if (rad_m > 0.0 && r.dist_m > rad_m) return nullptr;
@@ -722,8 +769,38 @@ namespace
 
     // WHAT: starts the flee: stop work, dock trip (purpose P_FLEE), trip_end halts at the dock. why = trigger text ("hull hit 350 -> 320", "targeted by 2, combat 1").
     //       The attacker record is written before the stop, so it shows the state the ship was in when it was hit.
-    void flee_now(UObject* ship, int sid, MineSt& m, const std::wstring& why)
+    // drop > 0: a hull trigger that lost this much hull. A hull trigger with no hostile targeter (tgt_n 0) is a hazard flee:
+    //   the damage start is kept (move-away circle), and the rock being approached or mined is marked hazardous (g_hazard_rocks).
+    void flee_now(UObject* ship, int sid, MineSt& m, std::wstring why, int32_t drop = 0)
     {
+        m.hazard = drop > 0 && hazard_flee(m.tgt_n);
+        m.hz_drop = drop;
+        m.hz_k = 0; m.hz_t = 0.0;
+        m.sec_txt = sector_text(ship);   // the record must show the place, not the last attacked sample's
+        m.dmg_txt = struct_prop_text(ship, STR("DamageState"));
+        if (m.hazard)
+        {
+            why += STR(" no attacker");
+            // damage start: the ship's chunk and raw location; away direction = from the rock to the ship (+X when unknown)
+            int64_t ch[3] = {0, 0, 0}; double raw[3] = {0, 0, 0};
+            m.hz_ok = sys_id(ship) > 0 && get_chunk(ship, ch) && get_loc(ship, raw);
+            if (m.hz_ok) { m.hz_sys = sys_id(ship); std::copy(ch, ch + 3, m.hz_ch); std::copy(raw, raw + 3, m.hz_loc); }
+            m.hz_dir[0] = 1.0; m.hz_dir[1] = 0.0; m.hz_dir[2] = 0.0;
+            ActFrame f; ActAim ra_aim;
+            UObject* rock = m.rock > 0 ? rock_actor_by_id(m.rock) : nullptr;
+            if (rock && act_frame(ship, f) && act_aim(f, rock, ra_aim))
+            {
+                double d[3] = {f.loc[0] - ra_aim.rloc[0], f.loc[1] - ra_aim.rloc[1], f.loc[2] - ra_aim.rloc[2]};
+                const double n = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+                if (n > 1e-9) for (int i = 0; i < 3; ++i) m.hz_dir[i] = d[i] / n;
+            }
+            if (m.rock > 0 && (m.st == MS_SEEK || m.st == MS_MINE || m.st == MS_COLLECT))
+            {
+                g_hazard_rocks.insert(m.rock);
+                log_line(STR("rock ") + std::to_wstring(m.rock) + STR(" marked hazardous (hull drop ") + std::to_wstring(drop) + STR(", no attacker)"));
+            }
+            else log_line(STR("HAZARD ship=") + std::to_wstring(sid) + STR(" no rock marked (state ") + mine_state_name(m.st) + STR(", rock ") + std::to_wstring(m.rock) + STR(")"));
+        }
         combat_record(sid, m, STR("FLEE ") + why, false);
         m.hull = -1;
         mine_stop_work(ship, sid);
@@ -764,7 +841,7 @@ namespace
             int32_t h = 0;
             const bool docked = ship_docked(ship);
             if (m.flee || m.since_stop < MINE_FLEE_GRACE_S || docked || !get_int_prop(ship, STR("Health"), h) || player_flies(ship)) m.hull = -1;
-            else if (hull_dropped(m.hull, h)) { flee_now(ship, sid, m, STR("hull hit ") + std::to_wstring(m.hull) + STR(" -> ") + std::to_wstring(h)); return true; }
+            else if (hull_dropped(m.hull, h)) { flee_now(ship, sid, m, STR("hull hit ") + std::to_wstring(m.hull) + STR(" -> ") + std::to_wstring(h), m.hull - h); return true; }
             else if (tgt_flee(ship, sid, m)) return true;
             else m.hull = h;
         }
@@ -784,7 +861,7 @@ namespace
             if (get_int_prop(ship, STR("Health"), h))
             {
                 if (m.hull < 0) log_line(STR("MINE ship=") + std::to_wstring(sid) + STR(" hull baseline ") + std::to_wstring(h));
-                if (hull_dropped(m.hull, h)) { flee_now(ship, sid, m, STR("hull hit ") + std::to_wstring(m.hull) + STR(" -> ") + std::to_wstring(h)); return true; }
+                if (hull_dropped(m.hull, h)) { flee_now(ship, sid, m, STR("hull hit ") + std::to_wstring(m.hull) + STR(" -> ") + std::to_wstring(h), m.hull - h); return true; }
                 if (tgt_flee(ship, sid, m)) return true;
                 m.hull = h;
             }
@@ -962,8 +1039,8 @@ namespace
                 if (noy_all_halt(c.belt)) { mine_stop_work(ship, sid); m.st = MS_HALT; mset(sid, m, STR("rocks give no ore")); return; }
                 if (belt_go(ship, sid, m, c, item, true) != 0) return;   // warp started, or HALT / go home (no sector left)
             }
-            // approach_rock picks the nearest rock by itself: pin the chosen one when it is not the nearest (the abandoned one)
-            if (m.abandon && rock) g_sel_rocks[sid] = rock_id_of(rock);
+            // approach_rock picks the nearest rock by itself (no skip lists): pin the rock rock_in_range chose (it honours the no-yield and hazard skips)
+            if (rock && m.col_rock == 0) g_sel_rocks[sid] = rock_id_of(rock);   // a cargo-full return keeps its own pin (set above)
             m.abandon = nullptr;
             if (rock) m.idle_polls = 0;
             m.no_rock = !rock;
@@ -1391,6 +1468,31 @@ namespace
         net_offset_pos(ch0, loc0, off_m, g_raw_per_m, ch, loc);
     }
 
+    // WHAT: true while a dock job of the ship runs (autopilot to a dock / unload / refuel / undock).
+    bool dock_job_on(int sid)
+    {
+        for (const DockJob& j : g_jobs) if (j.sid == sid) return true;
+        return false;
+    }
+
+    // WHAT: hazard flee move: a point flight to HAZARD_RADIUS_M from the damage start, in circle direction hz_k (hazard_dir), then hz_k + 1 next time.
+    //       Returns true when the move job started. A refused start (no mining distance, a job runs) changes nothing; the caller retries.
+    // WHY: a hazard ship must leave the damage place and keep moving, not hold (the dock queue wait is circling, not a slot).
+    bool hazard_away(int sid, MineSt& m)
+    {
+        if (!m.hz_ok) return false;
+        double dir[3], off[3];
+        hazard_dir(m.hz_dir, m.hz_k, dir);
+        for (int i = 0; i < 3; ++i) off[i] = dir[i] * HAZARD_RADIUS_M;
+        PtTarget pt;
+        pt.sys = m.hz_sys;
+        dock_add_m(m.hz_ch, m.hz_loc, off, pt.ch, pt.loc);
+        const std::wstring r = move_start(sid, "approach_rock", -1, nullptr, &pt);
+        if (r != STR("waiting")) return false;
+        ++m.hz_k;
+        return true;
+    }
+
     // WHAT: flight or warp to the slot is over: stop, hold (hold_ph 2), phase holding, Control lines.
     void slot_arrive(UObject* ship, int sid, MineSt& m, NetShip& s, int d)
     {
@@ -1620,7 +1722,8 @@ namespace
             m.dwait_total += dt;
             if (dwait_halt(m.dwait_total))   // longest dock wait of this trip (MINE_DWAIT_MAX_S): HALT, not an error
             {
-                net_leave_slot(sid); m.dwait = false; m.st = MS_HALT; mset(sid, m, STR("waited 15 min for a dock"));
+                net_leave_slot(sid); m.dwait = false; m.flee = false; m.flee_t = -1.0; g_flee_pick.erase(sid);   // a flee that waited out: no flee left running
+                m.st = MS_HALT; mset(sid, m, STR("waited 15 min for a dock"));
                 return;
             }
             const auto gi = g_net_ships.find(sid);
@@ -1628,7 +1731,14 @@ namespace
             if (!granted && m.dwait_t < 60.0)
             {
                 // holding slot: fly / warp there and hold (every tick, cheap); the wait text once a second: dock, holder, queue place, elapsed time
-                const bool slot_ok = slot_flight(ship, sid, m, dt);
+                // hazard flee: no holding slot (it would park the ship in the damage place). It keeps moving away in circles until the grant.
+                bool slot_ok = true;
+                if (m.flee && m.hazard)
+                {
+                    m.hz_t += dt;
+                    if (m.hz_t >= HAZARD_RETRY_S && !mv_active(sid) && !dock_job_on(sid)) { m.hz_t = 0.0; hazard_away(sid, m); }
+                }
+                else slot_ok = slot_flight(ship, sid, m, dt);
                 if (m.flee && m.hold_ph == 2)   // a fleeing ship that reached its holding spot: the flee ends here (no dock slot taken)
                 {
                     net_leave_slot(sid);
@@ -1997,14 +2107,6 @@ namespace
         return n.empty() ? std::wstring(o->GetName()) : n;
     }
 
-    // WHAT: "<id> <name>" of the sector the ship is in, "n/a" when unknown. Reads the sector list (mb_belt), so call it rarely (attack start, 30 s summary).
-    std::wstring sector_text(UObject* ship)
-    {
-        const int id = cur_sector_id(ship);
-        if (id <= 0) return STR("n/a");
-        for (const SecInfo& s : sectors_read()) if (s.id == id) return std::to_wstring(id) + STR(" ") + s.name;
-        return std::to_wstring(id);
-    }
 
     // WHAT: target read of one ship (ctx for seh_run). combat = IsShipInCombat() (bool getter). TargettedBy: total entries, hostile entries (not one of our bench ships;
     //       an entry that cannot be read counts as hostile), txt = the first 8 entries described (attacker_text). Read-only.
@@ -2033,7 +2135,9 @@ namespace
         const int32_t stride = inner ? inner->GetElementSize() : 0;
         double sp[3] = {0, 0, 0};
         const bool sp_ok = get_loc(ship, sp);
-        c->total = arr->Num();
+        c->total = clamp_tarray_num(arr->Num());
+        UObject* so = get_obj_prop(ship, STR("Owner"));      // our owner / faction: an entry sharing either is not an attacker
+        UObject* sf = get_obj_prop(ship, STR("Faction"));
         for (int32_t i = 0; i < c->total; ++i)
         {
             UObject* e = nullptr;
@@ -2041,11 +2145,14 @@ namespace
             const bool live = e && alive(e);
             const int32_t id = live ? obj_id(e) : -1;
             const bool own = id > 0 && std::find(g_bench_ids.begin(), g_bench_ids.end(), id) != g_bench_ids.end();
-            if (!own) c->hostile++;
+            UObject* eo = live ? get_obj_prop(e, STR("Owner")) : nullptr;
+            UObject* ef = live ? get_obj_prop(e, STR("Faction")) : nullptr;
+            const bool same_side = (alive(eo) && eo == so) || (alive(ef) && ef == sf);
+            if (target_entry_hostile(live, own, same_side, objs)) c->hostile++;
             if (i >= 8) continue;
             const std::wstring cls = live ? std::wstring(e->GetClassPrivate()->GetName()) : std::wstring(STR("unreadable ")) + (inner ? type_text(inner) : std::wstring(STR("?")));
             const std::wstring name = live ? who_text(e) : std::wstring(STR("n/a"));
-            const std::wstring owner = who_text(live ? get_obj_prop(e, STR("Owner")) : nullptr) + STR(" / ") + who_text(live ? get_obj_prop(e, STR("Faction")) : nullptr);
+            const std::wstring owner = who_text(eo) + STR(" / ") + who_text(ef);
             double ep[3] = {0, 0, 0};
             const double dm = (live && sp_ok && get_loc(e, ep)) ? dist3(sp, ep) / 100.0 : -1.0;
             c->txt += (c->txt.empty() ? STR("") : STR("; ")) + attacker_text(i + 1, cls, id, name, owner, dm, own);
@@ -2073,7 +2180,6 @@ namespace
         m.tgt_latch = target_latch_next(m.tgt_latch, attacked);
         if (!attacked) { m.atk_on = false; m.atk_acc = 0.0; return; }
         m.atk_txt = c.txt.empty() ? STR("none") : c.txt;
-        m.chunk_txt = pvec_text(ship, STR("ChunkLocation"));
         if (!m.atk_on)
         {
             m.atk_on = true;
@@ -2090,6 +2196,75 @@ namespace
         }
     }
 
+    // WHAT: nearest 5 objects within COMBAT_NEAR_M of the ship's last known place: rocks (rock actors), other player ships (same system), docks
+    //       (known dock positions of this system). "name distance". Stars are not in any scan cache, so they are not listed.
+    // WHY: a loss must show what was around the ship. The ships list is read here (FindAllOf) only when a combat line is written.
+    constexpr double COMBAT_NEAR_M = 20000.0;
+    std::wstring nearby_text(int sid, const MineSt& m)
+    {
+        struct Near { double d; std::wstring t; };
+        std::vector<Near> v;
+        ActFrame f;
+        std::copy(m.pos, m.pos + 3, f.loc);
+        if (m.pos_ok)
+            for (UObject* a : g_rock_actors)
+            {
+                ActAim r;
+                if (act_aim(f, a, r) && r.dist_m <= COMBAT_NEAR_M) v.push_back({r.dist_m, STR("rock ") + std::to_wstring(rock_id_of(a))});
+            }
+        std::vector<UObject*> ships;
+        UObjectGlobals::FindAllOf(STR("DMSPlayerShipObject"), ships);
+        for (UObject* s : ships)
+        {
+            if (!alive(s) || obj_id(s) == sid || sys_id(s) != m.sys) continue;
+            ActFrame g;
+            if (!m.pos_ok || !act_frame(s, g)) continue;
+            const double d = dist3(f.loc, g.loc) / MV_UU_PER_M;
+            if (d <= COMBAT_NEAR_M) v.push_back({d, STR("ship ") + std::to_wstring(obj_id(s)) + STR(" '") + who_text(s) + STR("'")});
+        }
+        for (const auto& kv : g_net_dockpos)
+        {
+            const DockPos& dp = kv.second;
+            if (!dp.known || !m.chunk_ok || dp.sys != m.sys) continue;
+            double a[3], dk[3];
+            dock_abs_m(m.ch, m.raw, a);
+            dock_abs_m(dp.ch, dp.loc, dk);
+            const double d = std::sqrt((a[0] - dk[0]) * (a[0] - dk[0]) + (a[1] - dk[1]) * (a[1] - dk[1]) + (a[2] - dk[2]) * (a[2] - dk[2]));
+            if (d <= COMBAT_NEAR_M) v.push_back({d, STR("dock ") + widen(net_dock_label(kv.first))});
+        }
+        if (v.empty()) return STR("near=[none within 20 km]");
+        std::sort(v.begin(), v.end(), [](const Near& x, const Near& y) { return x.d < y.d; });
+        std::wstring s = STR("near=[");
+        for (size_t i = 0; i < v.size() && i < 5; ++i)
+            s += (i ? STR("; ") : STR("")) + v[i].t + STR(" ") + std::to_wstring(static_cast<long long>(v[i].d)) + STR("m");
+        return s + STR("]");
+    }
+
+    // WHAT: the extra part of a combat line (starts with " | "): speed of the last 5 s (1 s samples), hull lost per second over them, motion
+    //       (moving / stuck = speed < 1 m/s for 3 s, "losing hull" when a drop came in the last 2 s), the rock approached and its distance,
+    //       DamageState counters (raw), and the nearest objects.
+    std::wstring combat_extra(int sid, const MineSt& m)
+    {
+        std::wstring spd;
+        for (size_t i = 0; i < m.spd_h.size(); ++i) spd += (i ? STR(",") : STR("")) + std::to_wstring(static_cast<long long>(m.spd_h[i]));
+        const bool losing = m.drop_age < HAZARD_DROP_FRESH_S;
+        const bool stuck = speed_stuck(m.spd_h);
+        const std::wstring motion = stuck ? (losing ? STR("STUCK-losing-hull") : STR("stuck")) : STR("moving");
+        double rd = -1.0;
+        UObject* rock = m.rock > 0 ? rock_actor_by_id(m.rock) : nullptr;
+        if (m.pos_ok && rock)
+        {
+            ActFrame f;
+            std::copy(m.pos, m.pos + 3, f.loc);
+            ActAim r;
+            if (act_aim(f, rock, r)) rd = r.dist_m;
+        }
+        return STR(" | spd5=[") + spd + STR("]m/s hull_rate=") + std::to_wstring(static_cast<long long>(std::llround(hull_rate_per_s(m.hull_h)))) + STR("/s") +
+               STR(" motion=") + motion + STR(" rock=") + (m.rock > 0 ? std::to_wstring(m.rock) : std::wstring(STR("none"))) +
+               STR(" rock_dist=") + (rd >= 0.0 ? std::to_wstring(static_cast<long long>(rd)) + STR("m") : std::wstring(STR("n/a"))) +
+               STR(" dmg=") + m.dmg_txt + STR(" ") + nearby_text(sid, m);
+    }
+
     // WHAT: hull watch, once a second per bench ship, in every state (docked and fleeing too): logs each hull drop (before -> after, state, docked / fleeing flags)
     //       and keeps MaxHealth. The flee baseline (MineSt.hull) is cleared while docked, fleeing or in grace, so hits there would not be logged otherwise.
     void hull_watch(UObject* ship, int sid, MineSt& m)
@@ -2098,11 +2273,16 @@ namespace
         if (!get_int_prop(ship, STR("Health"), h)) return;
         int32_t mx = 0;
         if (get_int_prop(ship, STR("MaxHealth"), mx)) m.hull_max = mx;
+        m.dmg_txt = struct_prop_text(ship, STR("DamageState"));
         if (m.hw >= 0 && h < m.hw)
         {
             const bool docked = ship_docked(ship);
+            m.drop_age = 0.0;
+            m.sec_txt = sector_text(ship);   // the drop is the sample that matters: read the sector now (chunk: mine_sample)
+            m.sec_clock = 0.0;
             combat_log(STR("COMBAT hull drop ship=") + std::to_wstring(sid) + STR(" ") + std::to_wstring(m.hw) + STR(" -> ") + std::to_wstring(h) + STR(" of ") + std::to_wstring(m.hull_max) +
-                       STR(" state=") + mine_state_name(m.st) + (docked ? STR(" docked") : STR("")) + (m.flee ? STR(" fleeing") : STR("")) + (m.tgt_n > 0 ? STR(" targeted") : STR("")));
+                       STR(" state=") + mine_state_name(m.st) + (docked ? STR(" docked") : STR("")) + (m.flee ? STR(" fleeing") : STR("")) + (m.tgt_n > 0 ? STR(" targeted") : STR("")) +
+                       STR(" hazard=") + (m.hazard && m.flee ? STR("1") : STR("0")) + combat_extra(sid, m));
         }
         m.hw = h;
     }
@@ -2127,12 +2307,29 @@ namespace
                 std::copy(f.loc, f.loc + 3, m.pos);
                 m.pos_ok = true;
             }
+            // system, chunk, raw location and the 5 s speed / hull history (1 s samples) for the combat lines
+            m.sys = sys_id(ship);
+            m.chunk_ok = m.sys > 0 && get_chunk(ship, m.ch) && get_loc(ship, m.raw);
+            m.chunk_txt = m.chunk_ok ? trio_text(m.ch) : STR("n/a");
+            m.spd_h.push_back(m.spd);
+            if (m.spd_h.size() > 6) m.spd_h.erase(m.spd_h.begin());
             const Config c = eff_cfg(sid);
             int slots = 0, fuel_s = 0, other_s = 0;
             m.cargo_pct = cargo_pct(ship, slots, fuel_s, other_s);
+            m.drop_age += el;
             hull_watch(ship, sid, m);
+            if (m.hw >= 0) { m.hull_h.push_back(m.hw); if (m.hull_h.size() > 6) m.hull_h.erase(m.hull_h.begin()); }
+            m.sec_clock += el;
+            if (m.sec_clock >= 10.0) { m.sec_clock = 0.0; m.sec_txt = sector_text(ship); }
             if (m.flee_t >= 0.0) m.flee_t += el;
             target_sample(ship, sid, m, el);
+            // hazard flee still losing hull 5 s after it began: move away instead of holding (no dock job or move job running)
+            m.hz_t += el;
+            if (m.flee && m.hazard && m.hz_t >= HAZARD_RETRY_S && hazard_move_due(m.flee_t, m.drop_age, mv_active(sid), dock_job_on(sid)))
+            {
+                m.hz_t = 0.0;
+                if (hazard_away(sid, m)) log_line(STR("HAZARD ship=") + std::to_wstring(sid) + STR(" hull still dropping ") + std::to_wstring(static_cast<int>(m.flee_t)) + STR(" s after the flee: moving away, circle step ") + std::to_wstring(m.hz_k));
+            }
             m.clog_t += el;
             if (m.clog_t >= 30.0)
             {
