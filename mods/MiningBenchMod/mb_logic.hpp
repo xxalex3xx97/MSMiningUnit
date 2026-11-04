@@ -1251,14 +1251,17 @@ namespace
     // WHAT: probe avoidance (mb_devcmd.hpp): watch limits and the command argument parsers. Pure, so tests/test_logic.cpp covers them.
     constexpr double PROBE_WATCH_MAX_S = 120.0;   // probe_avoid_watch seconds cap (larger values are clamped)
     constexpr size_t PROBE_WATCH_MAX_LINES = 500; // MiningProbeAvoid.txt line cap for the sampler (header and end line included)
+    constexpr double PROBE_Q16_PER_M = 65536.0;   // PNum / PVector raw per metre (Q16.16)
+    constexpr double PROBE_UU_PER_M = 100.0;      // FVector units per metre (UE standard)
+    constexpr double PROBE_FWD_FIXED_M = 50.0;    // collision watch: fixed forward probe distance
+    constexpr double PROBE_UP_M = 20.0;           // collision watch: raised probe height (m), the live AvoidanceQueryHeightOffset value
 
     // WHAT: true while the sampler should write another sample: one line below the cap (the last line is kept for the end line) and under the time asked for.
     inline bool probe_watch_more(size_t lines, double elapsed_s, double total_s) { return lines + 1 < PROBE_WATCH_MAX_LINES && elapsed_s < total_s; }
 
-    // WHAT: "probe_avoid:<ship>" -> sid. false for the bare "probe_avoid" or a non-digit id (the caller then uses the line's ship).
-    inline bool probe_parse_sid(const std::string& cmd, int& sid)
+    // WHAT: "<pre><ship>" -> sid. false for another prefix, an empty or non-digit id.
+    inline bool probe_parse_sid_pfx(const std::string& cmd, const std::string& pre, int& sid)
     {
-        const std::string pre = "probe_avoid:";
         if (cmd.rfind(pre, 0) != 0) return false;
         const std::string a = cmd.substr(pre.size());
         if (a.empty() || a.find_first_not_of("0123456789") != std::string::npos) return false;
@@ -1266,10 +1269,12 @@ namespace
         return sid > 0;
     }
 
-    // WHAT: "probe_avoid_watch:<ship>:<seconds>" -> sid and seconds (clamped to PROBE_WATCH_MAX_S). false when either part is missing or not a positive number.
-    inline bool probe_parse_watch(const std::string& cmd, int& sid, double& secs)
+    // WHAT: "probe_avoid:<ship>" -> sid. false for the bare "probe_avoid" or a non-digit id (the caller then uses the line's ship).
+    inline bool probe_parse_sid(const std::string& cmd, int& sid) { return probe_parse_sid_pfx(cmd, "probe_avoid:", sid); }
+
+    // WHAT: "<pre><ship>:<seconds>" -> sid and seconds (clamped to PROBE_WATCH_MAX_S). false when either part is missing or not a positive number.
+    inline bool probe_parse_watch_pfx(const std::string& cmd, const std::string& pre, int& sid, double& secs)
     {
-        const std::string pre = "probe_avoid_watch:";
         if (cmd.rfind(pre, 0) != 0) return false;
         const size_t c = cmd.find(':', pre.size());
         if (c == std::string::npos) return false;
@@ -1282,6 +1287,61 @@ namespace
         if (sid <= 0 || secs <= 0.0) return false;
         secs = std::min(secs, PROBE_WATCH_MAX_S);
         return true;
+    }
+
+    // WHAT: "probe_avoid_watch:<ship>:<seconds>" -> sid and seconds.
+    inline bool probe_parse_watch(const std::string& cmd, int& sid, double& secs) { return probe_parse_watch_pfx(cmd, "probe_avoid_watch:", sid, secs); }
+
+    // WHAT: "probe_collision_watch:<ship>:<seconds>" -> sid and seconds.
+    inline bool probe_parse_cwatch(const std::string& cmd, int& sid, double& secs) { return probe_parse_watch_pfx(cmd, "probe_collision_watch:", sid, secs); }
+
+    // WHAT: "probe_collision_call:<ship>:<x>:<y>:<z>" -> sid and the local offset v[0..2] in metres. false when the id is not positive or a value is not a finite number.
+    inline bool probe_parse_call(const std::string& cmd, int& sid, double v[3])
+    {
+        const std::string pre = "probe_collision_call:";
+        if (cmd.rfind(pre, 0) != 0) return false;
+        std::vector<std::string> parts;
+        for (size_t st = pre.size();;)
+        {
+            const size_t c = cmd.find(':', st);
+            parts.push_back(cmd.substr(st, c == std::string::npos ? std::string::npos : c - st));
+            if (c == std::string::npos) break;
+            st = c + 1;
+        }
+        if (parts.size() != 4 || parts[0].empty() || parts[0].find_first_not_of("0123456789") != std::string::npos) return false;
+        sid = std::atoi(parts[0].c_str());
+        if (sid <= 0) return false;
+        for (int i = 0; i < 3; ++i)
+        {
+            char* e = nullptr;
+            const double d = std::strtod(parts[i + 1].c_str(), &e);
+            if (parts[i + 1].empty() || e == parts[i + 1].c_str() || *e != '\0' || !std::isfinite(d)) return false;
+            v[i] = d;
+        }
+        return true;
+    }
+
+    // WHAT: metres to Q16.16 raw (the PNum / PVector Value unit: 65536 raw per m), rounded to the nearest raw unit.
+    inline int64_t probe_m_to_q16(double m) { return static_cast<int64_t>(std::llround(m * PROBE_Q16_PER_M)); }
+
+    // WHAT: metres to FVector units (UE standard, 100 uu per m).
+    inline double probe_m_to_uu(double m) { return m * PROBE_UU_PER_M; }
+
+    // WHAT: forward probe distance of the collision watch: 50 * Throttle / 10 m, Throttle clamped to at least 1.
+    inline double probe_fwd_m(int throttle) { return PROBE_FWD_FIXED_M * std::max(throttle, 1) / 10.0; }
+
+    // WHAT: bytes as lower-case hex pairs separated by spaces ("00 ff 0a"). Empty for n = 0.
+    inline std::wstring probe_hex(const uint8_t* p, size_t n)
+    {
+        static const wchar_t* const kDigits = L"0123456789abcdef";
+        std::wstring s;
+        for (size_t i = 0; i < n; ++i)
+        {
+            if (i) s += L' ';
+            s += kDigits[p[i] >> 4];
+            s += kDigits[p[i] & 15];
+        }
+        return s;
     }
 
     // WHAT: true when a property or function name holds one of the avoidance / impulse words (case-insensitive).

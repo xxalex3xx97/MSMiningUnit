@@ -1243,6 +1243,41 @@ static void t_probe()
     CHECK(!probe_name_match(L"Throttle"));
 }
 
+static void t_probe_collision()
+{
+    CHECK(probe_m_to_q16(1.0) == 65536);
+    CHECK(probe_m_to_q16(-0.5) == -32768);
+    CHECK(probe_m_to_q16(2.5) == 163840);
+    CHECK(probe_m_to_q16(1.0 / 65536.0) == 1);
+    CHECK(probe_m_to_q16(0.0) == 0);
+    NEAR(probe_m_to_uu(1.25), 125.0, 1e-9);
+    CHECK(probe_fwd_m(0) == 5.0);
+    CHECK(probe_fwd_m(-3) == 5.0);
+    CHECK(probe_fwd_m(1) == 5.0);
+    CHECK(probe_fwd_m(3) == 15.0);
+    CHECK(probe_fwd_m(10) == 50.0);
+    const uint8_t bytes[3] = {0x00, 0xff, 0x0a};
+    CHECK(probe_hex(bytes, 3) == L"00 ff 0a");
+    CHECK(probe_hex(bytes, 0).empty());
+    int sid = 0;
+    double v[3] = {0.0, 0.0, 0.0};
+    CHECK(probe_parse_call("probe_collision_call:41529:1.5:-2:20", sid, v) && sid == 41529 && v[0] == 1.5 && v[1] == -2.0 && v[2] == 20.0);
+    CHECK(probe_parse_call("probe_collision_call:41529:1e2:0:0", sid, v) && v[0] == 100.0);
+    CHECK(!probe_parse_call("probe_collision_call:41529:1:2", sid, v));
+    CHECK(!probe_parse_call("probe_collision_call:41529:1:2:3:4", sid, v));
+    CHECK(!probe_parse_call("probe_collision_call:0:1:2:3", sid, v));
+    CHECK(!probe_parse_call("probe_collision_call:41529:x:2:3", sid, v));
+    CHECK(!probe_parse_call("probe_collision_call:41529::2:3", sid, v));
+    CHECK(!probe_parse_call("probe_collision_call:41529:1:2:nan", sid, v));
+    CHECK(!probe_parse_call("probe_avoid:41529:1:2:3", sid, v));
+    double secs = 0.0;
+    CHECK(probe_parse_cwatch("probe_collision_watch:41529:5", sid, secs) && sid == 41529 && secs == 5.0);
+    CHECK(probe_parse_cwatch("probe_collision_watch:7:500", sid, secs) && secs == 120.0);
+    CHECK(!probe_parse_cwatch("probe_avoid_watch:7:5", sid, secs));
+    CHECK(probe_parse_sid_pfx("probe_collision:41529", "probe_collision:", sid) && sid == 41529);
+    CHECK(!probe_parse_sid_pfx("probe_collision:", "probe_collision:", sid));
+}
+
 int main()
 {
     const Case cases[] = {
@@ -1264,7 +1299,7 @@ int main()
         {"net_full", t_net_full}, {"net_bad_holder", t_net_bad_holder}, {"unload_stalled", t_unload_stalled},
         {"net_log_gate", t_net_log_gate}, {"net_self_occupant", t_net_self_occupant}, {"net_queue_never_occupant", t_net_queue_never_occupant}, {"net_blocked_by_never_self", t_net_blocked_by_never_self},
         {"net_reconcile", t_net_reconcile}, {"net_release", t_net_release}, {"net_text", t_net_text},
-        {"watchdog", t_watchdog}, {"probe", t_probe},
+        {"watchdog", t_watchdog}, {"probe", t_probe}, {"probe_collision", t_probe_collision},
         {"net_score_order", t_net_score_order}, {"net_higher_cargo_wins", t_net_higher_cargo_wins}, {"net_non_preempt", t_net_non_preempt},
         {"net_flee_no_slot", t_net_flee_no_slot}, {"net_slots", t_net_slots}, {"net_slot_pos", t_net_slot_pos}, {"net_offset_carry", t_net_offset_carry}, {"net_line_spacing", t_net_line_spacing},
         {"net_clear_expired", t_net_clear_expired}, {"net_unload_first", t_net_unload_first}, {"dock_undock_first", t_dock_undock_first},

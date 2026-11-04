@@ -511,7 +511,7 @@ namespace
         STR("AlignmentTolerance"), STR("SteeringInterpStep"), STR("FinalApproachProximity")};
 
     // WHAT: sampler state (one watch at a time). lines counts the file lines written (header included).
-    struct ProbeWatch { bool active = false; int sid = 0; double elapsed = 0.0, total = 0.0; size_t lines = 0; };
+    struct ProbeWatch { bool active = false; int sid = 0; double elapsed = 0.0, total = 0.0; size_t lines = 0; bool collide = false; };
     ProbeWatch g_pav;
 
     std::filesystem::path probe_path() { return get_dll_dir() / "MiningProbeAvoid.txt"; }
@@ -639,6 +639,232 @@ namespace
         if (alive(c->fm)) probe_class_info(s, STR("flight model"), c->fm);
     }
 
+    // ---------------- probe collision (CollisionTest, MiningProbeAvoid.txt) ----------------
+    // WHAT: probe_collision[:<ship>] dumps the CollisionTest signature, the ship's collision values and the CollisionEnv object.
+    //       probe_collision_call:<ship>:<x>:<y>:<z> calls CollisionTest once with a local offset in m (x forward, y right, z up).
+    //       probe_collision_watch:<ship>:<seconds> samples it with the avoidance watch: at the forward point 50 * Throttle / 10 m,
+    //       at 50 m, and at (forward, 0, 20 m).
+    // WHY: see what the game's own obstacle query answers while our steering approaches a rock.
+    // GAME FACTS: none. Only a signature with exactly one input vector is called (PVector: X/Y/Z PNum; FVector: X/Y/Z double or float).
+    //       Anything else is reported in the file and not called.
+    // SAFETY: game reads and the CollisionTest call run under seh_run, game thread only. The mod writes no game state.
+
+    // WHAT: the call plan: CollisionTest, its one input parameter and the vector kind ("pnum" or "uu"). why = what does not fit.
+    struct CollPlan
+    {
+        UFunction* fn = nullptr;
+        FProperty* in = nullptr;
+        std::wstring kind, why;
+        bool ok() const { return fn && in && !kind.empty(); }
+    };
+
+    // WHAT: "pnum" for a PVector (X, Y, Z are PNum structs with an int Value), "uu" for an FVector (X, Y, Z double or float), "" otherwise.
+    std::wstring probe_vec_kind(FProperty* p)
+    {
+        static const TCHAR* const kAxis[3] = {STR("X"), STR("Y"), STR("Z")};
+        auto* sp = CastField<FStructProperty>(p);
+        if (!sp || !sp->GetStruct()) return STR("");
+        bool pnum = true, uu = true;
+        for (const TCHAR* n : kAxis)
+        {
+            FProperty* f = sp->GetStruct()->FindProperty(FName(n, FNAME_Add));
+            if (!f) return STR("");
+            if (CastField<FDoubleProperty>(f) || CastField<FFloatProperty>(f)) pnum = false;
+            else if (auto* fs = CastField<FStructProperty>(f))
+            {
+                uu = false;
+                FProperty* v = fs->GetStruct() ? fs->GetStruct()->FindProperty(FName(STR("Value"), FNAME_Add)) : nullptr;
+                if (!v || !(CastField<FIntProperty>(v) || CastField<FInt64Property>(v))) pnum = false;
+            }
+            else return STR("");
+        }
+        return pnum ? STR("pnum") : uu ? STR("uu") : STR("");
+    }
+
+    // WHAT: the call plan of CollisionTest on the ship: exactly one input parameter, and it is a vector.
+    CollPlan probe_coll_plan(UObject* ship)
+    {
+        CollPlan pl;
+        pl.fn = ship->GetFunctionByNameInChain(STR("CollisionTest"));
+        if (!pl.fn) { pl.why = STR("CollisionTest not found"); return pl; }
+        int nin = 0;
+        for (FProperty* p : pl.fn->ForEachProperty())
+        {
+            if (!p->HasAnyPropertyFlags(CPF_Parm) || p->HasAnyPropertyFlags(CPF_OutParm) || p->HasAnyPropertyFlags(CPF_ReturnParm)) continue;
+            pl.in = p;
+            ++nin;
+        }
+        if (nin != 1)
+        {
+            pl.in = nullptr;
+            pl.why = STR("needs ") + std::to_wstring(nin) + STR(" input parameters, only one vector is supported");
+            return pl;
+        }
+        pl.kind = probe_vec_kind(pl.in);
+        if (pl.kind.empty()) pl.why = STR("input ") + std::wstring(pl.in->GetName()) + STR(" is ") + type_text(pl.in) + STR(", not a PVector or FVector");
+        return pl;
+    }
+
+    // WHAT: plan text for the header and the dump: "fits: ..." or "not supported: <reason>".
+    std::wstring probe_plan_note(const CollPlan& pl)
+    {
+        if (!pl.ok()) return STR("not supported: ") + pl.why;
+        return STR("fits: input ") + std::wstring(pl.in->GetName()) + STR(" kind=") + pl.kind;
+    }
+
+    // WHAT: writes the local offset m (metres) into the input vector at base: pnum = Q16.16 raw in each Value, uu = FVector units (100 per m).
+    void probe_put_vec(uint8_t* base, UStruct* vec, const std::wstring& kind, const double m[3])
+    {
+        static const TCHAR* const kAxis[3] = {STR("X"), STR("Y"), STR("Z")};
+        for (int i = 0; i < 3; ++i)
+        {
+            FProperty* f = vec->FindProperty(FName(kAxis[i], FNAME_Add));
+            uint8_t* d = base + f->GetOffset_Internal();
+            if (kind == STR("pnum"))
+            {
+                FProperty* v = CastField<FStructProperty>(f)->GetStruct()->FindProperty(FName(STR("Value"), FNAME_Add));
+                uint8_t* vd = d + v->GetOffset_Internal();
+                if (CastField<FInt64Property>(v)) *reinterpret_cast<int64_t*>(vd) = probe_m_to_q16(m[i]);
+                else *reinterpret_cast<int32_t*>(vd) = static_cast<int32_t>(probe_m_to_q16(m[i]));
+            }
+            else if (CastField<FFloatProperty>(f)) *reinterpret_cast<float*>(d) = static_cast<float>(probe_m_to_uu(m[i]));
+            else *reinterpret_cast<double*>(d) = probe_m_to_uu(m[i]);
+        }
+    }
+
+    // WHAT: one output or return value as text, read from the parameter buffer at its offset (bool through its field mask).
+    std::wstring probe_pval_text(const uint8_t* buf, FProperty* p)
+    {
+        const uint8_t* d = buf + p->GetOffset_Internal();
+        if (auto* bp = CastField<FBoolProperty>(p)) return (*d & bp->GetFieldMask()) ? STR("1") : STR("0");
+        if (CastField<FIntProperty>(p)) return std::to_wstring(*reinterpret_cast<const int32_t*>(d));
+        if (CastField<FInt64Property>(p)) return std::to_wstring(*reinterpret_cast<const int64_t*>(d));
+        if (CastField<FByteProperty>(p)) return std::to_wstring(static_cast<unsigned>(*d));
+        if (CastField<FFloatProperty>(p)) return std::to_wstring(*reinterpret_cast<const float*>(d));
+        if (CastField<FDoubleProperty>(p)) return std::to_wstring(*reinterpret_cast<const double*>(d));
+        if (auto* sp = CastField<FStructProperty>(p)) return dump_struct(d, sp->GetStruct());
+        if (CastField<FObjectProperty>(p))
+        {
+            UObject* o = *reinterpret_cast<UObject* const*>(d);
+            return alive(o) ? std::wstring(o->GetName()) : std::wstring(STR("null"));
+        }
+        return STR("?");
+    }
+
+    // WHAT: "name=value;" for each output and return parameter of fn, read from buf. "none" when there are none.
+    std::wstring probe_results(UFunction* fn, const uint8_t* buf)
+    {
+        std::wstring s;
+        for (FProperty* p : fn->ForEachProperty())
+        {
+            if (!p->HasAnyPropertyFlags(CPF_OutParm) && !p->HasAnyPropertyFlags(CPF_ReturnParm)) continue;
+            s += std::wstring(p->GetName()) + STR("=") + probe_pval_text(buf, p) + STR(";");
+        }
+        return s.empty() ? std::wstring(STR("none")) : s;
+    }
+
+    struct CollCall { std::wstring results, in_hex, out_hex; };
+
+    // WHAT: one CollisionTest call with the local offset m (metres): the results and the parameter bytes before and after the call.
+    // WHY: the bytes show the encoding used, so a wrong unit is visible in the file. Callers run it under seh_run.
+    CollCall probe_coll_call(UObject* ship, const CollPlan& pl, const double m[3])
+    {
+        CollCall r;
+        const size_t psz = static_cast<size_t>(pl.fn->GetParmsSize());
+        std::vector<uint8_t> buf(psz + 16, 0);
+        probe_put_vec(buf.data() + pl.in->GetOffset_Internal(), CastField<FStructProperty>(pl.in)->GetStruct(), pl.kind, m);
+        r.in_hex = probe_hex(buf.data(), psz);
+        ship->ProcessEvent(pl.fn, buf.data());
+        r.out_hex = probe_hex(buf.data(), psz);
+        r.results = probe_results(pl.fn, buf.data());
+        return r;
+    }
+
+    // WHAT: one UFunction as "name(name:type off=N dir=in|out|return|local flags=0x..., ...) -> return ParmsSize=N".
+    std::wstring probe_fn_text(UFunction* f)
+    {
+        std::wstring s = std::wstring(f->GetName()) + STR("(");
+        std::wstring ret;
+        for (FProperty* p : f->ForEachProperty())
+        {
+            const bool out = p->HasAnyPropertyFlags(CPF_OutParm), rv = p->HasAnyPropertyFlags(CPF_ReturnParm);
+            const TCHAR* dir = rv ? STR("return") : out ? STR("out") : p->HasAnyPropertyFlags(CPF_Parm) ? STR("in") : STR("local");
+            wchar_t fl[32];
+            swprintf(fl, 32, L"0x%llx", static_cast<unsigned long long>(p->GetPropertyFlags()));
+            const std::wstring pt = std::wstring(p->GetName()) + STR(":") + type_text(p) + STR(" off=") + std::to_wstring(p->GetOffset_Internal()) +
+                                    STR(" dir=") + dir + STR(" flags=") + fl;
+            if (rv) ret = pt;
+            else s += pt + STR(", ");
+        }
+        s += STR(")");
+        if (!ret.empty()) s += STR(" -> ") + ret;
+        return s + STR(" ParmsSize=") + std::to_wstring(f->GetParmsSize());
+    }
+
+    struct CollNoteCtx { UObject* ship; std::wstring* out; };
+    void probe_coll_note_fn(void* p)
+    {
+        auto* c = static_cast<CollNoteCtx*>(p);
+        *c->out = probe_plan_note(probe_coll_plan(c->ship));
+    }
+
+    struct ProbeCollDumpCtx { UObject* ship; int sid; std::wstring* out; };
+
+    // WHAT: probe_collision dump text (runs under seh_run): ship collision values, CollisionTest signature and plan, CollisionEnv properties and functions.
+    void probe_coll_dump_fn(void* p)
+    {
+        auto* c = static_cast<ProbeCollDumpCtx*>(p);
+        UObject* ship = c->ship;
+        std::wstring& s = *c->out;
+        s += STR("MiningProbeAvoid collision ship=") + std::to_wstring(c->sid) + STR("\n[ship collision]\n");
+        int64_t cr = 0;
+        probe_kv(s, STR("CollisionRadius"), pnum_prop(ship, STR("CollisionRadius"), cr) ? std::to_wstring(cr) + STR(" m=") + probe_f2(cr / PROBE_Q16_PER_M) : std::wstring(STR("n/a")));
+        probe_kv(s, STR("AvoidanceBias"), struct_prop_text(ship, STR("AvoidanceBias")));
+        probe_kv(s, STR("CollisionEnvID"), any_prop(ship, STR("CollisionEnvID")));
+        UObject* env = get_obj_prop(ship, STR("CollisionEnv"));
+        probe_kv(s, STR("CollisionEnv"), alive(env) ? std::wstring(env->GetName()) + STR(" class=") + std::wstring(env->GetClassPrivate()->GetName()) : std::wstring(STR("n/a")));
+        s += STR("[CollisionTest signature]\n");
+        const CollPlan pl = probe_coll_plan(ship);
+        if (!pl.fn) s += STR("  not found\n");
+        else s += STR("  ") + probe_fn_text(pl.fn) + STR("\n  plan: ") + probe_plan_note(pl) + STR("\n");
+        s += STR("[CollisionEnv properties]\n");
+        if (!alive(env)) { s += STR("  n/a\n"); return; }
+        probe_dump_props(s, env);
+        s += STR("[CollisionEnv functions]\n");
+        for (UStruct* st = env->GetClassPrivate(); st && st->GetName() != STR("Object"); st = st->GetSuperStruct())
+            if (UClass* sc = Cast<UClass>(st))
+                for (UFunction* f : sc->ForEachFunction()) s += STR("  ") + probe_fn_text(f) + STR("\n");
+    }
+
+    // WHAT: the collision part of one watch sample (runs under seh_run inside the sample): CollisionTest at the forward point,
+    //       at 50 m and at (forward, 0, 20 m). "skip" for each when the signature does not fit.
+    std::wstring probe_collide_text(UObject* ship)
+    {
+        const CollPlan pl = probe_coll_plan(ship);
+        if (!pl.ok()) return STR(" coll_fwd=skip coll_50=skip coll_up=skip");
+        int32_t thr = 1;
+        get_int_prop(ship, STR("Throttle"), thr);
+        const double d = probe_fwd_m(thr);
+        const double p_fwd[3] = {d, 0.0, 0.0}, p_50[3] = {PROBE_FWD_FIXED_M, 0.0, 0.0}, p_up[3] = {d, 0.0, PROBE_UP_M};
+        return STR(" coll_fwd_m=") + probe_f2(d) + STR(" coll_fwd=") + probe_coll_call(ship, pl, p_fwd).results +
+               STR(" coll_50=") + probe_coll_call(ship, pl, p_50).results + STR(" coll_up=") + probe_coll_call(ship, pl, p_up).results;
+    }
+
+    struct CollCallCtx { UObject* ship; int sid; const double* m; std::wstring* out; };
+    void probe_coll_call_fn(void* p)
+    {
+        auto* c = static_cast<CollCallCtx*>(p);
+        std::wstring& s = *c->out;
+        const CollPlan pl = probe_coll_plan(c->ship);
+        s += STR("MiningProbeAvoid collision call ship=") + std::to_wstring(c->sid) + STR("\n");
+        s += STR("offset_m=(") + probe_f2(c->m[0]) + STR(",") + probe_f2(c->m[1]) + STR(",") + probe_f2(c->m[2]) +
+             STR(") local x=forward y=right z=up, passed as is (no frame transform)\n");
+        if (!pl.ok()) { s += STR("not called: ") + probe_plan_note(pl) + STR("\n"); return; }
+        s += STR("signature: ") + probe_fn_text(pl.fn) + STR("\n");
+        const CollCall r = probe_coll_call(c->ship, pl, c->m);
+        s += STR("input_bytes: ") + r.in_hex + STR("\nafter_bytes: ") + r.out_hex + STR("\nresults: ") + r.results + STR("\n");
+    }
+
     // WHAT: one sampler line (runs under seh_run): t, speed, Throttle, bAutopilot, DistanceToTarget, ImpulseInput, WorldImpulse,
     //       nearest rock distance and id (-, none when no rock is readable), actor location.
     // WHY: the nearest rock uses g_rock_actors and the cached rock location (act_aim), so it adds no scan.
@@ -667,11 +893,12 @@ namespace
                STR(" loc_uu=") + (hasf ? probe_v3(f.loc) : std::wstring(STR("n/a")));
     }
 
-    struct ProbeSampleCtx { UObject* ship; int sid; double t; std::wstring* out; };
+    struct ProbeSampleCtx { UObject* ship; int sid; double t; std::wstring* out; bool collide; };
     void probe_sample_fn(void* p)
     {
         auto* c = static_cast<ProbeSampleCtx*>(p);
         *c->out = probe_sample_text(c->ship, c->sid, c->t);
+        if (c->collide) *c->out += probe_collide_text(c->ship);
     }
 
     // WHAT: appends one UTF-8 line to MiningProbeAvoid.txt. false when the file cannot be opened.
@@ -702,31 +929,85 @@ namespace
         if (!alive(ship)) { probe_stop(STR("ship gone")); return; }
         if (!probe_watch_more(g_pav.lines, before, g_pav.total)) { probe_stop(STR("time or line cap")); return; }
         std::wstring line;
-        ProbeSampleCtx c{ship, g_pav.sid, g_pav.elapsed, &line};
+        ProbeSampleCtx c{ship, g_pav.sid, g_pav.elapsed, &line, g_pav.collide};
         if (!seh_run(probe_sample_fn, &c)) line = STR("fault ") + seh_describe(g_seh);
         probe_append(line);
         ++g_pav.lines;
     }
 
-    // WHAT: command bus entry for probe_avoid, probe_avoid:<ship> and probe_avoid_watch:<ship>:<seconds> (run_cmd, mb_testcmd.hpp).
+    // WHAT: arms the sampler (g_pav) and truncates MiningProbeAvoid.txt with a header; note is appended to the header when not empty.
+    std::wstring probe_watch_start(int ws, double secs, bool collide, const std::wstring& note)
+    {
+        if (!alive(find_by_id(STR("DMSPlayerShipObject"), ws))) return STR("error: ship not found");
+        g_pav = ProbeWatch{};
+        g_pav.active = true;
+        g_pav.sid = ws;
+        g_pav.total = secs;
+        g_pav.lines = 1;
+        g_pav.collide = collide;
+        const std::wstring kind = collide ? STR("collision ") : STR("");
+        std::wstring head = STR("MiningProbeAvoid ") + kind + STR("watch ship=") + std::to_wstring(ws) + STR(" seconds=") + probe_f2(secs);
+        if (!note.empty()) head += STR(" signature=") + note;
+        write_atomic(probe_path(), u8(head) + "\r\n");
+        log_line(STR("PROBEAVOID ") + kind + STR("watch start ship=") + std::to_wstring(ws) + STR(" seconds=") + probe_f2(secs));
+        return STR("ok watch ship=") + std::to_wstring(ws) + STR(" seconds=") + probe_f2(secs) + STR(" file=MiningProbeAvoid.txt");
+    }
+
+    // WHAT: command entry for probe_collision[:<ship>], probe_collision_call:<ship>:<x>:<y>:<z> and probe_collision_watch:<ship>:<seconds>.
+    //       Called from probe_avoid_cmd. Returns "ok ..." or "error: ...".
+    std::wstring probe_collision_cmd(int sid, const std::string& cmd)
+    {
+        if (cmd.rfind("probe_collision_watch", 0) == 0)
+        {
+            int ws = 0;
+            double secs = 0.0;
+            if (!probe_parse_cwatch(cmd, ws, secs)) return STR("error: usage probe_collision_watch:<ship>:<seconds>");
+            UObject* ship = find_by_id(STR("DMSPlayerShipObject"), ws);
+            if (!alive(ship)) return STR("error: ship not found");
+            std::wstring note;
+            CollNoteCtx nc{ship, &note};
+            if (!seh_run(probe_coll_note_fn, &nc)) note = STR("fault ") + seh_describe(g_seh);
+            return probe_watch_start(ws, secs, true, note);
+        }
+        if (cmd.rfind("probe_collision_call", 0) == 0)
+        {
+            int cs = 0;
+            double m[3] = {0.0, 0.0, 0.0};
+            if (!probe_parse_call(cmd, cs, m)) return STR("error: usage probe_collision_call:<ship>:<x_m>:<y_m>:<z_m>");
+            UObject* ship = find_by_id(STR("DMSPlayerShipObject"), cs);
+            if (!alive(ship)) return STR("error: ship not found");
+            std::wstring out;
+            CollCallCtx c{ship, cs, m, &out};
+            if (!seh_run(probe_coll_call_fn, &c)) return STR("error: probe fault ") + seh_describe(g_seh);
+            write_atomic(probe_path(), u8(out));
+            log_line(STR("PROBEAVOID collision call ship=") + std::to_wstring(cs));
+            return STR("ok MiningProbeAvoid.txt written ship=") + std::to_wstring(cs);
+        }
+        int ps = sid;
+        if (cmd != "probe_collision" && !probe_parse_sid_pfx(cmd, "probe_collision:", ps))
+            return STR("error: usage probe_collision[:<ship>], probe_collision_call:<ship>:<x>:<y>:<z> or probe_collision_watch:<ship>:<seconds>");
+        UObject* ship = find_by_id(STR("DMSPlayerShipObject"), ps);
+        if (!alive(ship)) return STR("error: ship not found");
+        std::wstring out;
+        ProbeCollDumpCtx c{ship, ps, &out};
+        if (!seh_run(probe_coll_dump_fn, &c)) return STR("error: probe fault ") + seh_describe(g_seh);
+        write_atomic(probe_path(), u8(out));
+        log_line(STR("PROBEAVOID collision dump written ship=") + std::to_wstring(ps) + STR(" bytes=") + std::to_wstring(out.size()));
+        return STR("ok MiningProbeAvoid.txt written ship=") + std::to_wstring(ps);
+    }
+
+    // WHAT: command bus entry for probe_avoid, probe_avoid:<ship>, probe_avoid_watch:<ship>:<seconds> and the probe_collision* commands (run_cmd, mb_testcmd.hpp).
     //       A bare probe_avoid uses the line's ship. Returns "ok ..." or "error: ...".
     // WHY: one dump per command (overwrites the file); a watch truncates the file and then appends samples.
     std::wstring probe_avoid_cmd(int sid, const std::string& cmd)
     {
+        if (cmd.rfind("probe_collision", 0) == 0) return probe_collision_cmd(sid, cmd);
         if (cmd.rfind("probe_avoid_watch", 0) == 0)
         {
             int ws = 0;
             double secs = 0.0;
             if (!probe_parse_watch(cmd, ws, secs)) return STR("error: usage probe_avoid_watch:<ship>:<seconds>");
-            if (!alive(find_by_id(STR("DMSPlayerShipObject"), ws))) return STR("error: ship not found");
-            g_pav = ProbeWatch{};
-            g_pav.active = true;
-            g_pav.sid = ws;
-            g_pav.total = secs;
-            g_pav.lines = 1;
-            write_atomic(probe_path(), u8(STR("MiningProbeAvoid watch ship=") + std::to_wstring(ws) + STR(" seconds=") + probe_f2(secs)) + "\r\n");
-            log_line(STR("PROBEAVOID watch start ship=") + std::to_wstring(ws) + STR(" seconds=") + probe_f2(secs));
-            return STR("ok watch ship=") + std::to_wstring(ws) + STR(" seconds=") + probe_f2(secs) + STR(" file=MiningProbeAvoid.txt");
+            return probe_watch_start(ws, secs, false, STR(""));
         }
         int ps = sid;
         if (cmd != "probe_avoid" && !probe_parse_sid(cmd, ps)) return STR("error: usage probe_avoid[:<ship>] or probe_avoid_watch:<ship>:<seconds>");
