@@ -79,7 +79,9 @@ namespace
         const double L = bubble_look_ahead(speed);
         const double b[3] = {p[0] + f.fw[0] * L, p[1] + f.fw[1] * L, p[2] + f.fw[2] * L};
         reg_area_seeded(sys_id(ship), p);   // unseeded area: the look-ahead below sees the seeded rocks only (logged once per pass)
-    }
+        double cc[3] = {0, 0, 0};
+        return seg_blocker(sys_id(ship), p, b, skip_id, bubble_clear_m(bubble_ship_r(sid), g_cfg.bubble_clearance_m), false, out_d, cc, out_r);
+    }
 
     // WHAT: destination (m) of the current flight of a move job: point target or floating ore. false when the job has neither.
     bool flight_dst(const MoveJob& mv, double out[3])

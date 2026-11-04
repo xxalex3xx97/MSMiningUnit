@@ -388,7 +388,9 @@ namespace
     int path_blocker(int sys, const double a[3], const double goal[3], int skip_id, double& dist_m, double c_out[3])
     {
         reg_area_seeded(sys, a);   // unseeded area: the check uses the seeded rocks only (logged once per pass)
-    }
+        double rr = 0.0;
+        return seg_blocker(sys, a, goal, skip_id, path_clear_m(), true, dist_m, c_out, rr);
+    }
 
     // WHAT: chunk (system + 3 ints) of the save-data asteroid nearest to the ship that holds `item` and is alive; the ore list is shared by all ships and refreshed at most once a minute.
     // WHY: the rock ACTORS only exist in loaded chunks (the player's scan list and the world scan never see the rest), but the save objects of every rock exist always.
