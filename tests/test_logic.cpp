@@ -1432,6 +1432,31 @@ static void t_watchdog()
     CHECK(wd_line_due(WD_MAX_LINES - 1, false, 30.0));
 }
 
+static void t_probe()
+{
+    int sid = 0;
+    double secs = 0.0;
+    CHECK(probe_parse_watch("probe_avoid_watch:41529:30", sid, secs) && sid == 41529 && secs == 30.0);
+    CHECK(probe_parse_watch("probe_avoid_watch:7:500", sid, secs) && sid == 7 && secs == 120.0);   // clamped
+    CHECK(!probe_parse_watch("probe_avoid_watch:7", sid, secs));
+    CHECK(!probe_parse_watch("probe_avoid_watch:x:5", sid, secs));
+    CHECK(!probe_parse_watch("probe_avoid_watch:7:0", sid, secs));
+    CHECK(!probe_parse_watch("probe_avoid_watch:7:-3", sid, secs));
+    CHECK(!probe_parse_watch("probe_avoid", sid, secs));
+    CHECK(probe_parse_sid("probe_avoid:41529", sid) && sid == 41529);
+    CHECK(!probe_parse_sid("probe_avoid", sid));
+    CHECK(!probe_parse_sid("probe_avoid:", sid));
+    CHECK(probe_watch_more(0, 0.0, 30.0));
+    CHECK(!probe_watch_more(PROBE_WATCH_MAX_LINES, 0.0, 30.0));   // line cap
+    CHECK(!probe_watch_more(PROBE_WATCH_MAX_LINES - 1, 0.0, 30.0)); // last line kept for the end line
+    CHECK(probe_watch_more(PROBE_WATCH_MAX_LINES - 2, 0.0, 30.0));
+    CHECK(!probe_watch_more(10, 30.0, 30.0));                     // time asked for
+    CHECK(probe_name_match(L"bAvoidanceEnabled"));
+    CHECK(probe_name_match(L"WorldImpulse"));
+    CHECK(probe_name_match(L"bAutopilot"));
+    CHECK(!probe_name_match(L"Throttle"));
+}
+
 int main()
 {
     const Case cases[] = {
@@ -1453,7 +1478,7 @@ int main()
         {"net_full", t_net_full}, {"net_bad_holder", t_net_bad_holder}, {"unload_stalled", t_unload_stalled},
         {"net_log_gate", t_net_log_gate}, {"net_self_occupant", t_net_self_occupant}, {"net_queue_never_occupant", t_net_queue_never_occupant}, {"net_blocked_by_never_self", t_net_blocked_by_never_self},
         {"net_reconcile", t_net_reconcile}, {"net_release", t_net_release}, {"net_text", t_net_text},
-        {"watchdog", t_watchdog},
+        {"watchdog", t_watchdog}, {"probe", t_probe},
         {"net_score_order", t_net_score_order}, {"net_higher_cargo_wins", t_net_higher_cargo_wins}, {"net_non_preempt", t_net_non_preempt},
         {"net_flee_no_slot", t_net_flee_no_slot}, {"net_slots", t_net_slots}, {"net_slot_pos", t_net_slot_pos}, {"net_offset_carry", t_net_offset_carry}, {"net_line_spacing", t_net_line_spacing},
         {"net_clear_expired", t_net_clear_expired}, {"net_unload_first", t_net_unload_first}, {"dock_undock_first", t_dock_undock_first},

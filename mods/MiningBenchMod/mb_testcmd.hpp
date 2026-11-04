@@ -141,6 +141,8 @@ namespace
         // 7. Operation tab "Warp to belt": the ship's belt sector (refused while the loop runs)
         if (cmd == "collect_ore") return sweep_cmd(sid);   // collect ore action: MS_SWEEP (mb_mining.hpp)
         if (cmd == "warp_belt") return warp_belt_cmd(sid);
+        // 7b. probe avoidance: probe_avoid[:<ship>] dump, probe_avoid_watch:<ship>:<seconds> sampler (mb_devcmd.hpp)
+        if (cmd.rfind("probe_avoid", 0) == 0) return probe_avoid_cmd(sid, cmd);
         // 8. dev commands (Dev Menu / Test tab only): mb_devcmd.hpp
         bool dev_handled = false;
         const std::wstring dev = dev_cmd(seq, sid, cmd, dev_handled);
@@ -260,6 +262,8 @@ namespace
             warp_wait_tick();
             set_last_step(STR("fast_watch_tick"));   // hull/shield samples every 0.25 s for ships near rock (mb_mining.hpp)
             fast_watch_tick();
+            set_last_step(STR("probe_avoid_tick"));
+            probe_avoid_tick(step);   // MiningProbeAvoid.txt sampler, idle unless a watch runs (mb_devcmd.hpp)
             set_last_step(STR("mining_tick"));   // per-ship labels are set inside (mine ship=N state)
             mining_tick(step);
             set_last_step(STR("registry_frame"));   // rock registry (mb_registry.hpp): one updater per 0.25 s
