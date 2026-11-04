@@ -773,8 +773,10 @@ namespace
         if (in_range) m.idle_polls = 0;   // a rock was found: the idle poll count starts over
         if (!in_range && !m.noy_skip.empty() && all_rocks_skipped(rock_in_range(sid, m.anchor, item, rad) != nullptr, in_range))
         {
-            m.st = MS_HALT; mset(sid, m, STR("rocks give no ore"));   // every rock in range is no-yield: not an error
-            return;
+            // every rock in range is no-yield: no belt = HALT (not an error); with a belt this sector counts as empty, the belt picks the next one
+            if (noy_all_halt(c.belt)) { m.st = MS_HALT; mset(sid, m, STR("rocks give no ore")); return; }
+            const int c0 = cur_sector_id(ship);
+            if (c0 > 0) m.tried.insert(c0);
         }
         // belt: ship not in the target sector -> warp after the undock (after_undock); HALT when no sector has the ore
         if (!belt_off(c.belt) && !in_range)   // rock in range here -> mine it, warp only when none
@@ -874,12 +876,12 @@ namespace
             const double rad = mine_radius_m(c);
             UObject* rock = rock_in_range(sid, m.anchor, item, rad, m.abandon, &m.noy_skip);
             if (!rock && m.abandon) rock = rock_in_range(sid, m.anchor, item, rad, nullptr, &m.noy_skip);   // the abandoned rock is the only one: mine it anyway
-            // every rock in range is no-yield (skipped): HALT, not an error
+            // every rock in range is no-yield (skipped): no belt = HALT (not an error); with a belt, warp to the next sector with the ore
             if (!rock && all_rocks_skipped(rock_in_range(sid, m.anchor, item, rad) != nullptr, false))
             {
                 m.abandon = nullptr; m.col_rock = 0; g_sel_rocks.erase(sid);
-                mine_stop_work(ship, sid); m.st = MS_HALT; mset(sid, m, STR("rocks give no ore"));
-                return;
+                if (noy_all_halt(c.belt)) { mine_stop_work(ship, sid); m.st = MS_HALT; mset(sid, m, STR("rocks give no ore")); return; }
+                if (belt_go(ship, sid, m, c, item, true) != 0) return;   // warp started, or HALT / go home (no sector left)
             }
             // approach_rock picks the nearest rock by itself: pin the chosen one when it is not the nearest (the abandoned one)
             if (m.abandon && rock) g_sel_rocks[sid] = rock_id_of(rock);

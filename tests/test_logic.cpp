@@ -469,6 +469,11 @@ static void t_loop_guards()
     CHECK(all_rocks_skipped(true, false));
     CHECK(!all_rocks_skipped(true, true));
     CHECK(!all_rocks_skipped(false, false));
+    // all skipped: HALT only without a belt (off/none/empty); a belt moves on
+    CHECK(noy_all_halt("none"));
+    CHECK(noy_all_halt(""));
+    CHECK(!noy_all_halt("auto"));
+    CHECK(!noy_all_halt("12"));
     CHECK(fuel_amount_floor(100, 300) == 300);
     CHECK(fuel_amount_floor(500, 300) == 500);
     CHECK(fuel_amount_floor(0, 0) == 0);

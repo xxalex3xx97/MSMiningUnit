@@ -917,6 +917,10 @@ namespace
     // WHAT: every rock in range is skipped: a rock exists when the skip list is ignored, but none is found with it. HALT "rocks give no ore".
     inline bool all_rocks_skipped(bool rock_ignoring_skip, bool rock_with_skip) { return rock_ignoring_skip && !rock_with_skip; }
 
+    // WHAT: all rocks skipped -> HALT "rocks give no ore" only without a belt (belt off/none). With a belt the sector counts as empty and the belt moves on.
+    // WHY: a belt has other sectors to try; the no-sector case HALTs through the belt path ("Idle: no ore in any sector").
+    inline bool noy_all_halt(const std::string& belt) { return belt_off(belt); }
+
     // WHAT: longest dock wait (dwait, queued or holding for a dock) in one trip before HALT "waited 15 min for a dock" (s).
     // WHY: a dock that never frees up must not hold the loop forever (not an error).
     constexpr double MINE_DWAIT_MAX_S = 900.0;
