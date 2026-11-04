@@ -85,8 +85,8 @@ namespace
         bool kill_switch = false;            // 1 = the mod stops touching the game completely (hot reload). Global only. (INI: kill_switch)
         bool watchdog = true;                // 1 = freeze watchdog on: MiningFreeze.txt lines when the game thread stalls 10 s. Global only. (INI: watchdog)
         int flee_on_target = 1;              // 1 = a ship targeted by a hostile (or in combat) flees to a dock like after a hull hit. Global only. (INI: flee_on_target)
-        int path_clearance_m = 8;            // clear-path check: extra clearance (m) beyond the rock block radius. Global only. (INI: path_clearance_m)
-        int bubble_clearance_m = 10;         // bubble reflex: extra clearance (m) beyond ship radius + rock block radius. Global only. (INI: bubble_clearance_m)
+        int path_clearance_m = 4;            // clear-path check: extra clearance (m) beyond the rock block radius. Global only. (INI: path_clearance_m)
+        int bubble_clearance_m = 6;         // bubble reflex: extra clearance (m) beyond ship radius + rock block radius. Global only. (INI: bubble_clearance_m)
         int flee_target_range_km = 5;        // a hostile targeter farther than this (km) does not trigger the flee. Global only. (INI: flee_target_range_km)
         int low_power_return = 1;            // 1 = a ship in low power for LOWPOWER_GRACE_S while flying/mining goes to dock like fuel low. Global only. (INI: low_power_return)
         int reactor_auto_input = 1;          // 1 = reactors of active bench ships get bAutoInputFuel on (checked at task start and every 60 s). Global only. (INI: reactor_auto_input)
@@ -773,7 +773,7 @@ namespace
     //       phase = flight phase of the last hit. wp = waypoints used in this flight. resume = a waypoint is flying; dst = the flight destination (m)
     //       to fly again when the waypoint ends (WAYPOINT and ORE phases). why = last activation reason (status line only).
     struct BubbleState { bool braking = false; int replans = 0; int pending = BBA_NONE; int rock = 0; int blk = 0; double blk_d = 0.0;
-                         int phase = 0; int wp = 0; bool resume = false; double dst[3] = {0, 0, 0}; int why = 4; };   // phase: BubblePhase, why: BubbleWhy (4 = BW_IDLE)
+                         int prev_id = 0; double prev_d = 0.0; int phase = 0; int wp = 0; bool resume = false; double dst[3] = {0, 0, 0}; int why = 4; };   // phase: BubblePhase, why: BubbleWhy (4 = BW_IDLE)
     // WHAT: one ladder step. hit = a blocker lies in the bubble, speed_mps = current speed, rock = current target id.
     //       Clear -> hit: BRAKE, pending = REPLAN, or RETARGET after BUBBLE_MAX_REPLAN replans. Braking -> speed < BUBBLE_BRAKE_V: returns pending
     //       (REPLAN or RETARGET) once and counts it. Otherwise NONE.
@@ -794,6 +794,46 @@ namespace
         s.pending = BBA_NONE;
         if (act == BBA_REPLAN) ++s.replans; else s.replans = 0;
         return act;
+    }
+
+    // ---------- path2: replan gate, rock-lost counting, start grace, strikes, bubble closing ----------
+    constexpr uint64_t REPLAN_COOLDOWN_MS = 20000;   // one waypoint plan per target per this many ms
+    constexpr uint64_t REPLAN_LOG_MS = 30000;        // 'PATH replan suppressed' at most this often
+    constexpr double LOST_PROGRESS_M = 50.0;         // approach progress (m) that starts the rock-lost count again
+    constexpr double START_GRACE_M = 20.0;           // a blocker overlapping the ship start: ship radius + rock radius + this (m)
+    constexpr int STRIKE_MAX = 3;                    // same blocker on the same target this many times: the target is skipped
+    enum ReplanGate { RG_OK = 0, RG_WP_ACTIVE = 1, RG_COOLDOWN = 2 };
+    // WHAT: may path logic plan a waypoint now? wp_active: a waypoint flight of this ship runs (no new plan). Cooldown: the last waypoint plan was
+    //       for the same target less than REPLAN_COOLDOWN_MS ago. last_ms 0 = none yet.
+    inline ReplanGate replan_gate(bool wp_active, int tid, int last_tid, uint64_t last_ms, uint64_t now_ms)
+    {
+        if (wp_active) return RG_WP_ACTIVE;
+        if (last_tid == tid && last_ms != 0 && now_ms - last_ms < REPLAN_COOLDOWN_MS) return RG_COOLDOWN;
+        return RG_OK;
+    }
+    // WHAT: rock-lost count after an approach result. Only a result 'rock lost' with the rock actor really gone counts; our own cancels
+    //       (own_cancel) and a rock still there never count (they are free retries).
+    inline int rock_lost_next(int n, bool result_rock_lost, bool rock_gone, bool own_cancel)
+    {
+        return (result_rock_lost && rock_gone && !own_cancel) ? n + 1 : n;
+    }
+    // WHAT: approach progress since the reference point is enough to start the rock-lost count again (moved_m > LOST_PROGRESS_M).
+    inline bool lost_progress(double moved_m) { return moved_m > LOST_PROGRESS_M; }
+    // WHAT: start grace. A blocker whose centre is within ship radius + rock radius + START_GRACE_M of the ship start is ignored when the
+    //       ship moves away from it (away) or when the first 60 m of the segment are inside its block radius (first60_inside).
+    inline bool grace_ignore(double start_d, double ship_r, double rock_r, bool away, bool first60_inside)
+    {
+        return start_d < ship_r + rock_r + START_GRACE_M && (away || first60_inside);
+    }
+    // WHAT: the same blocker blocked the same target this many times: skip the target.
+    inline bool strikes_reached(int n) { return n >= STRIKE_MAX; }
+    // WHAT: bubble brake only for a blocker ahead (cos_ahead > 0) and closing. Closing: range to it fell since the last pass (same blocker),
+    //       or first sight while moving (speed > 0). Beside, behind or opening: no brake.
+    inline bool bubble_brake_ok(double cos_ahead, double dist_now, double dist_prev, bool same_prev, double speed_mps)
+    {
+        if (cos_ahead <= 0.0) return false;
+        if (!same_prev) return speed_mps > 0.0;
+        return dist_now < dist_prev - 0.01;
     }
 
     // ---------- bubble scope: which ships, which phase, which fix (stage 2b) ----------

@@ -1436,6 +1436,38 @@ static void t_bubble_scope()
     CHECK(s.wp == 1 && s.resume && s.dst[0] == 5.0);
 }
 
+// path2: replan cooldown and wp gate, rock-lost counting, progress, start grace, strikes, bubble closing
+static void t_path2_rules()
+{
+    // replan gate: a waypoint flight blocks new plans; one plan per target per 20 s
+    CHECK(replan_gate(true, 5, 0, 0, 1000) == RG_WP_ACTIVE);
+    CHECK(replan_gate(false, 5, 5, 10000, 29999) == RG_COOLDOWN);   // same target, 19.9 s
+    CHECK(replan_gate(false, 5, 5, 10000, 30000) == RG_OK);         // 20 s: allowed again
+    CHECK(replan_gate(false, 6, 5, 10000, 11000) == RG_OK);         // another target: no cooldown
+    CHECK(replan_gate(false, 5, 5, 0, 11000) == RG_OK);             // no plan yet (last_ms 0)
+    // rock-lost counting: only a really gone rock, not our own cancels, not a rock still there
+    CHECK(rock_lost_next(2, true, true, false) == 3);
+    CHECK(rock_lost_next(2, true, false, false) == 2);              // rock still there: free retry
+    CHECK(rock_lost_next(2, true, true, true) == 2);                // own cancel
+    CHECK(rock_lost_next(2, false, true, false) == 2);              // not a rock-lost result
+    CHECK(!lost_progress(50.0) && lost_progress(50.5));              // progress must be more than 50 m
+    // start grace: overlapping the start and (moving away or first 60 m inside) is ignored
+    CHECK(grace_ignore(10.0, 12.0, 8.0, true, false));              // overlap, moving away
+    CHECK(grace_ignore(10.0, 12.0, 8.0, false, true));              // overlap, first 60 m inside
+    CHECK(!grace_ignore(10.0, 12.0, 8.0, false, false));            // overlap but ahead and clear of the first 60 m
+    CHECK(!grace_ignore(45.0, 12.0, 8.0, true, true));              // not overlapping the start (45 > 12+8+20=40)
+    CHECK(grace_ignore(39.9, 12.0, 8.0, true, false));              // inside the 40 m start zone
+    // strikes: the third block of the same blocker on the same target skips the target
+    CHECK(!strikes_reached(1) && !strikes_reached(2) && strikes_reached(3));
+    // bubble: brake only ahead and closing
+    CHECK(!bubble_brake_ok(-0.2, 100.0, 90.0, true, 30.0));         // behind
+    CHECK(!bubble_brake_ok(0.0, 100.0, 90.0, true, 30.0));          // beside
+    CHECK(bubble_brake_ok(0.9, 100.0, 110.0, true, 30.0));          // ahead and closing (range fell 10 m)
+    CHECK(!bubble_brake_ok(0.9, 100.0, 90.0, true, 30.0));          // ahead but opening
+    CHECK(bubble_brake_ok(0.9, 100.0, 0.0, false, 30.0));           // first sight, moving
+    CHECK(!bubble_brake_ok(0.9, 100.0, 0.0, false, 0.0));           // first sight, not moving
+}
+
 // sweep return arrival (sweep_arrive) and flee target range (target_entry_near)
 static void t_sweep_return_flee()
 {
@@ -2040,7 +2072,7 @@ int main()
         {"path_block", t_path_block}, {"path_perf", t_path_perf}, {"path_waypoint", t_path_waypoint}, {"shield_drop", t_shield_drop}, {"fast_sample", t_fast_sample},
         {"rock_depleted", t_rock_depleted},
         {"reg_table", t_reg_table}, {"reg_events", t_reg_events}, {"reg_within_nearest", t_reg_within_nearest}, {"reg_surface_block", t_reg_surface_block_radius},
-        {"approach_throttle", t_approach_throttle}, {"bubble", t_bubble}, {"bubble_ladder", t_bubble_ladder}, {"bubble_scope", t_bubble_scope}, {"tune_geom", t_tune_geom}, {"flight_warp", t_flight_warp}, {"sweep_return_flee", t_sweep_return_flee},
+        {"approach_throttle", t_approach_throttle}, {"bubble", t_bubble}, {"bubble_ladder", t_bubble_ladder}, {"bubble_scope", t_bubble_scope}, {"tune_geom", t_tune_geom}, {"flight_warp", t_flight_warp}, {"sweep_return_flee", t_sweep_return_flee}, {"path2_rules", t_path2_rules},
         {"reg_targeted_ore_budget", t_reg_targeted_ore_budget}, {"reg_bench", t_reg_bench}, {"reg_abs_m", t_reg_abs_m},
         {"box_probe_parse", t_box_probe_parse}, {"box_probe_uu_fwd", t_box_probe_uu_fwd}, {"reg_check_summary", t_reg_check_summary},
         {"reg_cache_round_trip", t_reg_cache_round_trip}, {"reg_cache_reject", t_reg_cache_reject}, {"reg_cache_verdict", t_reg_cache_verdict},

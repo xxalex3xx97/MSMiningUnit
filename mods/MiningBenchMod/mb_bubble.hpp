@@ -188,7 +188,19 @@ namespace
         const double cr = bubble_ship_r(sid);
         const double p[3] = {f.loc[0] / MV_UU_PER_M, f.loc[1] / MV_UU_PER_M, f.loc[2] / MV_UU_PER_M};
         double d = 0.0, rad = 0.0;
-        const int bid = bubble_query(sid, ship, f, v, bubble_skip_id(sid, ph, p, m.rock), d, rad);
+        const int raw = bubble_query(sid, ship, f, v, bubble_skip_id(sid, ph, p, m.rock), d, rad);
+        int bid = raw;
+        // brake only for a blocker ahead and closing (range rate from the last pass); beside, behind or opening: no brake
+        double bc[3] = {0, 0, 0}, br = 0.0, dnow = 0.0;
+        const bool same_prev = raw != 0 && bs.prev_id == raw;
+        if (raw && reg_geom(raw, bc, br))
+        {
+            dnow = bub_dist(p, bc);
+            const double cosA = dnow > 1e-9 ? ((bc[0] - p[0]) * f.fw[0] + (bc[1] - p[1]) * f.fw[1] + (bc[2] - p[2]) * f.fw[2]) / dnow : 0.0;
+            if (!bubble_brake_ok(cosA, dnow, bs.prev_d, same_prev, v)) bid = 0;
+        }
+        bs.prev_id = raw;
+        bs.prev_d = dnow;
         if (bid) { bs.blk = bid; bs.blk_d = d; if (!bs.braking) bs.phase = ph; }
         if (bs.rock != m.rock) bs.wp = 0;   // bubble_step resets the count on a new rock too
         const BubbleAct act = bubble_step(bs, bid != 0, v, m.rock);

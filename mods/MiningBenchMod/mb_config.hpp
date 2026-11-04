@@ -157,9 +157,9 @@ namespace
                      "# flee_on_target: 1 = a ship targeted by a hostile (2 samples in a row) or in combat flees to a dock like after a hull hit (global only)\n"
                      "flee_on_target=1\n"
                      "# path_clearance_m: clear-path check, metres kept from a rock beyond its block radius (0-100, global only)\n"
-                     "path_clearance_m=8\n"
+                     "path_clearance_m=4\n"
                      "# bubble_clearance_m: bubble reflex, metres beyond ship radius + rock block radius (0-100, global only)\n"
-                     "bubble_clearance_m=10\n"
+                     "bubble_clearance_m=6\n"
                      "# flee_target_range_km: a hostile targeter farther than this many km does not trigger the flee (1-100, global only)\n"
                      "flee_target_range_km=5\n"
                      "# low_power_return: 1 = a ship in low power for 10 s while flying or mining goes to dock to refuel like fuel low, 0 = off (global only)\n"
@@ -218,8 +218,8 @@ namespace
             ensure_key("kill_switch", "0", "kill_switch: 1 = the mod stops touching the game completely (hot reload, global only)");
             ensure_key("watchdog", "1", "watchdog: 1 = freeze watchdog: if the game thread does not tick for 10 s, MiningFreeze.txt gets its stack (max 20 lines); 0 = off (global only)");
             ensure_key("flee_on_target", "1", "flee_on_target: 1 = a ship targeted by a hostile or in combat flees to a dock like after a hull hit (global only)");
-            ensure_key("path_clearance_m", "8", "path_clearance_m: clear-path check clearance in m beyond the rock block radius, 0-100 (global only)");
-            ensure_key("bubble_clearance_m", "10", "bubble_clearance_m: bubble reflex clearance in m beyond ship radius + rock block radius, 0-100 (global only)");
+            ensure_key("path_clearance_m", "4", "path_clearance_m: clear-path check clearance in m beyond the rock block radius, 0-100 (global only)");
+            ensure_key("bubble_clearance_m", "6", "bubble_clearance_m: bubble reflex clearance in m beyond ship radius + rock block radius, 0-100 (global only)");
             ensure_key("flee_target_range_km", "5", "flee_target_range_km: flee trigger range in km for hostile targeters, 1-100 (global only)");
             ensure_key("low_power_return", "1", "low_power_return: 1 = low power for 10 s while flying or mining sends the ship to dock like fuel low, 0 = off (global only)");
             ensure_key("reactor_auto_input", "1", "reactor_auto_input: 1 = reactors of active bench ships get bAutoInputFuel on, 0 = off (global only)");
@@ -283,8 +283,8 @@ namespace
             if (kv.count("kill_switch")) nc.kill_switch = to_int(kv["kill_switch"], 0) != 0;
             if (kv.count("watchdog")) nc.watchdog = to_int(kv["watchdog"], 1) != 0;
             if (kv.count("flee_on_target")) nc.flee_on_target = to_int(kv["flee_on_target"], 1) != 0 ? 1 : 0;
-            if (kv.count("path_clearance_m")) nc.path_clearance_m = std::clamp(to_int(kv["path_clearance_m"], 8), 0, 100);
-            if (kv.count("bubble_clearance_m")) nc.bubble_clearance_m = std::clamp(to_int(kv["bubble_clearance_m"], 10), 0, 100);
+            if (kv.count("path_clearance_m")) nc.path_clearance_m = std::clamp(to_int(kv["path_clearance_m"], 4), 0, 100);
+            if (kv.count("bubble_clearance_m")) nc.bubble_clearance_m = std::clamp(to_int(kv["bubble_clearance_m"], 6), 0, 100);
             if (kv.count("flee_target_range_km")) nc.flee_target_range_km = std::clamp(to_int(kv["flee_target_range_km"], 5), 1, 100);
             if (kv.count("low_power_return")) nc.low_power_return = std::clamp(to_int(kv["low_power_return"], 1), 0, 1);
             if (kv.count("reactor_auto_input")) nc.reactor_auto_input = std::clamp(to_int(kv["reactor_auto_input"], 1), 0, 1);
