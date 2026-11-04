@@ -339,8 +339,8 @@ namespace
         return same_system ? warp_fuel_need(dist_chunks) <= drive : 2LL * jump_cost <= drive;
     }
 
-    // WHAT: dock trip warps when it is longer than km kilometres.
-    inline bool trip_warp_wanted(double dist_m, int km) { return dist_m > km * 1000.0; }
+    // WHAT: dock trip warps when it is longer than km kilometres. km <= 0 turns the trip warp off; dist_m <= 0 never warps (no divide by zero in the standoff).
+    inline bool trip_warp_wanted(double dist_m, int km) { return km > 0 && dist_m > 0.0 && dist_m > km * 1000.0; }
 
     // WHAT: far trip warp only inside one sector: both sector ids known (> 0) and equal.
     // WHY: a warp across sectors is not wanted; an unknown sector (0) on either side skips the warp (the ship flies as before).

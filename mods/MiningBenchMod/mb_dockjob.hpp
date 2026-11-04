@@ -384,6 +384,15 @@ namespace
             dk = v.dock;
             if (unl.empty()) return STR("error: no ore lists this dock");
         }
+        // 4b. checks dock_order_issue would fail on: a job that would fail must not warp
+        if (!int_array(ship, STR("OrderIDs"))) return STR("error: OrderIDs unreadable");
+        if (cmd == "dock_refuel")
+        {
+            const Config c = eff_cfg(sid);
+            bool any_fuel = false;
+            for (int i = 0; i < N_FUEL; ++i) if (c.fuel[i].on) any_fuel = true;
+            if (!any_fuel) return STR("error: no fuel enabled");
+        }
         // 5. job record: start position (undock clear check)
         DockJob j;
         j.sid = sid; j.dock = dk; j.seq = seq; j.cmd = cmd; j.kind = cmd0; j.unl = unl;
@@ -391,7 +400,6 @@ namespace
         // 5a. far dock trip (not undock): the warp comes first, the ship is undocked here. The dock order is issued after the settle (jobs_tick stage 4)
         if (cmd != "undock")
         {
-            j.tw_done = true;
             if (trip_warp_try(ship, sid, dk)) { j.stage = 4; g_jobs.push_back(j); return STR("waiting"); }
         }
         // 5b. the order part (steps 4-7 in dock_order_issue)
@@ -583,7 +591,7 @@ namespace
             // a dock this ship holds (reserved for it, or docked there) is never busy: ending the job here restarted the same dock trip every 34 s (live log 15:16-15:18)
             if (!at_target && j.t >= 30.0 && dock_busy(j.dock, j.sid) && !net_owns(j.dock, j.sid)) { job_finish(i, STR("waiting dock")); continue; }
             if (at_target) { tlog(STR("docked at t=") + std::to_wstring(j.t)); job_finish(i, STR("ok")); continue; }
-            if (j.t - j.prog_t >= CMD_WATCH_S) { job_finish(i, STR("error: dock timeout after 180 s")); continue; }
+            if (j.t - j.prog_t >= CMD_WATCH_S) { job_finish(i, STR("error: dock timeout (no progress for 180 s)")); continue; }
             // stall retry: autopilot on but the ship does not move for 10 s (Miner 3 case: thrust 0) -> autopilot off/on + SkipToOrder again, same job and orders
             if (j.stage == 2 && j.skip_wait < 0.0)
             {

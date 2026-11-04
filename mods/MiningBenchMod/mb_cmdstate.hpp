@@ -51,7 +51,7 @@ namespace
         double stall_t = -1.0;         // dock leg: seconds the ship moved < 1 m (-1 = not started); at 10 s the leg is retried
         double p_stall[3] = {0, 0, 0}; // position the stall timer measures from
         int retries = 0;               // stall retries done (max DOCK_STALL_MAX)
-        double prog_best = -1.0, prog_t = 0.0; bool tw_done = false;   // timeout clock: distance at last progress reset, job t of that reset; trip warp tried
+        double prog_best = -1.0, prog_t = 0.0;   // timeout clock: distance at last progress reset, job t of that reset
     };
 
     // WHAT: the active dock jobs, one entry per ship that has a job running. WHY: the job state machine lives here, and jobs_tick walks the list each tick.

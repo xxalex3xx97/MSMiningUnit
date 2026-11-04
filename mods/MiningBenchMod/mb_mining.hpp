@@ -1398,6 +1398,14 @@ namespace
         int64_t ch[3] = {0, 0, 0};
         double loc[3] = {0, 0, 0};
         if (!(sys > 0 && get_chunk(ship, ch) && get_loc(ship, loc))) { log_line(who + STR("ship position unreadable")); return false; }
+        // cheap distance test first: a trip that is not wanted returns silently, before any sector read or skip log
+        double a[3], dk[3];
+        dock_abs_m(ch, loc, a);
+        dock_abs_m(dp.ch, dp.loc, dk);
+        const double v[3] = {a[0] - dk[0], a[1] - dk[1], a[2] - dk[2]};
+        const double dist = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+        const Config c = eff_cfg(sid);
+        if (!trip_warp_wanted(dist, c.warp_trip_km)) return false;
         if (sys != dp.sys) { log_line(who + STR("other system")); return false; }
         {
             const std::vector<SecInfo> secs = sectors_read();
@@ -1406,13 +1414,6 @@ namespace
             if (!trip_same_sector(ss ? ss->id : 0, ds ? ds->id : 0)) { log_line(who + STR("other sector")); return false; }
         }
         if (ship_docked(ship)) { log_line(who + STR("ship docked")); return false; }
-        double a[3], dk[3];
-        dock_abs_m(ch, loc, a);
-        dock_abs_m(dp.ch, dp.loc, dk);
-        const double v[3] = {a[0] - dk[0], a[1] - dk[1], a[2] - dk[2]};
-        const double dist = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
-        const Config c = eff_cfg(sid);
-        if (!trip_warp_wanted(dist, c.warp_trip_km)) return false;
         int32_t drive = 0;
         if (!call_int(ship, STR("GetAvailableJumpFuel"), drive) || !warp_fuel_ok(true, dist / DOCK_CHUNK_M, 0, drive))
         {

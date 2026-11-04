@@ -912,6 +912,9 @@ static void t_trip_progress()
     CHECK(!trip_progress(b, 9800.0));
     CHECK(trip_warp_wanted(5001.0, 5));
     CHECK(!trip_warp_wanted(5000.0, 5));
+    CHECK(!trip_warp_wanted(0.0, 5));
+    CHECK(!trip_warp_wanted(9000.0, 0));
+    CHECK(!trip_warp_wanted(9000.0, -3));
     CHECK(trip_same_sector(1008, 1008));
     CHECK(!trip_same_sector(1008, 1247));
     CHECK(!trip_same_sector(0, 0));
