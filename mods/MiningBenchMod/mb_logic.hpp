@@ -1247,4 +1247,51 @@ namespace
             it->second = nt;
         }
     }
+
+    // WHAT: probe avoidance (mb_devcmd.hpp): watch limits and the command argument parsers. Pure, so tests/test_logic.cpp covers them.
+    constexpr double PROBE_WATCH_MAX_S = 120.0;   // probe_avoid_watch seconds cap (larger values are clamped)
+    constexpr size_t PROBE_WATCH_MAX_LINES = 500; // MiningProbeAvoid.txt line cap for the sampler (header and end line included)
+
+    // WHAT: true while the sampler should write another sample: one line below the cap (the last line is kept for the end line) and under the time asked for.
+    inline bool probe_watch_more(size_t lines, double elapsed_s, double total_s) { return lines + 1 < PROBE_WATCH_MAX_LINES && elapsed_s < total_s; }
+
+    // WHAT: "probe_avoid:<ship>" -> sid. false for the bare "probe_avoid" or a non-digit id (the caller then uses the line's ship).
+    inline bool probe_parse_sid(const std::string& cmd, int& sid)
+    {
+        const std::string pre = "probe_avoid:";
+        if (cmd.rfind(pre, 0) != 0) return false;
+        const std::string a = cmd.substr(pre.size());
+        if (a.empty() || a.find_first_not_of("0123456789") != std::string::npos) return false;
+        sid = std::atoi(a.c_str());
+        return sid > 0;
+    }
+
+    // WHAT: "probe_avoid_watch:<ship>:<seconds>" -> sid and seconds (clamped to PROBE_WATCH_MAX_S). false when either part is missing or not a positive number.
+    inline bool probe_parse_watch(const std::string& cmd, int& sid, double& secs)
+    {
+        const std::string pre = "probe_avoid_watch:";
+        if (cmd.rfind(pre, 0) != 0) return false;
+        const size_t c = cmd.find(':', pre.size());
+        if (c == std::string::npos) return false;
+        const std::string a = cmd.substr(pre.size(), c - pre.size());
+        const std::string b = cmd.substr(c + 1);
+        if (a.empty() || a.find_first_not_of("0123456789") != std::string::npos) return false;
+        if (b.empty() || b.find_first_not_of("0123456789.") != std::string::npos) return false;
+        sid = std::atoi(a.c_str());
+        secs = std::atof(b.c_str());
+        if (sid <= 0 || secs <= 0.0) return false;
+        secs = std::min(secs, PROBE_WATCH_MAX_S);
+        return true;
+    }
+
+    // WHAT: true when a property or function name holds one of the avoidance / impulse words (case-insensitive).
+    // WHY: the probe lists only the names that can be the avoidance logic; the full property dump covers the rest.
+    inline bool probe_name_match(const std::wstring& name)
+    {
+        static const wchar_t* const kWords[] = {L"avoid", L"collision", L"obstacle", L"bubble", L"query", L"sweep", L"impulse", L"autopilot", L"proximity", L"overlap"};
+        std::wstring l = name;
+        for (wchar_t& ch : l) if (ch >= L'A' && ch <= L'Z') ch = static_cast<wchar_t>(ch + 32);
+        for (const wchar_t* w : kWords) if (l.find(w) != std::wstring::npos) return true;
+        return false;
+    }
 }

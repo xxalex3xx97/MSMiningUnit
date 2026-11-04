@@ -491,4 +491,253 @@ namespace
         handled = false;
         return std::wstring();
     }
+
+    // ---------------- probe avoidance (MiningProbeAvoid.txt) ----------------
+    // WHAT: probe_avoid[:<ship>] writes one dump of the ship's flight model (named values, every property, class chain and the
+    //       avoidance / impulse names) plus the ship state. probe_avoid_watch:<ship>:<seconds> samples the ship every poll tick
+    //       (0.25 s, probe_avoid_tick) into the same file: position, speed, Throttle, bAutopilot, DistanceToTarget, ImpulseInput,
+    //       WorldImpulse and the nearest rock (existing rock list, distance from the cached rock location).
+    // WHY: compare impulse behaviour near a rock with game autopilot on and off (avoidance tuning). Read-only: no game state is written.
+    // GAME FACTS: none. Field names are candidates; a missing one prints "absent" / "n/a".
+    // SAFETY: every game read runs under seh_run (a fault is logged and reported, the game goes on). Game thread only (cmd_poll, cmd_tick).
+
+    // WHAT: the flight model names the probe looks for (value from the flight model object, else the ship, else "absent").
+    const TCHAR* const kProbeNames[] = {
+        STR("AvoidanceQuerySize"), STR("AvoidanceQueryDist"), STR("AvoidanceQueryHeightOffset"), STR("AvoidanceTime"),
+        STR("AutopilotMinThrottle"), STR("AutopilotRotationImpulseForce"), STR("AutopilotExitDockTime"), STR("AutopilotBankFactor"),
+        STR("AutopilotImpulse"), STR("AutopilotImpulseMultiplier"), STR("MaxSteeringDegrees"), STR("DeadZoneDegrees"),
+        STR("SteeringResponse"), STR("GlobalMaxSpeed"), STR("ThrustMultiplier"), STR("AccelerationMultiplier"),
+        STR("MaxImpulse"), STR("ImpulseMultiplier"), STR("RotSpeed"), STR("MaxRotationImpulse"), STR("RotationImpulseForce"),
+        STR("AlignmentTolerance"), STR("SteeringInterpStep"), STR("FinalApproachProximity")};
+
+    // WHAT: sampler state (one watch at a time). lines counts the file lines written (header included).
+    struct ProbeWatch { bool active = false; int sid = 0; double elapsed = 0.0, total = 0.0; size_t lines = 0; };
+    ProbeWatch g_pav;
+
+    std::filesystem::path probe_path() { return get_dll_dir() / "MiningProbeAvoid.txt"; }
+
+    // WHAT: "12.34"-style text with 2 decimals.
+    std::wstring probe_f2(double v) { wchar_t b[48]; swprintf(b, 48, L"%.2f", v); return std::wstring(b); }
+
+    // WHAT: "(x,y,z)" of raw units as whole numbers.
+    std::wstring probe_v3(const double v[3])
+    {
+        return STR("(") + std::to_wstring(static_cast<long long>(v[0])) + STR(",") + std::to_wstring(static_cast<long long>(v[1])) +
+               STR(",") + std::to_wstring(static_cast<long long>(v[2])) + STR(")");
+    }
+
+    // WHAT: one "  name=value" line.
+    void probe_kv(std::wstring& s, const TCHAR* k, const std::wstring& v) { s += STR("  ") + std::wstring(k) + STR("=") + v + STR("\n"); }
+
+    // WHAT: one property value as text: int64 and byte here, the rest through any_prop (bool, int, float, double, struct, object, array).
+    std::wstring probe_val(UObject* o, FProperty* p, const std::wstring& name)
+    {
+        uint8_t* base = reinterpret_cast<uint8_t*>(o) + p->GetOffset_Internal();
+        if (CastField<FInt64Property>(p)) return std::to_wstring(*reinterpret_cast<int64_t*>(base));
+        if (CastField<FByteProperty>(p)) return std::to_wstring(static_cast<unsigned>(*base));
+        return any_prop(o, name.c_str());
+    }
+
+    // WHAT: one line per property of o over its whole class chain: name [type] owner=<class> = value. Stops at Object.
+    // WHY: the user asked for every field, so unknown fields show up too.
+    void probe_dump_props(std::wstring& s, UObject* o)
+    {
+        for (UStruct* st = o->GetClassPrivate(); st && st->GetName() != STR("Object"); st = st->GetSuperStruct())
+            for (FProperty* p : st->ForEachProperty())
+            {
+                const std::wstring n = p->GetName();
+                s += STR("  ") + n + STR(" [") + type_text(p) + STR("] owner=") + std::wstring(st->GetName()) + STR(" = ") + probe_val(o, p, n) + STR("\n");
+            }
+    }
+
+    // WHAT: the candidate names of kProbeNames: value from fm, else from ship, else "absent".
+    void probe_named(std::wstring& s, UObject* fm, UObject* ship)
+    {
+        for (const TCHAR* n : kProbeNames)
+        {
+            UObject* src = nullptr;
+            FProperty* p = nullptr;
+            const TCHAR* where = STR("");
+            if (alive(fm) && (p = fm->GetPropertyByNameInChain(n))) { src = fm; where = STR("fm"); }
+            else if (alive(ship) && (p = ship->GetPropertyByNameInChain(n))) { src = ship; where = STR("ship"); }
+            if (!src) { probe_kv(s, n, STR("absent")); continue; }
+            probe_kv(s, n, std::wstring(where) + STR(" ") + type_text(p) + STR(" ") + probe_val(src, p, std::wstring(n)));
+        }
+    }
+
+    // WHAT: class chain of o and its properties / functions whose name matches probe_name_match, with the owner class.
+    void probe_class_info(std::wstring& s, const TCHAR* label, UObject* o)
+    {
+        std::wstring chain;
+        for (UStruct* st = o->GetClassPrivate(); st && st->GetName() != STR("Object"); st = st->GetSuperStruct()) chain += std::wstring(st->GetName()) + STR(" > ");
+        s += STR("  ") + std::wstring(label) + STR(" chain: ") + chain + STR("Object\n");
+        for (UStruct* st = o->GetClassPrivate(); st && st->GetName() != STR("Object"); st = st->GetSuperStruct())
+        {
+            for (FProperty* p : st->ForEachProperty())
+            {
+                const std::wstring n = p->GetName();
+                if (probe_name_match(n)) s += STR("  prop ") + n + STR(" [") + type_text(p) + STR("] owner=") + std::wstring(st->GetName()) + STR("\n");
+            }
+            if (UClass* sc = Cast<UClass>(st))
+                for (UFunction* f : sc->ForEachFunction())
+                {
+                    const std::wstring n = f->GetName();
+                    if (probe_name_match(n)) s += STR("  func ") + n + STR(" owner=") + std::wstring(sc->GetName()) + STR("\n");
+                }
+        }
+    }
+
+    // WHAT: ship state for the dump: autopilot, throttle, impulses, momentum, target distance, strafe/drift, speed limit, position, hull and shields.
+    //       Units: vectors and positions raw (uu / PNum raw), speeds also m/s (raw / g_raw_per_m). n/a when unreadable.
+    void probe_ship_state(std::wstring& s, UObject* ship, int sid)
+    {
+        ActFrame f;
+        const bool hasf = act_frame(ship, f);
+        int64_t lim_mod = 0, lim = 0;
+        const bool ok_mod = call_pnum(ship, STR("GetModifiedMaxSpeed"), lim_mod);
+        const bool ok_lim = call_pnum(ship, STR("GetMaxSpeed"), lim);
+        probe_kv(s, STR("bAutopilot"), prop_bool(ship, STR("bAutopilot")));
+        probe_kv(s, STR("Throttle"), prop_int(ship, STR("Throttle")));
+        probe_kv(s, STR("ImpulseInput"), pvec_text(ship, STR("ImpulseInput")));
+        probe_kv(s, STR("WorldImpulse"), pvec_text(ship, STR("WorldImpulse")));
+        probe_kv(s, STR("ImpulseMomentum"), pvec_text(ship, STR("ImpulseMomentum")));
+        probe_kv(s, STR("LocalMomentum"), pvec_text(ship, STR("LocalMomentum")));
+        probe_kv(s, STR("DistanceToTarget"), pnum_raw_text(ship, STR("DistanceToTarget")) + STR(" m=") + dist_target_m(ship));
+        probe_kv(s, STR("bStrafing"), prop_bool(ship, STR("bStrafing")));
+        probe_kv(s, STR("bDrifting"), prop_bool(ship, STR("bDrifting")));
+        probe_kv(s, STR("GetModifiedMaxSpeed"), ok_mod ? std::to_wstring(lim_mod) + STR(" m/s=") + probe_f2(lim_mod / g_raw_per_m) : std::wstring(STR("n/a")));
+        probe_kv(s, STR("GetMaxSpeed"), ok_lim ? std::to_wstring(lim) + STR(" m/s=") + probe_f2(lim / g_raw_per_m) : std::wstring(STR("n/a")));
+        probe_kv(s, STR("ship_speed"), probe_f2(spd_of(sid).v / g_raw_per_m) + STR(" m/s (sampler speed)"));
+        probe_kv(s, STR("actor_loc_uu"), hasf ? probe_v3(f.loc) : std::wstring(STR("n/a")));
+        probe_kv(s, STR("MaxHealth"), prop_int(ship, STR("MaxHealth")));
+        probe_kv(s, STR("Health"), prop_int(ship, STR("Health")));
+        probe_kv(s, STR("MaxShields"), prop_int(ship, STR("MaxShields")));
+        probe_kv(s, STR("Shields"), prop_int(ship, STR("Shields")));
+    }
+
+    struct ProbeDumpCtx { UObject* ship; UObject* fm; int sid; std::wstring* out; };
+
+    // WHAT: builds the whole dump text (runs under seh_run from probe_avoid_cmd).
+    void probe_dump_fn(void* p)
+    {
+        auto* c = static_cast<ProbeDumpCtx*>(p);
+        std::wstring& s = *c->out;
+        s += STR("MiningProbeAvoid ship=") + std::to_wstring(c->sid) + STR("\n[ship state]\n");
+        probe_ship_state(s, c->ship, c->sid);
+        s += STR("[flight model named values]\n");
+        if (!alive(c->fm)) s += STR("  FlightModel = n/a (object not readable)\n");
+        else
+        {
+            s += STR("  FlightModel class = ") + std::wstring(c->fm->GetClassPrivate()->GetName()) + STR("\n");
+            probe_named(s, c->fm, c->ship);
+        }
+        s += STR("[flight model properties, all]\n");
+        if (alive(c->fm)) probe_dump_props(s, c->fm);
+        else s += STR("  n/a\n");
+        s += STR("[class info, names matching avoid|collision|obstacle|bubble|query|sweep|impulse|autopilot|proximity|overlap]\n");
+        probe_class_info(s, STR("ship"), c->ship);
+        if (alive(c->fm)) probe_class_info(s, STR("flight model"), c->fm);
+    }
+
+    // WHAT: one sampler line (runs under seh_run): t, speed, Throttle, bAutopilot, DistanceToTarget, ImpulseInput, WorldImpulse,
+    //       nearest rock distance and id (-, none when no rock is readable), actor location.
+    // WHY: the nearest rock uses g_rock_actors and the cached rock location (act_aim), so it adds no scan.
+    std::wstring probe_sample_text(UObject* ship, int sid, double t_s)
+    {
+        ActFrame f;
+        const bool hasf = act_frame(ship, f);
+        double best = -1.0;
+        UObject* best_a = nullptr;
+        if (hasf)
+            for (UObject* a : g_rock_actors)
+            {
+                ActAim r;
+                if (!act_aim(f, a, r)) continue;
+                if (!best_a || r.dist_m < best) { best = r.dist_m; best_a = a; }
+            }
+        int64_t dt_raw = 0;
+        const bool ok_dt = pnum_prop(ship, STR("DistanceToTarget"), dt_raw);
+        return STR("t=") + probe_f2(t_s) + STR(" spd_mps=") + probe_f2(spd_of(sid).v / g_raw_per_m) +
+               STR(" throttle=") + prop_int(ship, STR("Throttle")) + STR(" ap=") + prop_bool(ship, STR("bAutopilot")) +
+               STR(" dist_tgt_m=") + (ok_dt ? probe_f2(dt_raw / g_raw_per_m) : std::wstring(STR("n/a"))) +
+               STR(" impulse_in=") + pvec_text(ship, STR("ImpulseInput")) +
+               STR(" world_impulse=") + pvec_text(ship, STR("WorldImpulse")) +
+               STR(" rock_m=") + (best_a ? probe_f2(best) : std::wstring(STR("none"))) +
+               STR(" rock_id=") + (best_a ? std::to_wstring(rock_id_of(best_a)) : std::wstring(STR("-"))) +
+               STR(" loc_uu=") + (hasf ? probe_v3(f.loc) : std::wstring(STR("n/a")));
+    }
+
+    struct ProbeSampleCtx { UObject* ship; int sid; double t; std::wstring* out; };
+    void probe_sample_fn(void* p)
+    {
+        auto* c = static_cast<ProbeSampleCtx*>(p);
+        *c->out = probe_sample_text(c->ship, c->sid, c->t);
+    }
+
+    // WHAT: appends one UTF-8 line to MiningProbeAvoid.txt. false when the file cannot be opened.
+    bool probe_append(const std::wstring& line)
+    {
+        std::ofstream f(probe_path(), std::ios::binary | std::ios::app);
+        if (!f) return false;
+        f << u8(line) << "\r\n";
+        return true;
+    }
+
+    // WHAT: ends the watch: writes the end line and clears the state. why = text for the log and file.
+    void probe_stop(const std::wstring& why)
+    {
+        probe_append(STR("end t=") + probe_f2(g_pav.elapsed) + STR(" lines=") + std::to_wstring(g_pav.lines + 1) + STR(" reason=") + why);
+        g_pav.active = false;
+        log_line(STR("PROBEAVOID watch end ") + why);
+    }
+
+    // WHAT: sampler step, called on every poll tick (0.25 s) from cmd_tick. Stops at the asked time, at the line cap (one line kept for the end)
+    //       or when the ship is gone. Writes one sample line per call otherwise.
+    void probe_avoid_tick(double dt)
+    {
+        if (!g_pav.active) return;
+        const double before = g_pav.elapsed;
+        g_pav.elapsed += dt;
+        UObject* ship = find_by_id(STR("DMSPlayerShipObject"), g_pav.sid);
+        if (!alive(ship)) { probe_stop(STR("ship gone")); return; }
+        if (!probe_watch_more(g_pav.lines, before, g_pav.total)) { probe_stop(STR("time or line cap")); return; }
+        std::wstring line;
+        ProbeSampleCtx c{ship, g_pav.sid, g_pav.elapsed, &line};
+        if (!seh_run(probe_sample_fn, &c)) line = STR("fault ") + seh_describe(g_seh);
+        probe_append(line);
+        ++g_pav.lines;
+    }
+
+    // WHAT: command bus entry for probe_avoid, probe_avoid:<ship> and probe_avoid_watch:<ship>:<seconds> (run_cmd, mb_testcmd.hpp).
+    //       A bare probe_avoid uses the line's ship. Returns "ok ..." or "error: ...".
+    // WHY: one dump per command (overwrites the file); a watch truncates the file and then appends samples.
+    std::wstring probe_avoid_cmd(int sid, const std::string& cmd)
+    {
+        if (cmd.rfind("probe_avoid_watch", 0) == 0)
+        {
+            int ws = 0;
+            double secs = 0.0;
+            if (!probe_parse_watch(cmd, ws, secs)) return STR("error: usage probe_avoid_watch:<ship>:<seconds>");
+            if (!alive(find_by_id(STR("DMSPlayerShipObject"), ws))) return STR("error: ship not found");
+            g_pav = ProbeWatch{};
+            g_pav.active = true;
+            g_pav.sid = ws;
+            g_pav.total = secs;
+            g_pav.lines = 1;
+            write_atomic(probe_path(), u8(STR("MiningProbeAvoid watch ship=") + std::to_wstring(ws) + STR(" seconds=") + probe_f2(secs)) + "\r\n");
+            log_line(STR("PROBEAVOID watch start ship=") + std::to_wstring(ws) + STR(" seconds=") + probe_f2(secs));
+            return STR("ok watch ship=") + std::to_wstring(ws) + STR(" seconds=") + probe_f2(secs) + STR(" file=MiningProbeAvoid.txt");
+        }
+        int ps = sid;
+        if (cmd != "probe_avoid" && !probe_parse_sid(cmd, ps)) return STR("error: usage probe_avoid[:<ship>] or probe_avoid_watch:<ship>:<seconds>");
+        UObject* ship = find_by_id(STR("DMSPlayerShipObject"), ps);
+        if (!alive(ship)) return STR("error: ship not found");
+        UObject* fm = get_obj_prop(ship, STR("FlightModel"));
+        std::wstring out;
+        ProbeDumpCtx c{ship, fm, ps, &out};
+        if (!seh_run(probe_dump_fn, &c)) return STR("error: probe fault ") + seh_describe(g_seh);
+        write_atomic(probe_path(), u8(out));
+        log_line(STR("PROBEAVOID dump written ship=") + std::to_wstring(ps) + STR(" bytes=") + std::to_wstring(out.size()));
+        return STR("ok MiningProbeAvoid.txt written ship=") + std::to_wstring(ps);
+    }
 }
