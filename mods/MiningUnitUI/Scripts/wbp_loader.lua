@@ -1456,9 +1456,9 @@ function M.close()
   S.fleet, S.holoOut, S.tc = nil, nil, nil
   S.ud, S.rd, S.warn, S.dyn, S.dynWarn = nil, nil, nil, nil, nil
   if not (S.root or S.p or S.frame) then return end
-  if M.closing then return end   -- already closing: idempotent
+  if M.closing and os.clock() - (M.closing_at or 0) < 3 then return end   -- already closing: idempotent (a teardown lost for 3 s is ignored)
   M.closes = (M.closes or 0) + 1
-  M.closing = true
+  M.closing, M.closing_at = true, os.clock()
   local root, p, ep, n = S.root, S.p, M.opens or 0, M.closes
   S.root, S.p, S.w, S.frame = nil, nil, nil, nil
   -- RemoveFromParent + input restore run on a later tick, outside the caller (button / refresh / dropGone / key) stack
@@ -1736,7 +1736,7 @@ end
 -- Toggle: if the window is open, any open closes it.
 function M.open(ship)
   ExecuteInGameThread(function()
-    if M.closing then return end   -- previous close still tearing down: ignore the key (no second widget / hook)
+    if M.closing and os.clock() - (M.closing_at or 0) < 3 then return end   -- previous close still tearing down: ignore the key (no second widget / hook)
     -- toggle: any open request while a window is open (or half-open) closes it and does not open another
     if M.isOpen() or S.root or S.p then M.close(); return end
     local mode = (ship ~= nil) and "mu" or "f4"

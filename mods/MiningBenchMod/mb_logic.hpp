@@ -713,7 +713,7 @@ namespace
     constexpr double BUBBLE_BRAKE_V = 3.0;           // braking ends below this speed (m/s)
     constexpr int BUBBLE_MAX_REPLAN = 2;             // replans per target before the target is given up
     constexpr double BUBBLE_SHIP_R_M = 12.0;         // ship CollisionRadius when the game read fails (m)
-    constexpr double BUBBLE_SLOW_MS = 0.2;           // one ship's bubble pass over this many ms is slow ('BUBBLE slow')
+    constexpr double BUBBLE_SLOW_MS = 2.0;          // one ship's bubble pass over this many ms is slow ('BUBBLE slow')
 
     // WHAT: look-ahead length (m) for speed_mps (m/s): speed x BUBBLE_LOOK_S, at least BUBBLE_LOOK_MIN_M.
     inline double bubble_look_ahead(double speed_mps) { return std::max(BUBBLE_LOOK_MIN_M, std::max(0.0, speed_mps) * BUBBLE_LOOK_S); }
