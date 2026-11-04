@@ -662,7 +662,10 @@ namespace
     // WHAT: ladder state of one ship. braking = throttle held at 0 until speed < BUBBLE_BRAKE_V. pending = action after the stop.
     //       replans = replans done for rock. rock = the target the count belongs to (a new target starts at 0).
     //       blk / blk_d = last blocker id and its distance to the nose line (m), kept for the replan and the log.
-    struct BubbleState { bool braking = false; int replans = 0; int pending = BBA_NONE; int rock = 0; int blk = 0; double blk_d = 0.0; };
+    //       phase = flight phase of the last hit. wp = waypoints used in this flight. resume = a waypoint is flying; dst = the flight destination (m)
+    //       to fly again when the waypoint ends (WAYPOINT and ORE phases). why = last activation reason (status line only).
+    struct BubbleState { bool braking = false; int replans = 0; int pending = BBA_NONE; int rock = 0; int blk = 0; double blk_d = 0.0;
+                         int phase = 0; int wp = 0; bool resume = false; double dst[3] = {0, 0, 0}; int why = 4; };   // phase: BubblePhase, why: BubbleWhy (4 = BW_IDLE)
     // WHAT: one ladder step. hit = a blocker lies in the bubble, speed_mps = current speed, rock = current target id.
     //       Clear -> hit: BRAKE, pending = REPLAN, or RETARGET after BUBBLE_MAX_REPLAN replans. Braking -> speed < BUBBLE_BRAKE_V: returns pending
     //       (REPLAN or RETARGET) once and counts it. Otherwise NONE.
@@ -684,6 +687,85 @@ namespace
         if (act == BBA_REPLAN) ++s.replans; else s.replans = 0;
         return act;
     }
+
+    // ---------- bubble scope: which ships, which phase, which fix (stage 2b) ----------
+    constexpr int BUBBLE_MAX_WP = 2;                 // waypoints around a blocker per flight (waypoint and ore phases)
+    constexpr double BUBBLE_NUDGE_M = 100.0;         // mining drift nudge: move this far away from the rock (m)
+    constexpr double BUBBLE_NEAR_MARGIN_M = 10.0;    // drift nudge when centre distance < ship radius + rock radius + this (m)
+
+    // WHAT: why the bubble does or does not act on a ship. ACTIVE = our steering (move job with thrust) or speed > BUBBLE_BRAKE_V with no game autopilot.
+    enum BubbleWhy { BW_ACTIVE = 0, BW_AUTOPILOT = 1, BW_DOCK_AUTOPILOT = 2, BW_TRAVEL = 3, BW_IDLE = 4 };
+    // WHAT: activation rule. The game autopilot (bAutopilot, bDockingAutopilot) and warp travel always win: the game has its own avoidance there.
+    //       thrust_job = an approach move job (our steering). Otherwise active only when moving faster than BUBBLE_BRAKE_V.
+    inline BubbleWhy bubble_why(bool autopilot, bool dock_autopilot, bool travelling, bool thrust_job, double speed_mps)
+    {
+        if (autopilot) return BW_AUTOPILOT;
+        if (dock_autopilot) return BW_DOCK_AUTOPILOT;
+        if (travelling) return BW_TRAVEL;
+        if (thrust_job || speed_mps > BUBBLE_BRAKE_V) return BW_ACTIVE;
+        return BW_IDLE;
+    }
+    inline const char* bubble_why_name(BubbleWhy w)
+    {
+        switch (w)
+        {
+        case BW_ACTIVE: return "active (our steering or moving)";
+        case BW_AUTOPILOT: return "inactive: game autopilot engaged (bAutopilot=1)";
+        case BW_DOCK_AUTOPILOT: return "inactive: game docking autopilot engaged (bDockingAutopilot=1)";
+        case BW_TRAVEL: return "inactive: travelling (warp)";
+        default: return "inactive: not moving (speed <= 3 m/s, no move job)";
+        }
+    }
+
+    // WHAT: flight phase the bubble protects. SEEK = rock approach (move job, target rock); WAYPOINT = point flight (waypoint, undock or return leg,
+    //       nudge); ORE = flight to floating ore; MINE = no job, moving (drift while mining or idle).
+    enum BubblePhase { BPH_NONE = 0, BPH_SEEK = 1, BPH_WAYPOINT = 2, BPH_ORE = 3, BPH_MINE = 4 };
+    // WHAT: phase of a ship from its move job flags. drift = no move job and moving.
+    inline BubblePhase bubble_phase(bool approach_job, bool pt_flight, bool ore_flight, bool drift)
+    {
+        if (approach_job && ore_flight) return BPH_ORE;
+        if (approach_job && pt_flight) return BPH_WAYPOINT;
+        if (approach_job) return BPH_SEEK;
+        if (drift) return BPH_MINE;
+        return BPH_NONE;
+    }
+    inline const char* bubble_phase_name(BubblePhase p)
+    {
+        switch (p)
+        {
+        case BPH_SEEK: return "seek";
+        case BPH_WAYPOINT: return "waypoint";
+        case BPH_ORE: return "ore";
+        case BPH_MINE: return "mine";
+        default: return "none";
+        }
+    }
+
+    // WHAT: the fix for the stop of one ladder event. SEEK: replan (path_guard) or skip (give up the target).
+    //       WAYPOINT / ORE: waypoint while wp_used < BUBBLE_MAX_WP, else skip. MINE: nudge when near a rock, else resume (brake only).
+    enum BubbleFix { BF_NONE = 0, BF_REPLAN = 1, BF_WAYPOINT = 2, BF_SKIP = 3, BF_NUDGE = 4, BF_RESUME = 5 };
+    inline BubbleFix bubble_fix(BubblePhase ph, int act, int wp_used, bool near_rock)
+    {
+        if (ph == BPH_MINE) return near_rock ? BF_NUDGE : BF_RESUME;
+        if (act == BBA_RETARGET) return BF_SKIP;
+        if (ph == BPH_SEEK) return BF_REPLAN;
+        if (ph == BPH_WAYPOINT || ph == BPH_ORE) return wp_used < BUBBLE_MAX_WP ? BF_WAYPOINT : BF_SKIP;
+        return BF_NONE;
+    }
+    inline const char* bubble_fix_name(BubbleFix f)
+    {
+        switch (f)
+        {
+        case BF_REPLAN: return "replan";
+        case BF_WAYPOINT: return "waypoint";
+        case BF_SKIP: return "skip";
+        case BF_NUDGE: return "nudge";
+        case BF_RESUME: return "resume";
+        default: return "none";
+        }
+    }
+    // WHAT: a drifting ship is too near a rock: centre distance (m) below ship radius + rock radius + BUBBLE_NEAR_MARGIN_M.
+    inline bool bubble_too_near(double centre_m, double ship_r, double rock_r) { return centre_m < ship_r + rock_r + BUBBLE_NEAR_MARGIN_M; }
 
     // WHAT: stand-off point on the line from the rock centre c toward the ship a, at distance dist (m) from c. Fallback direction +X when a == c.
     inline void standoff_point(const double a[3], const double c[3], double dist, double out[3])

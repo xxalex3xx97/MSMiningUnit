@@ -1396,6 +1396,46 @@ static void t_bubble_ladder()
     CHECK(bubble_step(s, true, 40.0, 6) == BBA_NONE);
 }
 
+// bubble scope (stage 2b): activation rule, phase per move job, fix per phase
+static void t_bubble_scope()
+{
+    // activation: game autopilot always wins; our thrust job or speed > 3 m/s is active; else idle
+    CHECK(bubble_why(true, false, false, true, 50.0) == BW_AUTOPILOT);
+    CHECK(bubble_why(false, true, false, true, 50.0) == BW_DOCK_AUTOPILOT);
+    CHECK(bubble_why(false, false, true, true, 50.0) == BW_TRAVEL);
+    CHECK(bubble_why(false, false, false, true, 0.0) == BW_ACTIVE);      // our approach job, ship still
+    CHECK(bubble_why(false, false, false, false, 5.0) == BW_ACTIVE);     // drifting, no job
+    CHECK(bubble_why(false, false, false, false, 2.0) == BW_IDLE);       // not moving, no job
+    CHECK(bubble_why(false, false, false, false, 3.0) == BW_IDLE);       // at the threshold: not moving
+    CHECK(bubble_why_name(BW_AUTOPILOT)[0] != 0 && bubble_why_name(BW_IDLE)[0] != 0);
+    // phase from the move job flags
+    CHECK(bubble_phase(true, false, false, false) == BPH_SEEK);
+    CHECK(bubble_phase(true, true, false, false) == BPH_WAYPOINT);
+    CHECK(bubble_phase(true, false, true, false) == BPH_ORE);
+    CHECK(bubble_phase(true, true, true, false) == BPH_ORE);             // ore flight wins over point
+    CHECK(bubble_phase(false, false, false, true) == BPH_MINE);          // drift
+    CHECK(bubble_phase(false, false, false, false) == BPH_NONE);
+    CHECK(std::string(bubble_phase_name(BPH_ORE)) == "ore");
+    // fix per phase: SEEK replans (skip on retarget); waypoint/ore: waypoint while wp < 2, then skip; mine: nudge when near, else resume
+    CHECK(bubble_fix(BPH_SEEK, BBA_REPLAN, 0, false) == BF_REPLAN);
+    CHECK(bubble_fix(BPH_SEEK, BBA_RETARGET, 0, false) == BF_SKIP);
+    CHECK(bubble_fix(BPH_WAYPOINT, BBA_REPLAN, 0, false) == BF_WAYPOINT);
+    CHECK(bubble_fix(BPH_WAYPOINT, BBA_REPLAN, 1, false) == BF_WAYPOINT);
+    CHECK(bubble_fix(BPH_WAYPOINT, BBA_REPLAN, 2, false) == BF_SKIP);   // BUBBLE_MAX_WP = 2 used
+    CHECK(bubble_fix(BPH_ORE, BBA_REPLAN, 2, true) == BF_SKIP);
+    CHECK(bubble_fix(BPH_MINE, BBA_REPLAN, 0, true) == BF_NUDGE);
+    CHECK(bubble_fix(BPH_MINE, BBA_REPLAN, 0, false) == BF_RESUME);
+    CHECK(std::string(bubble_fix_name(BF_NUDGE)) == "nudge" && std::string(bubble_fix_name(BF_WAYPOINT)) == "waypoint");
+    // too near: centre distance below ship radius + rock radius + 10 m
+    CHECK(bubble_too_near(29.0, 12.0, 8.0));
+    CHECK(!bubble_too_near(30.0, 12.0, 8.0));
+    CHECK(BUBBLE_NUDGE_M == 100.0 && BUBBLE_MAX_WP == 2);
+    // state keeps the flight count and the resume destination
+    BubbleState s;
+    s.wp = 1; s.resume = true; s.dst[0] = 5.0;
+    CHECK(s.wp == 1 && s.resume && s.dst[0] == 5.0);
+}
+
 static void t_reg_targeted_ore_budget()
 {
     RockReg g;
@@ -1645,7 +1685,7 @@ int main()
         {"path_block", t_path_block}, {"path_perf", t_path_perf}, {"path_waypoint", t_path_waypoint}, {"shield_drop", t_shield_drop}, {"fast_sample", t_fast_sample},
         {"rock_depleted", t_rock_depleted},
         {"reg_table", t_reg_table}, {"reg_events", t_reg_events}, {"reg_within_nearest", t_reg_within_nearest}, {"reg_surface_block", t_reg_surface_block_radius},
-        {"approach_throttle", t_approach_throttle}, {"bubble", t_bubble}, {"bubble_ladder", t_bubble_ladder},
+        {"approach_throttle", t_approach_throttle}, {"bubble", t_bubble}, {"bubble_ladder", t_bubble_ladder}, {"bubble_scope", t_bubble_scope},
         {"reg_targeted_ore_budget", t_reg_targeted_ore_budget}, {"reg_bench", t_reg_bench}, {"reg_abs_m", t_reg_abs_m},
         {"box_probe_parse", t_box_probe_parse}, {"box_probe_uu_fwd", t_box_probe_uu_fwd}, {"reg_check_summary", t_reg_check_summary},
     };
