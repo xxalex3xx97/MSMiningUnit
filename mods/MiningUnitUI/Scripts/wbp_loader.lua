@@ -10,6 +10,7 @@ local function rd(o, p) local s, v = pcall(function() return o[p] end) if s then
 local function inVp(o) local s, v = pcall(function() return o:IsInViewport() end) return s and v == true end
 local function try(tag, f, ...) local s, r = pcall(f, ...) if not s then L("FAIL " .. tag .. ": " .. tostring(r)) end return s end
 local function nm(o, cls) if not ok(o) then return "invalid" end local s, r = pcall(function() if cls then return o:GetClass():GetFName():ToString() end return o:GetFName():ToString() end) return s and tostring(r) or "?" end
+local function v2(v) if type(v) ~= "userdata" then return tostring(v) end return tostring(rd(v, "X")) .. "x" .. tostring(rd(v, "Y")) end
 
 local LIB = "/Script/UMG.Default__WidgetBlueprintLibrary"
 local LIB_LAYOUT = "/Script/UMG.Default__WidgetLayoutLibrary"
@@ -915,6 +916,7 @@ local OPS = {
   { w = "Edt_IdleSeconds", k = "idle_seconds", sc = "ship", kind = "int", msg = "idle seconds must be an integer >= 0" },
   { w = "Edt_WaitSeconds", k = "wait_seconds", sc = "global", kind = "int", def = "10", msg = "wait must be an integer >= 0" },
   { w = "Edt_DockHoldLimit", k = "dock_hold_limit", sc = "ship", kind = "int", def = "300", msg = "dock time limit must be an integer >= 0" },
+  { w = "Edt_WarpTripKm", k = "warp_trip_km", sc = "ship", kind = "int", def = "5", msg = "warp trip distance must be an integer >= 0" },
   { w = "Chk_Enabled", k = "enabled", sc = "ship", kind = "chk", def = "1" },
   { w = "Chk_Repeat", k = "repeat", sc = "ship", kind = "chk", def = "0" },
 }
@@ -1697,7 +1699,16 @@ function M.open(ship)
       return
     end
     local p
-    try("FindFirstOf DMSPlayerController", function() p = FindFirstOf("DMSPlayerController") end)
+    -- FindFirstOf can return a stale controller after a long session (GetViewportSize nil, CreateWidget fails): prefer the local one
+    try("local DMSPlayerController", function()
+      for _, c in ipairs(FindAllOf("DMSPlayerController") or {}) do
+        if ok(c) then
+          local sl, loc = pcall(function() return c:IsLocalPlayerController() end)
+          if sl and loc then p = c break end
+        end
+      end
+    end)
+    if not ok(p) then try("FindFirstOf DMSPlayerController", function() p = FindFirstOf("DMSPlayerController") end) end
     if not ok(p) then L("open: no DMSPlayerController") return end
     local vw, vh = viewport(p)
     local lib = StaticFindObject(LIB)

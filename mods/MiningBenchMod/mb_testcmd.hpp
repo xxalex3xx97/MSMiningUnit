@@ -111,6 +111,7 @@ namespace
             {
                 if (g_jobs[i].sid != sid) { ++i; continue; }
                 tlog(STR("dock job seq=") + std::to_wstring(g_jobs[i].seq) + STR(" cancelled by stop_all"));
+                if (g_jobs[i].cmd != "undock") chunk_hold_target_clear(sid);   // same rule as job_finish: a far trip's cube target ends with the job
                 g_jobs.erase(g_jobs.begin() + static_cast<std::ptrdiff_t>(i));
             }
             g_ob.erase(sid); g_pf.erase(sid);

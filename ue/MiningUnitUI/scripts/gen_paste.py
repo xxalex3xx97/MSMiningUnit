@@ -475,6 +475,7 @@ TIPS = {
     "Btn_BeltPinned": "Use pinned sector: take the sector you pinned on the map as this ship's sector.",
     "Btn_BeltWarp": "Warp to sector: send the ship to its sector now. Not possible while the mining loop is running.",
     "Edt_WarpRange": "Warp range: furthest a ship flies to a rock before warping to another sector instead (50km, 20000m or plain meters). Empty = 50km. Also caps Radius. Only used when a sector is selected. Saved per ship.",
+    "Edt_WarpTripKm": "Warp trip distance: an unload, refuel or dock trip longer than this many km warps if the ship has warp fuel (otherwise it flies). Saved per ship.",
     "Btn_ApplyGlobal": "Set as default: copy this ship's Operation settings to the defaults that new ships and ships without their own value use.",
 }
 for _k, _n in FUEL_TIP.items():
@@ -486,7 +487,7 @@ for _k in ORES:
     TIPS["Chk_Unload%s" % _k] = "%s: when on, this ore is unloaded at this ship's unload docks for it (Ship tab). Off = it stays in the cargo. Applies to all ships." % _n
 TIP_LABELS = {"Edt_Radius": "Txt_OpRadiusLabel", "Edt_MiningDistance": "Txt_OpMiningDistLabel", "Edt_MaxRadius": "Txt_OpMaxRadiusLabel",
               "Edt_IdleSeconds": "Txt_OpIdleLabel", "Edt_WaitSeconds": "Txt_OpWaitLabel", "Edt_DockHoldLimit": "Txt_OpDockLimitLabel",
-              "Sel_Belt": "Txt_OpBeltLabel", "Edt_WarpRange": "Txt_OpWarpRangeLabel"}
+              "Sel_Belt": "Txt_OpBeltLabel", "Edt_WarpRange": "Txt_OpWarpRangeLabel", "Edt_WarpTripKm": "Txt_OpWarpTripLabel"}
 for _k in FUELS:
     TIP_LABELS["Edt_Fuel%sThreshold" % _k] = "Lbl_Fuel%sThreshold" % _k
     TIP_LABELS["Edt_Fuel%sAmount" % _k] = "Lbl_Fuel%sAmount" % _k
@@ -653,6 +654,7 @@ def build_tree():
     c_belt = card("Warp", "Lbl_HdrWarp", "Warp management", [
         row("Txt_OpBeltLabel", "Sector Selector", select_field("Belt")),
         crow("Txt_OpWarpRangeLabel", "Warp range", edt("Edt_WarpRange")),
+        crow("Txt_OpWarpTripLabel", "Warp trip distance (km)", edt("Edt_WarpTripKm")),
         hrow("Row_BeltButtons", [S(wrap(btn("Btn_BeltPinned", "Use pinned sector", BTN), None, 36), fill=1, pad=(0, 0, 6, 0)),
                                  S(wrap(btn("Btn_BeltWarp", "Warp to sector", BTN), None, 36), fill=1)])])
     op = [top, c_belt, c_fuel, c_ores,

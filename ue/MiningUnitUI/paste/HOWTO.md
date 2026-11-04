@@ -78,6 +78,7 @@ Art uses: title tabs (our copy `/Game/MiningUnitUI/Art/T_UI_Header_L`), gold lin
 - Added Img_FuelDeuterium/Hydrogen/Warp and Img_Unload<7 ores> (Image, Is Variable, 24x24, Hidden until Lua sets icon).
 - Mining card now stretches (no gap).
 - Added Txt_OpDockLimitLabel + Edt_DockHoldLimit (Timing card, 3rd row). Re-paste the whole tree (art or flat), then cook.
+- Added Txt_OpWarpTripLabel + Edt_WarpTripKm (Warp card, after Warp range): row added headless via scripts\add_warp_trip_row.py (no re-paste).
 
 ## PART 3 dock wait (2026-10-28)
 - C++ + Lua only; the widget change is the Timing row above (Edt_DockHoldLimit). Status "Waiting for dock" / "ERROR: ..." use Txt_StatusAction (Lua).

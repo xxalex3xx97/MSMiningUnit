@@ -50,6 +50,7 @@ namespace
             {STR("radius"), STR("'") + widen(c.radius) + STR("'")},
             {STR("idle_seconds"), std::to_wstring(c.idle_seconds)},
             {STR("dock_hold_limit"), std::to_wstring(c.dock_hold_limit)},
+            {STR("warp_trip_km"), std::to_wstring(c.warp_trip_km)},
             {STR("log_interval_seconds"), std::to_wstring(c.log_interval_seconds)},
             {STR("order_retry_seconds"), std::to_wstring(c.order_retry_seconds)},
             {STR("max_attempts"), std::to_wstring(c.max_attempts)},
@@ -212,6 +213,7 @@ namespace
                 const Config def{};
                 ensure_key("wait_seconds", std::to_string(def.wait_seconds).c_str(), "wait_seconds: seconds to wait at the dock after the order list (global only)");
                 ensure_key("dock_hold_limit", std::to_string(def.dock_hold_limit).c_str(), "dock_hold_limit: max seconds at the dock for unload/refuel with items left before the ship undocks, waits 30 s and docks again (10 rounds, then undocks and goes idle; not an error; 0 = no limit; per-ship override ok)");
+                ensure_key("warp_trip_km", std::to_string(def.warp_trip_km).c_str(), "warp_trip_km: a dock trip (unload/refuel/dock) longer than this many km warps if the ship has warp fuel, else it flies; per-ship override ok");
                 for (int i = 0; i < N_FUEL; ++i)
                 {
                     const std::string base = std::string("fuel_") + FUEL_KEY[i];
