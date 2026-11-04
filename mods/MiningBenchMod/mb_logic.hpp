@@ -349,6 +349,9 @@ namespace
     // WHAT: far trip warp only inside one sector: both sector ids known (> 0) and equal.
     // WHY: a warp across sectors is not wanted; an unknown sector (0) on either side skips the warp (the ship flies as before).
     inline bool trip_same_sector(int ship_sec, int dock_sec) { return ship_sec > 0 && ship_sec == dock_sec; }
+    // WHAT: the two sectors conflict only when both are known and different. An unknown sector (0, open space outside the named sectors) never blocks a warp.
+    // WHY: the rule is warp when the flight is longer than warp_trip_km; open space has no sector, so it must not refuse the warp.
+    inline bool sectors_conflict(int a, int b) { return a > 0 && b > 0 && a != b; }
 
     // WHAT: dock-job timeout clock reset. best_m = distance at last reset (<0 = none yet). now_m <= 0 = unreadable, ignored.
     // Returns true (and sets best_m) on the first reading or when the ship got >= step_m closer since the last reset.
@@ -372,9 +375,9 @@ namespace
     constexpr double WARP_LAND_M = 300.0;            // a flight warp lands this far short of its destination (m)
     constexpr double WARP_LAND_SIDE_M = 200.0;       // landing candidates 2 and 3: this far sideways from the base landing point (m)
     // WHAT: why a flight of ours warps or flies. Order: off (km 0), near (inside the trip distance), autopilot, travelling, docked, piloted (player flies),
-    //       other system, unknown sector (fly as before), other sector, no warp fuel, else warp. Autopilot and travel never warp.
+    //       other system, other sector (both known and different), no warp fuel, else warp. Autopilot and travel never warp. Unknown sectors do not block.
     enum FlightWhy { FW_WARP = 0, FW_NEAR = 1, FW_OFF = 2, FW_AUTOPILOT = 3, FW_DOCKED = 4, FW_TRAVEL = 5, FW_PILOTED = 6,
-                     FW_OTHER_SYSTEM = 7, FW_UNKNOWN_SECTOR = 8, FW_OTHER_SECTOR = 9, FW_NO_FUEL = 10, FW_LANDING = 11 };
+                     FW_OTHER_SYSTEM = 7, FW_OTHER_SECTOR = 8, FW_NO_FUEL = 9, FW_LANDING = 10 };
     inline FlightWhy flight_warp_why(double dist_m, int km, bool same_sys, int ship_sec, int dest_sec, bool docked, bool travelling,
                                      bool autopilot, bool piloted, long long drive, double dist_chunks)
     {
@@ -385,8 +388,7 @@ namespace
         if (docked) return FW_DOCKED;
         if (piloted) return FW_PILOTED;
         if (!same_sys) return FW_OTHER_SYSTEM;
-        if (ship_sec <= 0 || dest_sec <= 0) return FW_UNKNOWN_SECTOR;
-        if (!trip_same_sector(ship_sec, dest_sec)) return FW_OTHER_SECTOR;
+        if (sectors_conflict(ship_sec, dest_sec)) return FW_OTHER_SECTOR;
         if (!warp_fuel_ok(true, dist_chunks, 0, drive)) return FW_NO_FUEL;
         return FW_WARP;
     }
@@ -404,7 +406,6 @@ namespace
         case FW_TRAVEL: return "travelling";
         case FW_PILOTED: return "player flies";
         case FW_OTHER_SYSTEM: return "other system";
-        case FW_UNKNOWN_SECTOR: return "sector unknown";
         case FW_OTHER_SECTOR: return "other sector";
         case FW_NO_FUEL: return "no warp fuel";
         default: return "landing blocked";

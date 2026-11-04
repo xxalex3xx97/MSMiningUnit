@@ -868,7 +868,9 @@ namespace
 
     bool hazard_away(int sid, MineSt& m, double radius_m = HAZARD_RADIUS_M);   // defined after dock_job_on
     void dock_add_m(const int64_t ch0[3], const double loc0[3], const double off_m[3], int64_t ch[3], double loc[3]);   // defined below
-    FlightWhy flight_why_to(int sid, UObject* ship, const double T[3], int dsys, double dist_m);   // defined below (far-trip warp)
+    // WHAT: chunks and sector ids of one far-flight decision (WARPFLIGHT log). sec 0 = unknown (open space).
+    struct WarpInfo { int64_t sch[3] = {0, 0, 0}, dch[3] = {0, 0, 0}; int ssec = 0, dsec = 0; };
+    FlightWhy flight_why_to(int sid, UObject* ship, const double T[3], int dsys, double dist_m, WarpInfo* wi = nullptr);   // defined below (far-trip warp)
 
     // WHAT: starts the flee: stop work, dock trip (purpose P_FLEE), trip_end halts at the dock. why = trigger text ("hull hit 350 -> 320", "targeted by 2, combat 1").
     //       The attacker record is written before the stop, so it shows the state the ship was in when it was hit.
@@ -2100,7 +2102,7 @@ namespace
             const std::vector<SecInfo> secs = sectors_read();
             const SecInfo* ss = sector_of(secs, sys, ch);
             const SecInfo* ds = sector_of(secs, dp.sys, dp.ch);
-            if (!trip_same_sector(ss ? ss->id : 0, ds ? ds->id : 0)) { log_line(who + STR("other sector")); return false; }
+            if (sectors_conflict(ss ? ss->id : 0, ds ? ds->id : 0)) { log_line(who + STR("other sector")); return false; }
         }
         if (ship_docked(ship)) { log_line(who + STR("ship docked")); return false; }
         int32_t drive = 0;
@@ -2130,23 +2132,22 @@ namespace
     }
 
     // WHAT: why a flight of ship sid to T (m, system dsys, dist_m) warps or flies. Reads only; the far check comes first, so near flights read nothing.
-    FlightWhy flight_why_to(int sid, UObject* ship, const double T[3], int dsys, double dist_m)
+    FlightWhy flight_why_to(int sid, UObject* ship, const double T[3], int dsys, double dist_m, WarpInfo* wi)
     {
         const Config c = eff_cfg(sid);
         if (c.warp_trip_km <= 0 || !trip_warp_wanted(dist_m, c.warp_trip_km))
             return flight_warp_why(dist_m, c.warp_trip_km, true, 0, 0, false, false, false, false, 0, 0.0);
         const int ssys = sys_id(ship);
-        int64_t ch[3] = {0, 0, 0};
-        get_chunk(ship, ch);
-        int64_t tch[3] = {0, 0, 0};
-        for (int i = 0; i < 3; ++i) tch[i] = static_cast<int64_t>(std::floor(T[i] / REG_CHUNK_M));
-        int ssec = 0, dsec = 0;
+        WarpInfo local;
+        WarpInfo& w = wi ? *wi : local;
+        get_chunk(ship, w.sch);
+        for (int i = 0; i < 3; ++i) w.dch[i] = static_cast<int64_t>(std::floor(T[i] / REG_CHUNK_M));
         {
             const std::vector<SecInfo> secs = sectors_read();
-            const SecInfo* ss = sector_of(secs, ssys, ch);
-            const SecInfo* ds = sector_of(secs, dsys, tch);
-            ssec = ss ? ss->id : 0;
-            dsec = ds ? ds->id : 0;
+            const SecInfo* ss = sector_of(secs, ssys, w.sch);
+            const SecInfo* ds = sector_of(secs, dsys, w.dch);
+            w.ssec = ss ? ss->id : 0;
+            w.dsec = ds ? ds->id : 0;
         }
         bool trav = false, ap = false, dap = false;
         get_bool_prop(ship, STR("bTravelling"), trav);
@@ -2154,9 +2155,12 @@ namespace
         get_bool_prop(ship, STR("bDockingAutopilot"), dap);
         int32_t drive = 0;
         call_int(ship, STR("GetAvailableJumpFuel"), drive);
-        return flight_warp_why(dist_m, c.warp_trip_km, ssys == dsys, ssec, dsec, ship_docked(ship), trav, ap || dap, player_flies(ship),
+        return flight_warp_why(dist_m, c.warp_trip_km, ssys == dsys, w.ssec, w.dsec, ship_docked(ship), trav, ap || dap, player_flies(ship),
                                drive, dist_m / DOCK_CHUNK_M);
     }
+
+    // WHAT: chunk ints as text x,y,z for the log.
+    std::wstring chunk_text(const int64_t c[3]) { return std::to_wstring(c[0]) + STR(",") + std::to_wstring(c[1]) + STR(",") + std::to_wstring(c[2]); }
 
     // WHAT: no rock blocks point p (m) of system sys: each registry rock within 1 km is tested with block_r_m (scale + path clearance, hazard extra).
     bool landing_clear(int sys, const double p[3])
@@ -2209,7 +2213,8 @@ namespace
         const double v[3] = {T[0] - ps[0], T[1] - ps[1], T[2] - ps[2]};
         const double dist = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
         if (dist <= 0.0) return false;
-        const FlightWhy w = flight_why_to(sid, ship, T, dsys, dist);
+        WarpInfo wi;
+        const FlightWhy w = flight_why_to(sid, ship, T, dsys, dist, &wi);
         if (w == FW_NEAR || w == FW_OFF) return false;
         const double u[3] = {v[0] / dist, v[1] / dist, v[2] / dist};
         FlightWhy res = w;
@@ -2221,7 +2226,9 @@ namespace
             if (!ok) res = FW_LANDING;
         }
         log_line(STR("WARPFLIGHT ship=") + std::to_wstring(sid) + STR(" phase=") + widen(phase) + STR(" dist_km=") +
-                 std::to_wstring(dist / 1000.0) + STR(" -> ") + (res == FW_WARP ? STR("warp") : STR("fly(") + widen(flight_warp_name(res)) + STR(")")));
+                 std::to_wstring(dist / 1000.0) + STR(" ship_chunk=(") + chunk_text(wi.sch) + STR(") dest_chunk=(") + chunk_text(wi.dch) +
+                 STR(") sec_ship=") + std::to_wstring(wi.ssec) + STR(" sec_dest=") + std::to_wstring(wi.dsec) + STR(" -> ") +
+                 (res == FW_WARP ? STR("warp") : STR("fly(") + widen(flight_warp_name(res)) + STR(")")));
         if (res != FW_WARP) return false;
         int64_t lch[3] = {0, 0, 0}, lloc[3] = {0, 0, 0};
         for (int i = 0; i < 3; ++i)

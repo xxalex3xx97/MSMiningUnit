@@ -1448,12 +1448,16 @@ static void t_flight_warp()
     CHECK(flight_warp_why(10000.0, 5, true, 3, 3, true, false, false, false, 100, 4.88) == FW_DOCKED);
     CHECK(flight_warp_why(10000.0, 5, true, 3, 3, false, false, false, true, 100, 4.88) == FW_PILOTED);
     CHECK(flight_warp_why(10000.0, 5, false, 3, 3, false, false, false, false, 100, 4.88) == FW_OTHER_SYSTEM);
-    CHECK(flight_warp_why(10000.0, 5, true, 0, 3, false, false, false, false, 100, 4.88) == FW_UNKNOWN_SECTOR);
-    CHECK(flight_warp_why(10000.0, 5, true, 3, 0, false, false, false, false, 100, 4.88) == FW_UNKNOWN_SECTOR);
+    CHECK(flight_warp_why(10000.0, 5, true, 0, 3, false, false, false, false, 100, 4.88) == FW_WARP);   // one side unknown: allowed
+    CHECK(flight_warp_why(10000.0, 5, true, 3, 0, false, false, false, false, 100, 4.88) == FW_WARP);
+    CHECK(flight_warp_why(10000.0, 5, true, 0, 0, false, false, false, false, 100, 4.88) == FW_WARP);   // both unknown: allowed
+    CHECK(flight_warp_why(10000.0, 5, true, 3, 3, false, false, false, false, 100, 4.88) == FW_WARP);   // same known sector
+    CHECK(!sectors_conflict(0, 3) && !sectors_conflict(3, 0) && !sectors_conflict(0, 0) && !sectors_conflict(3, 3));
+    CHECK(sectors_conflict(3, 4));   // both known, different
     CHECK(flight_warp_why(10000.0, 5, true, 3, 4, false, false, false, false, 100, 4.88) == FW_OTHER_SECTOR);
     CHECK(flight_warp_why(10000.0, 5, true, 3, 3, false, false, false, false, 0, 4.88) == FW_NO_FUEL);
     CHECK(flight_unreachable(FW_OTHER_SECTOR) && flight_unreachable(FW_OTHER_SYSTEM));
-    CHECK(!flight_unreachable(FW_NO_FUEL) && !flight_unreachable(FW_UNKNOWN_SECTOR) && !flight_unreachable(FW_WARP));
+    CHECK(!flight_unreachable(FW_NO_FUEL) && !flight_unreachable(FW_WARP));
     // landing candidates toward T = (5000,0,0) from the origin: base 300 m short, 600 m short, 200 m sideways both ways
     const double T[3] = {5000, 0, 0}, dir[3] = {1, 0, 0};
     double L[3];
