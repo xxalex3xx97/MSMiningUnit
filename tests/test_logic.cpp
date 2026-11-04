@@ -1655,6 +1655,170 @@ static void t_probe_collision()
     CHECK(!probe_parse_sid_pfx("probe_collision:", "probe_collision:", sid));
 }
 
+// ---------- seed order, seeded areas, disk cache (mb_registry_logic.hpp) ----------
+
+static RegCacheData t_cache_sample()
+{
+    RegCacheData d;
+    d.kinds = {"Iron", "Ice ore"};
+    RegCacheRec a; a.id = 11; a.sys = 7; a.c[0] = 1.5; a.c[1] = -2048.25; a.c[2] = 4096.0; a.rad = 12.5f; a.ore = 0;
+    RegCacheRec b; b.id = 12; b.sys = 7; b.c[0] = 0.0; b.c[1] = 0.0; b.c[2] = 0.0; b.rad = -1.0f; b.ore = -1;
+    RegCacheRec c; c.id = 13; c.sys = 8; c.c[0] = 3.0; c.c[1] = 4.0; c.c[2] = 5.0; c.rad = 0.0f; c.ore = 1;
+    d.recs = {a, b, c};
+    d.h.exe_size = 1234;
+    d.h.save_n = 3;
+    return d;
+}
+
+static void t_reg_cache_round_trip()
+{
+    const std::vector<uint8_t> img = reg_cache_encode(t_cache_sample());
+    CHECK(img.size() == REG_CACHE_HDR + 3 * REG_CACHE_REC + 4 + (2 + 4) + (2 + 7));
+    RegCacheData o;
+    std::string why;
+    CHECK(reg_cache_parse(img.data(), img.size(), 1234, o, why));
+    CHECK(o.h.save_n == 3 && o.h.rock_n == 3 && o.h.exe_size == 1234);
+    CHECK(o.kinds.size() == 2 && o.kinds[0] == "Iron" && o.kinds[1] == "Ice ore");
+    CHECK(o.recs.size() == 3);
+    CHECK(o.recs[0].id == 11 && o.recs[0].sys == 7 && o.recs[0].c[1] == -2048.25 && o.recs[0].rad == 12.5f && o.recs[0].ore == 0);
+    CHECK(o.recs[1].rad == -1.0f && o.recs[1].ore == -1);
+    CHECK(o.recs[2].c[2] == 5.0 && o.recs[2].rad == 0.0f && o.recs[2].ore == 1);
+}
+
+static void t_reg_cache_reject()
+{
+    const std::vector<uint8_t> good = reg_cache_encode(t_cache_sample());
+    RegCacheData o;
+    std::string why;
+    auto bad = [&](const std::vector<uint8_t>& img, uint64_t exe) { return !reg_cache_parse(img.data(), img.size(), exe, o, why); };
+    CHECK(bad(good, 999));                                                   // exe size changed
+    CHECK(bad(good, 0));                                                     // exe size unknown
+    { auto x = good; x[0] ^= 0xFF; CHECK(bad(x, 1234)); }                    // magic
+    { auto x = good; x[4] = 2; CHECK(bad(x, 1234)); }                        // version
+    { auto x = good; x[REG_CACHE_HDR + 9] ^= 0x10; CHECK(bad(x, 1234)); }    // record byte: checksum
+    { auto x = good; x.pop_back(); CHECK(bad(x, 1234)); }                    // truncated
+    { auto x = good; x.resize(20); CHECK(bad(x, 1234)); }                    // short
+    { RegCacheData d = t_cache_sample(); d.recs[0].ore = 5; CHECK(bad(reg_cache_encode(d), 1234)); }     // ore index out of range
+    { RegCacheData d = t_cache_sample(); d.recs[1].id = 0; CHECK(bad(reg_cache_encode(d), 1234)); }     // id 0
+    { RegCacheData d = t_cache_sample(); d.recs[0].c[0] = std::nan(""); CHECK(bad(reg_cache_encode(d), 1234)); }
+    { RegCacheData d = t_cache_sample(); d.recs[0].rad = -5.0f; CHECK(bad(reg_cache_encode(d), 1234)); }
+    CHECK(reg_cache_parse(good.data(), good.size(), 1234, o, why));          // the good image still passes
+    RegCacheData e;
+    e.h.exe_size = 5;
+    const std::vector<uint8_t> eimg = reg_cache_encode(e);                  // empty table is a valid image
+    CHECK(reg_cache_parse(eimg.data(), eimg.size(), 5, o, why) && o.recs.empty());
+}
+
+static void t_reg_cache_verdict()
+{
+    CHECK(reg_cache_verdict(5, 5, 50, 0) == RCV_TRUST);
+    CHECK(reg_cache_verdict(5, 6, 50, 0) == RCV_MERGE);
+    CHECK(reg_cache_verdict(5, 5, 50, 1) == RCV_RESEED);
+    CHECK(reg_cache_verdict(5, 5, 0, 0) == RCV_RESEED);
+    const double a[3] = {1, 2, 3}, b[3] = {1.005, 2, 3}, c[3] = {1.02, 2, 3};
+    CHECK(reg_same_pos(a, b) && !reg_same_pos(a, c));
+}
+
+static void t_reg_kill_unseen()
+{
+    RockReg g;
+    const double p[3] = {0, 0, 0};
+    g.add(1, 7, p, {});
+    g.add(2, 7, p, {});
+    g.add(3, 7, p, {});
+    const std::vector<uint64_t> seen = {5, 4, 5};   // pass 5: rock 2 not seen
+    CHECK(reg_kill_unseen(g, seen, 5, 9) == 1);
+    CHECK(g.is_alive(1) && !g.is_alive(2) && g.is_alive(3));
+    CHECK(reg_kill_unseen(g, seen, 5, 10) == 0);    // already dead: not counted again
+    CHECK(g.add(4, 7, p, {}) == 3 && g.is_alive(4));   // a new id is merged in alive
+    CHECK(g.kill(4, 11) && !g.is_alive(4));
+}
+
+static void t_reg_seed_rings()
+{
+    std::vector<RegSrc> src(1);
+    src[0].sys = 7;   // ship in chunk (0,0,0)
+    const int64_t a0[3] = {0, 0, 0}, a3[3] = {3, 0, -1}, a13[3] = {13, 0, 0}, a20[3] = {20, 0, 0}, far[3] = {10000, 0, 0};
+    CHECK(reg_ring_of(7, a0, src) == 0);
+    CHECK(reg_ring_of(7, a3, src) == 3);
+    CHECK(reg_ring_of(7, a13, src) == 13);
+    CHECK(reg_ring_of(7, far, src) == REG_RING_CAP);
+    CHECK(reg_ring_of(9, a0, src) == REG_RING_FAR);   // no ship in that system
+    const std::vector<int> ring = {13, 0, REG_RING_FAR, 3, 20};
+    std::vector<size_t> order;
+    size_t near_n = 0;
+    reg_order_rings(ring, REG_PRIORITY_CHUNKS, order, near_n);
+    CHECK(order.size() == 5 && near_n == 2);   // phase A = rings 0 and 3
+    CHECK(order[0] == 1 && order[1] == 3 && order[2] == 0 && order[3] == 4 && order[4] == 2);
+    // the chunk of a metre position: 2048 m per chunk, floor for negatives
+    const double pm[3] = {2047.9, -0.5, 4096.0};
+    int64_t cm[3] = {0, 0, 0};
+    reg_chunk_of_m(pm, cm);
+    CHECK(cm[0] == 0 && cm[1] == -1 && cm[2] == 2);
+}
+
+static void t_reg_area_ready()
+{
+    RockReg g;
+    std::vector<RegSrc> src(1);
+    src[0].sys = 7;
+    g.zones_begin(1, src, REG_PRIORITY_CHUNKS);
+    const int64_t c0[3] = {0, 0, 0}, c11[3] = {11, 0, 0}, c12[3] = {12, 0, 0}, cm12[3] = {-12, 0, 0};
+    CHECK(!g.area_ready(7, c0, 0));              // not ready yet
+    g.zones_ready(1);
+    CHECK(g.area_ready(7, c11, 1));              // 11 + 1 <= 12
+    CHECK(!g.area_ready(7, c12, 1));             // 12 + 1 > 12
+    CHECK(g.area_ready(7, cm12, 0));
+    CHECK(!g.area_ready(8, c0, 0));              // other system
+    std::vector<RegSrc> src2(1);
+    src2[0].sys = 9;
+    g.zones_begin(2, src2, REG_PRIORITY_CHUNKS); // drops the zones not ready, keeps the ready one
+    CHECK(g.area_ready(7, c0, 0));
+    CHECK(!g.area_ready(9, c0, 0));
+}
+
+static void t_reg_cache_bench()
+{
+    // 160,799 records (the live save count). Encode once; time the parse (file bytes -> records) and the table build (RockReg::add).
+    RegCacheData d;
+    d.kinds = {"Iron", "Ice", "Gold"};
+    d.h.exe_size = 99;
+    d.h.save_n = 160799;
+    d.recs.resize(160799);
+    uint64_t s = 42;
+    for (size_t i = 0; i < d.recs.size(); ++i)
+    {
+        s = s * 6364136223846793005ull + 1442695040888963407ull;
+        RegCacheRec& r = d.recs[i];
+        r.id = static_cast<int32_t>(i + 1);
+        r.sys = 7 + static_cast<int32_t>(i % 3);
+        r.c[0] = static_cast<double>(s >> 40) - 8.0e6;
+        r.c[1] = static_cast<double>((s >> 20) & 0xFFFFF) - 5.0e5;
+        r.c[2] = static_cast<double>(s & 0xFFFFF) - 5.0e5;
+        r.rad = (i % 4) ? 12.5f : -1.0f;
+        r.ore = static_cast<int32_t>(i % 3);
+    }
+    const std::vector<uint8_t> img = reg_cache_encode(d);
+    RegCacheData o;
+    std::string why;
+    const auto t0 = std::chrono::steady_clock::now();
+    const bool ok = reg_cache_parse(img.data(), img.size(), 99, o, why);
+    const auto t1 = std::chrono::steady_clock::now();
+    CHECK(ok && o.recs.size() == 160799);
+    RockReg tab;
+    tab.kinds = o.kinds;
+    for (const RegCacheRec& c : o.recs)
+    {
+        const size_t i = tab.add(c.id, c.sys, c.c, {});
+        tab.rocks[i].ore = c.ore;
+        if (c.rad >= 0.0f) tab.set_radius(i, static_cast<double>(c.rad));
+    }
+    const auto t2 = std::chrono::steady_clock::now();
+    CHECK(tab.rocks.size() == 160799);
+    std::printf("bench reg_cache_parse n=%zu bytes=%zu ms=%.2f\n", o.recs.size(), img.size(), std::chrono::duration<double, std::milli>(t1 - t0).count());
+    std::printf("bench reg_cache_table n=%zu ms=%.2f\n", tab.rocks.size(), std::chrono::duration<double, std::milli>(t2 - t1).count());
+}
+
 int main()
 {
     const Case cases[] = {
@@ -1688,6 +1852,9 @@ int main()
         {"approach_throttle", t_approach_throttle}, {"bubble", t_bubble}, {"bubble_ladder", t_bubble_ladder}, {"bubble_scope", t_bubble_scope},
         {"reg_targeted_ore_budget", t_reg_targeted_ore_budget}, {"reg_bench", t_reg_bench}, {"reg_abs_m", t_reg_abs_m},
         {"box_probe_parse", t_box_probe_parse}, {"box_probe_uu_fwd", t_box_probe_uu_fwd}, {"reg_check_summary", t_reg_check_summary},
+        {"reg_cache_round_trip", t_reg_cache_round_trip}, {"reg_cache_reject", t_reg_cache_reject}, {"reg_cache_verdict", t_reg_cache_verdict},
+        {"reg_kill_unseen", t_reg_kill_unseen}, {"reg_seed_rings", t_reg_seed_rings}, {"reg_area_ready", t_reg_area_ready},
+        {"reg_cache_bench", t_reg_cache_bench},
     };
     for (const Case& c : cases)
     {

@@ -352,6 +352,7 @@ namespace
     //       Returns the blocker id, 0 = clear. dist_m = blocker centre to path (m); c_out = its centre (m).
     int path_blocker(int sys, const double a[3], const double goal[3], int skip_id, double& dist_m, double c_out[3])
     {
+        reg_area_seeded(sys, a);   // unseeded area: the check uses the seeded rocks only (logged once per pass)
         const RockReg& t = reg_st().tab;
         const size_t i = t.first_blocker(sys, a, goal, SHIP_CLEARANCE_M, nullptr, skip_id, &g_hazard_rocks, HAZARD_CLEAR_EXTRA_M, dist_m);
         if (i == RockReg::npos) return 0;

@@ -78,6 +78,7 @@ namespace
         const double p[3] = {f.loc[0] / MV_UU_PER_M, f.loc[1] / MV_UU_PER_M, f.loc[2] / MV_UU_PER_M};
         const double L = bubble_look_ahead(speed);
         const double b[3] = {p[0] + f.fw[0] * L, p[1] + f.fw[1] * L, p[2] + f.fw[2] * L};
+        reg_area_seeded(sys_id(ship), p);   // unseeded area: the look-ahead below sees the seeded rocks only (logged once per pass)
         const RockReg& t = reg_st().tab;
         const size_t i = t.first_blocker(sys_id(ship), p, b, bubble_clear_m(bubble_ship_r(sid)), nullptr, skip_id, nullptr, 0.0, out_d);
         if (i == RockReg::npos) return 0;
