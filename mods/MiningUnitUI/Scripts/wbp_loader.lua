@@ -1174,13 +1174,15 @@ end
 
 -- ===== Log tab: MiningLog.txt lines "<ship id>|<hh:mm:ss>|<text>" (oldest first per ship, C++ keeps 20 per ship) =====
 local LOGN = 60  -- must equal the Txt_Log_1..N rows in the WBP (gen_paste)
+-- destroyed ships (C++ session record): header row "<id>|name|<name> (destroyed)" -> dn[id]; their lines are normal rows.
 local function logLoad()
-  local out = {}
+  local out, dn = {}, {}
   for _, l in ipairs(rdcached(M.DATA .. "MiningLog.txt") or {}) do
     local p = split(l)
-    if p[2] then out[#out + 1] = { sid = trim(p[1]), t = trim(p[2]), text = p[3] or "", i = #out + 1 } end
+    if p[2] and trim(p[2]) == "name" then dn[trim(p[1])] = p[3] or ""
+    elseif p[2] then out[#out + 1] = { sid = trim(p[1]), t = trim(p[2]), text = p[3] or "", i = #out + 1 } end
   end
-  return out
+  return out, dn
 end
 -- Single ship: Row_LogScroll list, that ship's lines newest first. All ships: Pnl_LogAll = one card per fleet ship (S.fleet.rows, filled by fleetPaint
 -- before this): name + status, then its newest LOGCARD_ROWS lines "hh:mm:ss text". Repaints only when the shown text changes.
@@ -1192,13 +1194,23 @@ local function logNewest(lines, sid)  -- this ship's lines, newest first
   table.sort(sel, function(a, b) if a.t ~= b.t then return a.t > b.t end return a.i > b.i end)
   return sel
 end
-local function logPaintAll(lines)
+local function logPaintAll(lines, dn)
   local rows, cards, key = S.fleet and S.fleet.rows or {}, {}, {}
+  -- destroyed ships (not on the bench) take the free cards after the bench ships: log view only, never in the selector, cards or fan-out
+  local bench, gone = {}, {}
+  for _, o in ipairs(benchShips()) do bench[o.id] = true end
+  for sid in pairs(dn) do if not bench[sid] then gone[#gone + 1] = sid end end
+  table.sort(gone, function(a, b) return (tonumber(a) or 0) < (tonumber(b) or 0) end)
   for f = 1, FN do
     local o = rows[f]
+    local sid = o and tostring(o.id) or nil
     local c = { on = o ~= nil, name = o and o.text or "", status = o and o.status or "", lines = {} }
-    if o then
-      local sel = logNewest(lines, tostring(o.id))
+    if not o and #gone > 0 then
+      sid = table.remove(gone, 1)
+      c = { on = true, name = dn[sid], status = "Destroyed (not selectable)", lines = {} }
+    end
+    if sid then
+      local sel = logNewest(lines, sid)
       for r = 1, math.min(#sel, LOGCARD_ROWS) do c.lines[r] = sel[r].t .. " " .. sel[r].text end
     end
     cards[f] = c
@@ -1222,8 +1234,8 @@ local function logPaint()
   local all = S.all and true or false
   setVis(w("Row_LogScroll"), all and 1 or 0)
   setVis(w("Pnl_LogAll"), all and 0 or 1)
-  local lines = logLoad()
-  if all then setVis(w("Txt_LogHint"), 1); return logPaintAll(lines) end
+  local lines, dn = logLoad()
+  if all then setVis(w("Txt_LogHint"), 1); return logPaintAll(lines, dn) end
   local rows = {}
   for k, e in ipairs(logNewest(lines, tostring(S.sid))) do
     if k > LOGN then break end

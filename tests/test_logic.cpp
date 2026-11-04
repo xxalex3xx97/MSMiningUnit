@@ -977,6 +977,34 @@ static void t_dock_undock_first()
     CHECK(!dock_undock_first(1, 0));          // no target: nothing to do
 }
 
+static void t_combat_flee()
+{
+    CHECK(TARGET_FLEE_READS == 2);
+    int s = 0;
+    s = target_streak_next(s, 1); CHECK(s == 1 && !target_flee_trigger(true, s, false, false));   // one read: no flee yet
+    s = target_streak_next(s, 0); CHECK(s == 0);                                                   // a clean read resets
+    s = target_streak_next(s, 3); s = target_streak_next(s, 1); CHECK(s == 2 && target_flee_trigger(true, s, false, false));   // two in a row: flee
+    CHECK(target_flee_trigger(true, 0, true, false));          // in combat flees at once
+    CHECK(!target_flee_trigger(false, 5, true, false));        // flee_on_target = 0: never
+    CHECK(!target_flee_trigger(true, 5, true, true));          // latched (already fled for this attack): no second flee
+    bool l = true;
+    CHECK(target_latch_next(l, true));                         // still attacked: stays latched
+    CHECK(!target_latch_next(l, false));                       // attack over: released
+    CHECK(!target_latch_next(false, true));                    // never set without a flee
+}
+
+static void t_combat_log()
+{
+    CHECK(combat_log_trim("abc\n", 10) == "abc\n");            // under cap: unchanged
+    const std::string big = "line1\nline2\nline3\nline4\n";     // 24 bytes, cap 10: drop the older half
+    const std::string cut = combat_log_trim(big, 10);
+    CHECK(cut == "line4\n");                                   // cut after the first newline past the middle (index 12)
+    CHECK(combat_log_trim("nonewline_past_cap_xxxxxxxxxxxxxxxxxxxxxx", 10).empty());   // no newline past the middle: nothing kept
+    CHECK(attacker_text(1, L"DMSPlayerShipObject", 42, L"Raider", L"Pirates", 1234.7, false) ==
+          L"#1 DMSPlayerShipObject id=42 name='Raider' owner='Pirates' dist=1234m");
+    CHECK(attacker_text(2, L"Rock", 7, L"", L"n/a", -1.0, true) == L"#2 Rock id=7 name='' owner='n/a' dist=n/a own");
+}
+
 static void t_net_unload_first()
 {
     CHECK(net_unload_first(true, P_REFUEL));
@@ -1040,6 +1068,7 @@ int main()
         {"net_score_order", t_net_score_order}, {"net_higher_cargo_wins", t_net_higher_cargo_wins}, {"net_non_preempt", t_net_non_preempt},
         {"net_flee_no_slot", t_net_flee_no_slot}, {"net_slots", t_net_slots}, {"net_slot_pos", t_net_slot_pos}, {"net_offset_carry", t_net_offset_carry}, {"net_line_spacing", t_net_line_spacing},
         {"net_clear_expired", t_net_clear_expired}, {"net_unload_first", t_net_unload_first}, {"dock_undock_first", t_dock_undock_first},
+        {"combat_flee", t_combat_flee}, {"combat_log", t_combat_log},
     };
     for (const Case& c : cases)
     {

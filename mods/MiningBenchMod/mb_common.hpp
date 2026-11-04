@@ -19,6 +19,7 @@
 #include <cwctype>
 #include <cctype>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -137,7 +138,7 @@ namespace
         {
             std::wstring l = s;
             for (auto& c : l) c = static_cast<wchar_t>(std::towlower(c));
-            static const wchar_t* keep[] = { L"error", L"fail", L"warn", L"exception", L"halt", L"stopped", L"loaded", L"mining loop", L"going to", L"dock retry", L"mine weapons", L"warpsector", L"sector ", L"fuelchk", L"fuelwarp", L"jumpcost", L"warpcur", L"warpreal", L"chunkhold", L"devstation", L"sweep", L"fault", L"compat" };
+            static const wchar_t* keep[] = { L"error", L"fail", L"warn", L"exception", L"halt", L"stopped", L"loaded", L"mining loop", L"going to", L"dock retry", L"mine weapons", L"warpsector", L"sector ", L"fuelchk", L"fuelwarp", L"jumpcost", L"warpcur", L"warpreal", L"chunkhold", L"devstation", L"sweep", L"fault", L"compat", L"combat", L"attack" };
             bool hit = false;
             for (auto k : keep) if (l.find(k) != std::wstring::npos) { hit = true; break; }
             if (!hit) return;
@@ -249,6 +250,33 @@ namespace
             o << data;
         }
         std::filesystem::rename(tmp, p);
+    }
+
+    // WHAT: one combat line: UE4SS log (log_line) and MiningCombat.txt in the dlls folder ("hh:mm:ss text", appended). Past 200 KB the older half is dropped.
+    // WHY: the combat record must survive the UE4SS.log rotation; the file is the place to read after a loss. Lines are rare (flee, hull drop, destroyed, 30 s summary).
+    void combat_log(const std::wstring& s)
+    {
+        log_line(s);
+        try
+        {
+            const auto path = get_dll_dir() / "MiningCombat.txt";
+            SYSTEMTIME st;
+            GetLocalTime(&st);
+            char stamp[16];
+            std::snprintf(stamp, sizeof(stamp), "%02u:%02u:%02u ", static_cast<unsigned>(st.wHour), static_cast<unsigned>(st.wMinute), static_cast<unsigned>(st.wSecond));
+            std::error_code ec;
+            const auto sz = std::filesystem::file_size(path, ec);
+            if (!ec && sz > 200 * 1024)
+            {
+                std::ifstream in(path, std::ios::binary);
+                std::string old((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+                in.close();
+                write_atomic(path, combat_log_trim(old, 200 * 1024));
+            }
+            std::ofstream o(path, std::ios::binary | std::ios::app);
+            o << stamp << to_utf8(s) << "\n";
+        }
+        catch (...) { }   // a log file that cannot be written must not stop the mining loop
     }
 
     // WHAT: int64 as a wide decimal string.

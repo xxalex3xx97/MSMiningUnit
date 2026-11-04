@@ -83,6 +83,7 @@ namespace
         int record = 0;                      // no effect since 0.0.1 (recorder removed); kept so old INI files still load
         int record_interval_seconds = 2;     // global only
         bool kill_switch = false;            // 1 = the mod stops touching the game completely (hot reload). Global only. (INI: kill_switch)
+        int flee_on_target = 1;              // 1 = a ship targeted by a hostile (or in combat) flees to a dock like after a hull hit. Global only. (INI: flee_on_target)
         // text distance, e.g. 50km: belt mode only. Rocks farther than this from the ship count as none (the ship warps instead of flying there), and radius is capped by it. Empty/0/bad = 50 km. Per-ship. (INI: warp_range)
         std::string warp_range = "50km";
         std::string mining_distance = "50m";    // per-ship: mining distance from the rock, e.g. 200m / 0.2km (empty = unset)
@@ -471,6 +472,42 @@ namespace
     inline bool dead_confirmed(int count)
     {
         return count >= SHIP_DEAD_SCANS;
+    }
+
+    // ---------- combat: target flee trigger and combat log text (mb_mining.hpp samples the game, mb_common.hpp writes the file) ----------
+
+    // WHAT: consecutive target samples with a hostile targeter (a sample with none sets 0).
+    // WHY: one read can catch a stale entry; the flee needs TARGET_FLEE_READS reads in a row (about 1 s apart, the sample cadence).
+    constexpr int TARGET_FLEE_READS = 2;
+    inline int target_streak_next(int prev, int hostile_n)
+    {
+        return hostile_n > 0 ? prev + 1 : 0;
+    }
+    // WHAT: flee trigger from a target sample: flee_on_target on, not latched by an earlier flee of this attack, and the streak reached TARGET_FLEE_READS or the ship is in combat.
+    // WHY: the latch means one flee per attack; the ship that already fled is not sent again while the attack goes on.
+    inline bool target_flee_trigger(bool enabled, int streak, bool combat, bool latched)
+    {
+        return enabled && !latched && (streak >= TARGET_FLEE_READS || combat);
+    }
+    // WHAT: the latch stays set only while the ship is still attacked (targeted or in combat); a sample with no attack clears it.
+    inline bool target_latch_next(bool latched, bool attacked)
+    {
+        return attacked && latched;
+    }
+    // WHAT: text of a log file after the size cap: unchanged up to cap bytes, past it the older half is dropped (cut after the first newline past the middle).
+    // WHY: MiningCombat.txt must not grow without limit in a long session.
+    inline std::string combat_log_trim(const std::string& txt, size_t cap)
+    {
+        if (txt.size() <= cap) return txt;
+        const size_t nl = txt.find('\n', txt.size() / 2);
+        return nl == std::string::npos ? std::string() : txt.substr(nl + 1);
+    }
+    // WHAT: one attacker entry of a combat line: "#idx class id=.. name='..' owner='..' dist=..m" (+ " own" for our bench ships). dist_m < 0 = n/a.
+    inline std::wstring attacker_text(int idx, const std::wstring& cls, int id, const std::wstring& name, const std::wstring& owner, double dist_m, bool own)
+    {
+        std::wstring s = L"#" + std::to_wstring(idx) + L" " + cls + L" id=" + std::to_wstring(id) + L" name='" + name + L"' owner='" + owner + L"' dist=";
+        s += dist_m < 0.0 ? std::wstring(L"n/a") : std::to_wstring(static_cast<long long>(dist_m)) + L"m";
+        return own ? s + L" own" : s;
     }
 
     // WHAT: dock time limit rounds used (n): from MINE_DOCK_RETRIES on, the next limit hit undocks and goes idle.
@@ -964,6 +1001,7 @@ namespace
         {"max_radius", 100, 100000, true, true},
         {"warp_range", 1000, 100000, true, true},
         {"mining_distance", 1, 5000, false, true},
+        {"flee_on_target", 0, 1, true, false},
     };
 
     // WHAT: the bound row for key, nullptr when the key is not bounded.

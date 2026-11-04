@@ -59,6 +59,7 @@ namespace
             {STR("record"), std::to_wstring(c.record)},
             {STR("record_interval_seconds"), std::to_wstring(c.record_interval_seconds)},
             {STR("kill_switch"), std::to_wstring(c.kill_switch ? 1 : 0)},
+            {STR("flee_on_target"), std::to_wstring(c.flee_on_target)},
             {STR("mining_distance"), STR("'") + widen(c.mining_distance) + STR("'")},
             {STR("fuel_margin"), std::to_wstring(c.fuel_margin)},
             {STR("fuel_amount"), std::to_wstring(c.fuel_amount)},
@@ -148,6 +149,8 @@ namespace
                      "record=0\n"
                      "# record_interval_seconds: seconds between recorder lines (global only)\n"
                      "record_interval_seconds=2\n"
+                     "# flee_on_target: 1 = a ship targeted by a hostile (2 samples in a row) or in combat flees to a dock like after a hull hit (global only)\n"
+                     "flee_on_target=1\n"
                      "# refuel_dock_id: numeric dock id OR in-game dock name of the refuel dock (empty = none; per-ship key allowed)\n"
                      "refuel_dock_id=\n";
                 Output::send<LogLevel::Normal>(STR("[MiningBenchMod] created default {}\n"), path.wstring());
@@ -198,6 +201,7 @@ namespace
             ensure_key("record", "0", "record: no effect since 0.0.1 (recorder removed)");
             ensure_key("record_interval_seconds", "2", "record_interval_seconds: seconds between recorder lines (global only)");
             ensure_key("kill_switch", "0", "kill_switch: 1 = the mod stops touching the game completely (hot reload, global only)");
+            ensure_key("flee_on_target", "1", "flee_on_target: 1 = a ship targeted by a hostile or in combat flees to a dock like after a hull hit (global only)");
             ensure_key("warp_range", "50km", "warp_range: belt mode: a rock farther than this from the ship is not flown to, the ship warps to the next sector instead; also caps radius (m/km, empty/0 = 50km; per-ship key allowed)");
             ensure_key("mining_distance", "50m", "mining_distance: distance from the rock in m/km, e.g. 200m (empty = 50m; per-ship key allowed)");
             ensure_key("fuel_margin", "0", "fuel_margin: int fuel margin, 0 = unset (per-ship key allowed)");
@@ -256,6 +260,7 @@ namespace
             if (kv.count("record_interval_seconds")) nc.record_interval_seconds = to_int(kv["record_interval_seconds"], 2);
             if (nc.record_interval_seconds < 1) nc.record_interval_seconds = 1;
             if (kv.count("kill_switch")) nc.kill_switch = to_int(kv["kill_switch"], 0) != 0;
+            if (kv.count("flee_on_target")) nc.flee_on_target = to_int(kv["flee_on_target"], 1) != 0 ? 1 : 0;
             if (nc.log_interval_seconds < 1) nc.log_interval_seconds = 1;
             // WHAT: wait and per-fuel keys (global only). An empty or non-number value falls back to the struct default (to_int).
             // WHY: the INI may predate these keys; ensure_key below adds them on first load.
