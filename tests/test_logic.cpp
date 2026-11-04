@@ -4,13 +4,18 @@
 // RUN: tests\run.ps1 (builds with cl, runs, exit code 0 = all PASS). Or by hand: see run.ps1.
 // DEPENDS ON: mods/MiningBenchMod/mb_logic.hpp, mods/MiningBenchMod/mb_math.hpp (mb_math needs <cmath>, included first).
 // NOTE: CHECK counts failures and keeps going; the summary line prints the pass and fail counts.
+#include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <set>
 #include <string>
+#include <vector>
 
 #include "mb_logic.hpp"
 #include "mb_math.hpp"
+#include "mb_registry_logic.hpp"
 #include "mb_wd_logic.hpp"
 
 static int g_pass = 0;
@@ -1201,6 +1206,187 @@ static void t_path_perf()
     CHECK(PATH_CANDIDATES == 8);
 }
 
+// ---------- mb_registry_logic.hpp (rock table, chunk grid, events, ore) ----------
+
+static void reg_add(RockReg& g, int id, int sys, double x, double y, double z, void* item = nullptr, double rad = -1.0)   // rad < 0 = radius not read yet
+{
+    const double c[3] = {x, y, z};
+    std::vector<void*> items;
+    if (item) items.push_back(item);
+    const size_t i = g.add(id, sys, c, items);
+    if (rad >= 0.0) g.set_radius(i, rad);
+}
+
+static void t_reg_table()
+{
+    RockReg g;
+    const uint64_t v0 = g.version;
+    reg_add(g, 1, 7, 0, 0, 0);
+    reg_add(g, 2, 7, 100, 0, 0);
+    CHECK(g.version == v0 + 2);
+    reg_add(g, 1, 7, 5, 0, 0);                    // known id: updated, not duplicated
+    CHECK(g.rocks.size() == 2);
+    CHECK(g.version == v0 + 2);
+    CHECK(g.is_alive(1) && g.is_alive(2) && !g.is_alive(3));
+    CHECK(g.kill(2, 10));
+    CHECK(!g.kill(2, 11));                        // already dead: no second event
+    CHECK(!g.is_alive(2));
+    CHECK(g.get(2) != nullptr && g.get(2)->destroyed_at == 10);
+    CHECK(g.version == v0 + 3);
+    CHECK(g.event_seq == 1);
+    int dummy = 0;
+    g.set_act(0, &dummy);
+    CHECK(g.index_of_act(&dummy) == 0);
+    CHECK(g.kill(1, 12) && g.index_of_act(&dummy) == 0);   // dead entry keeps its handle; lookup still by index
+}
+
+static void t_reg_events()
+{
+    RockReg g;
+    for (int i = 1; i <= 70; ++i) reg_add(g, i, 1, i * 10.0, 0, 0);
+    std::vector<RegEvent> ev;
+    for (int i = 1; i <= 70; ++i) g.kill(i, 100 + i);
+    CHECK(g.event_seq == 70);
+    CHECK(!g.events_since(0, ev));                // 64-entry ring: seq 1..6 gone
+    CHECK(ev.size() == 64 && ev.front().seq == 7 && ev.back().seq == 70);
+    CHECK(g.events_since(68, ev) && ev.size() == 2 && ev[0].id == 69 && ev[1].id == 70);
+    CHECK(g.events_since(70, ev) && ev.empty());
+    CHECK(g.events_since(6, ev) && ev.size() == 64);
+}
+
+static void t_reg_within_nearest()
+{
+    RockReg g;
+    int tag = 0;
+    void* ore = &tag;
+    reg_add(g, 1, 7, 0, 0, 0, ore, 10);
+    reg_add(g, 2, 7, 3000, 0, 0, ore, 10);      // another grid cell than rock 1
+    reg_add(g, 3, 7, 1000, 0, 0, nullptr, 10);  // no ore item
+    reg_add(g, 4, 8, 500, 0, 0, ore, 10);       // other system
+    const double o[3] = {0, 0, 0};
+    std::vector<size_t> out;
+    CHECK(g.within(7, o, 1500, out) == 2);      // rocks 1 and 3
+    out.clear();
+    CHECK(g.within(7, o, 5000, out) == 3);
+    double d = 0;
+    size_t n = g.nearest(7, ore, o, nullptr, nullptr, 0, d);
+    CHECK(n != RockReg::npos && g.rocks[n].id == 1 && d == 0.0);
+    std::set<int> skip = {1};
+    n = g.nearest(7, ore, o, nullptr, &skip, 0, d);
+    CHECK(n != RockReg::npos && g.rocks[n].id == 2 && std::fabs(d - 3000.0) < 1e-9);
+    CHECK(g.nearest(7, ore, o, nullptr, &skip, 2000, d) == RockReg::npos);   // max_m
+    CHECK(g.nearest(9, ore, o, nullptr, nullptr, 0, d) == RockReg::npos);     // unknown system
+    int handle = 0;
+    g.set_act(0, &handle);
+    CHECK(g.nearest(7, ore, o, &handle, nullptr, 0, d) == 1);                 // skip by actor handle: rock 1 out, rock 2 found
+    std::vector<std::pair<double, size_t>> nn;
+    CHECK(g.nearest_n(7, ore, o, nullptr, nullptr, 5000, 8, nn) == 2);
+    CHECK(nn[0].first <= nn[1].first && g.rocks[nn[0].second].id == 1);
+    g.kill(1, 1);
+    n = g.nearest(7, ore, o, nullptr, nullptr, 0, d);
+    CHECK(n != RockReg::npos && g.rocks[n].id == 2);
+}
+
+static void t_reg_surface_block_radius()
+{
+    RockReg g;
+    reg_add(g, 1, 7, 1000, 0, 0, nullptr, 900);   // big: surface 100
+    reg_add(g, 2, 7, 500, 0, 0, nullptr, 0);      // centre 500, surface 500
+    const double o[3] = {0, 0, 0};
+    double s = 0;
+    const size_t n = g.nearest_surface(7, o, nullptr, s);
+    CHECK(n != RockReg::npos && g.rocks[n].id == 1 && std::fabs(s - 100.0) < 1e-9);
+
+    RockReg b;
+    reg_add(b, 1, 7, 1000, 0, 0, nullptr, 50);    // on the path y=0, x 0..3000
+    reg_add(b, 2, 7, 1000, 400, 0, nullptr, 50);  // 400 m off the path: clearance 300 + radius 50 = 350 < 400, clear
+    int handle = 0;
+    b.set_act(0, &handle);
+    const double a[3] = {0, 0, 0}, e[3] = {3000, 0, 0};
+    double dd = 0;
+    size_t k = b.first_blocker(7, a, e, 300.0, nullptr, 0, nullptr, 0, dd);
+    CHECK(k != RockReg::npos && b.rocks[k].id == 1 && std::fabs(dd) < 1e-9);
+    CHECK(b.first_blocker(7, a, e, 300.0, nullptr, 1, nullptr, 0, dd) == RockReg::npos);   // skip_id
+    CHECK(b.first_blocker(7, a, e, 300.0, &handle, 0, nullptr, 0, dd) == RockReg::npos);   // skip_act
+    std::set<int> hz = {2};
+    const size_t hb = b.first_blocker(7, a, e, 300.0, &handle, 0, &hz, 500.0, dd);   // rock 2: 50 + 300 + 500 = 850 m reach, 400 m off: blocks
+    CHECK(hb != RockReg::npos && b.rocks[hb].id == 2);
+    CHECK(b.first_blocker(7, a, e, 300.0, &handle, 0, nullptr, 0, dd) == RockReg::npos);   // rock 2: 350 m reach, clear
+    CHECK(b.near_path(7, a, e, nullptr, 0.0));                // rock 1 is on the path
+    CHECK(!b.near_path(7, a, e, &handle, 0.0));               // only rock 1 is near; rock 2 is 400 m off (surface 350 > 0)
+    std::vector<std::array<double, 3>> refs = {{{0.0, 0.0, 0.0}}};
+    std::vector<size_t> want;
+    b.radius_wanted(7, refs, 5000, 10, want);
+    CHECK(want.empty());                                      // both radii are known
+    RockReg c;
+    reg_add(c, 1, 7, 1000, 0, 0);                             // radius unknown
+    want.clear();
+    c.radius_wanted(7, refs, 5000, 10, want);
+    CHECK(want.size() == 1);
+}
+
+static void t_reg_targeted_ore_budget()
+{
+    RockReg g;
+    reg_add(g, 5, 1, 0, 0, 0);
+    g.target_set(5, true);
+    CHECK(g.targeted().count(5) == 1);
+    g.target_set(5, false);
+    CHECK(g.targeted().empty());
+    int a1 = 0, a2 = 0;
+    const double p[3] = {0, 0, 0}, q[3] = {10, 0, 0};
+    g.ore_put(&a1, p);
+    g.ore_put(&a2, q);
+    CHECK(g.ore_ok(&a1) && g.ore_within(p, 20) == 2 && g.ore_within(p, 5) == 1);
+    CHECK(g.ore_kill(&a1) && !g.ore_ok(&a1) && g.ore_within(p, 20) == 1);
+    g.ore_prune();
+    CHECK(g.ore.size() == 1 && g.ore_ok(&a2) && !g.ore_ok(&a1));
+    CHECK(!reg_over_budget(0.9) && reg_over_budget(1.1));
+}
+
+// WHAT: micro-benchmark: 24000 rocks in one system (100 km cube), 7 ships, 4 Hz. Each tick = 7 queries (4 nearest + 3 first_blocker).
+//       Prints ms per query. Bound: a tick of 7 queries under 2 ms (wall clock, loose).
+static void t_reg_bench()
+{
+    RockReg g;
+    uint64_t s = 12345;
+    auto rnd = [&s]() { s = s * 6364136223846793005ull + 1442695040888963407ull; return static_cast<double>(s >> 11) / 9007199254740992.0; };
+    int tag = 0;
+    void* ore = &tag;
+    const int N = 24000;
+    for (int i = 0; i < N; ++i)
+    {
+        const double c[3] = {rnd() * 100000.0, rnd() * 100000.0, rnd() * 100000.0};
+        reg_add(g, i + 1, 7, c[0], c[1], c[2], ore, 8.0 + rnd() * 60.0);
+    }
+    double ships[7][3];
+    for (auto& sh : ships) { sh[0] = rnd() * 100000.0; sh[1] = rnd() * 100000.0; sh[2] = rnd() * 100000.0; }
+    const int TICKS = 200;
+    double worst = 0.0, total = 0.0;
+    int hits = 0;
+    for (int t = 0; t < TICKS; ++t)
+    {
+        for (auto& sh : ships) { sh[0] += 3.0; sh[1] -= 2.0; }   // ships move a little each tick
+        const auto t0 = std::chrono::steady_clock::now();
+        for (int k = 0; k < 7; ++k)
+        {
+            double d = 0.0;
+            if (k < 4) hits += g.nearest(7, ore, ships[k], nullptr, nullptr, 0, d) != RockReg::npos;
+            else
+            {
+                const double b[3] = {ships[k][0] + 3000.0, ships[k][1], ships[k][2]};
+                hits += g.first_blocker(7, ships[k], b, 300.0, nullptr, 0, nullptr, 0, d) != RockReg::npos;
+            }
+        }
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        total += ms;
+        if (ms > worst) worst = ms;
+    }
+    std::printf("bench: rocks=%d ships=7 ticks=%d avg tick(7 queries)=%.4f ms worst=%.4f ms per query=%.4f ms hits=%d\n",
+                N, TICKS, total / TICKS, worst, total / TICKS / 7.0, hits);
+    CHECK(total / TICKS < 2.0);
+}
+
 // ---------- runner ----------
 
 struct Case { const char* name; void (*fn)(); };
@@ -1246,6 +1432,8 @@ int main()
         {"combat_flee", t_combat_flee}, {"combat_log", t_combat_log},
         {"hazard_flee", t_hazard_flee}, {"targett_entry", t_targett_entry},
         {"path_block", t_path_block}, {"path_perf", t_path_perf}, {"path_waypoint", t_path_waypoint}, {"shield_drop", t_shield_drop}, {"fast_sample", t_fast_sample},
+        {"reg_table", t_reg_table}, {"reg_events", t_reg_events}, {"reg_within_nearest", t_reg_within_nearest}, {"reg_surface_block", t_reg_surface_block_radius},
+        {"reg_targeted_ore_budget", t_reg_targeted_ore_budget}, {"reg_bench", t_reg_bench},
     };
     for (const Case& c : cases)
     {
