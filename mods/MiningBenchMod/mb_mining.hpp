@@ -107,7 +107,8 @@ namespace
         std::wstring col_why;                  // MS_COLLECT: reason it started (text shown at the end)
         double col_t = 0.0, col_stall = 0.0, col_scan_t = 0.0;   // MS_COLLECT: seconds total / since ore count dropped / since the last scan
         int col_last = -1;                     // MS_COLLECT: floating ore count at the last scan (-1 none, 0 scan failed)
-        UObject* abandon = nullptr;            // rock left by the idle watchdog: the next SEEK skips it once (mined anyway when it is the only rock)
+        UObject* abandon = nullptr;            // rock left by the idle watchdog: SEEK and path retargets skip it until the next rock is reached (mined anyway when it is the only rock)
+        int64_t rock_got = 0;                  // ore gained on the current rock since its mining started (reset at MS_MINE entry); depletion rule
         bool sweep = false;                    // MS_SWEEP active (collect ore action)
         int sw_ph = 0, sw_rescans = 0, sw_sys = 0;   // MS_SWEEP phase (SW_*), rescans left, saved system id
         int64_t sw_ch[3] = {0, 0, 0};          // MS_SWEEP: saved ship chunk (return point)
@@ -299,10 +300,11 @@ namespace
         std::set<int> merged;
         const auto ps = g_path_skip.find(sid);
         const bool path_any = ps != g_path_skip.end() && !ps->second.empty();
-        if (!g_hazard_rocks.empty() || path_any)
+        if (!g_hazard_rocks.empty() || !g_depleted_rocks.empty() || path_any)
         {
             if (skip_ids) merged = *skip_ids;
             merged.insert(g_hazard_rocks.begin(), g_hazard_rocks.end());
+            merged.insert(g_depleted_rocks.begin(), g_depleted_rocks.end());
             if (path_any) merged.insert(ps->second.begin(), ps->second.end());
             skip_ids = &merged;
         }
@@ -468,7 +470,7 @@ namespace
     std::map<int, std::map<std::tuple<int64_t, int64_t, int64_t>, int>>& save_rock_picks() { static std::map<int, std::map<std::tuple<int64_t, int64_t, int64_t>, int>> m; return m; }
     bool save_rock_nearest(int sid, UObject* ship, UObject* item, double radius_m, int& sys_out, int64_t out[3], int64_t& dist_chunks)
     {
-        struct SaveRock { int sys; int64_t c[3]; };
+        struct SaveRock { int sys; int id; int64_t c[3]; };
         static std::map<std::wstring, std::pair<ULONGLONG, std::vector<SaveRock>>> cache;   // ore item name -> (time, rocks)
         int sys0 = 0; int64_t ch0[3] = {0, 0, 0};
         if (!alive(item) || !ship_pos(ship, sys0, ch0)) return false;
@@ -490,6 +492,7 @@ namespace
                 bool al = true; get_bool_prop(o, STR("bAlive"), al);
                 SaveRock r;
                 r.sys = sys_id(o);
+                r.id = obj_id(o);
                 if (!al || r.sys <= 0 || !get_chunk(o, r.c)) continue;
                 e.second.push_back(r);
             }
@@ -501,7 +504,7 @@ namespace
         int64_t best = -1;
         for (const SaveRock& r : e.second)
         {
-            if (r.sys != sys0) continue;
+            if (r.sys != sys0 || g_depleted_rocks.count(r.id)) continue;
             const int64_t d = std::max({std::llabs(r.c[0] - ch0[0]), std::llabs(r.c[1] - ch0[1]), std::llabs(r.c[2] - ch0[2])});
             if (d > max_chunks || (best >= 0 && d >= best)) continue;
             if (const auto pk = picks.find({r.c[0], r.c[1], r.c[2]}); pk != picks.end() && pk->second >= 6) continue;
@@ -1233,7 +1236,7 @@ namespace
         for (const RockSnap& s : g_snap_act)
         {
             if (s.a == skip || s.item != item) continue;
-            if (m.noy_skip.count(s.id) || g_hazard_rocks.count(s.id) || (psk != g_path_skip.end() && psk->second.count(s.id))) continue;
+            if (s.a == m.abandon || m.noy_skip.count(s.id) || g_hazard_rocks.count(s.id) || g_depleted_rocks.count(s.id) || (psk != g_path_skip.end() && psk->second.count(s.id))) continue;
             const double d[3] = {s.c[0] - ps[0], s.c[1] - ps[1], s.c[2] - ps[2]};
             g_cand.push_back({std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]), s.a});
         }
@@ -1425,6 +1428,7 @@ namespace
                     return;
                 }
                 m.st = MS_MINE; m.t = 0.0; m.idle_t = 0.0; m.chk_t = 0.0;
+                m.rock_got = 0; m.abandon = nullptr;   // new rock: its own ore count (depletion rule), no rock abandoned yet
                 mine_fire(sid, true);
                 mset(sid, m, STR("mining rock ") + std::to_wstring(m.rock), STR("Mining ") + item_name(c.resource) + STR(" (rock ") + std::to_wstring(m.rock) + STR(")"));
                 return;
@@ -1438,7 +1442,7 @@ namespace
             mset(sid, m, STR("approach ended: ") + r + STR(", retrying"));
         }
         // cargo full with ore still floating: the next seek returns to that rock first (set in st_mine)
-        if (m.col_rock > 0) { if (actor_ok(rock_actor_by_id(m.col_rock))) g_sel_rocks[sid] = m.col_rock; else m.col_rock = 0; }
+        if (m.col_rock > 0) { if (actor_ok(rock_actor_by_id(m.col_rock)) && !g_depleted_rocks.count(m.col_rock)) g_sel_rocks[sid] = m.col_rock; else m.col_rock = 0; }
         if (m.no_rock && !chunk_hold_settling(sid)) m.rng_t += dt;   // the belt counter starts 4 s after the hold was set
         m.chk_t += dt;
         if (m.chk_t >= MINE_ROCK_CHECK_S)
@@ -1456,7 +1460,7 @@ namespace
             }
             // approach_rock picks the nearest rock by itself (no skip lists): pin the rock rock_in_range chose (it honours the no-yield and hazard skips)
             if (rock && m.col_rock == 0) g_sel_rocks[sid] = rock_id_of(rock);   // a cargo-full return keeps its own pin (set above)
-            m.abandon = nullptr;
+            if (!rock) m.abandon = nullptr;   // kept while a rock is picked: path_guard retargets must not return to it (cleared at MS_MINE entry)
             if (rock) m.idle_polls = 0;
             m.no_rock = !rock;
             if (!rock)
@@ -1498,7 +1502,7 @@ namespace
         const int64_t inv = inv_total(ship, item);
         if (inv >= 0)
         {
-            if (inv > m.last_ore) { m.got += got_delta(inv, m.last_ore); m.idle_t = 0.0; m.noy_run = 0; m.noy_visits.erase(m.rock); }   // ore gained: not a no-yield visit
+            if (inv > m.last_ore) { const int64_t g = got_delta(inv, m.last_ore); m.got += g; m.rock_got += g; m.idle_t = 0.0; m.noy_run = 0; m.noy_visits.erase(m.rock); }   // ore gained: not a no-yield visit
             else m.idle_t += dt;
             m.last_ore = inv;
         }
@@ -1536,6 +1540,16 @@ namespace
             // ore still floating: remember the rock, the next seek returns to it after the unload
             if (ore_near(ship, COLLECT_RANGE_M) > 0) { m.col_rock = m.rock; mlog(sid, STR("Cargo full, ore left: returning after unload")); }
             go_home(ship, sid, m, STR("cargo full"));
+            return;
+        }
+        // another ship reported this rock spent: leave now (the lingering actor does not matter)
+        if (m.rock > 0 && g_depleted_rocks.count(m.rock)) { begin_collect(ship, sid, m, 0, STR("rock ") + std::to_wstring(m.rock) + STR(" depleted by another ship, seeking next rock")); return; }
+        // ore stopped on a rock that had given ore: depleted (laser is on in MS_MINE, entered with mine_fire)
+        if (m.rock > 0 && rock_depleted(m.rock_got, m.idle_t, true, full))
+        {
+            g_depleted_rocks.insert(m.rock);
+            mlog(sid, STR("rock ") + std::to_wstring(m.rock) + STR(" depleted (no ore for ") + std::to_wstring((int)DEPLETE_S) + STR(" s after ") + i64w(m.rock_got) + STR(" ore)"));
+            begin_collect(ship, sid, m, 0, STR("rock depleted, seeking next rock"));
             return;
         }
         // no gain = rock spent/destroyed, not a reason to dock: look for another rock (SEEK goes home itself when none is in range)

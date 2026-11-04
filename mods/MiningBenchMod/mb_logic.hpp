@@ -1152,6 +1152,14 @@ namespace
     constexpr int NOY_SKIP_VISITS = 3;
     inline bool noy_skip_now(int visits) { return visits >= NOY_SKIP_VISITS; }
 
+    // WHAT: depleted rock: the rock gave ore on this visit (got_this_rock > 0), then no ore gained for DEPLETE_S with the laser on and the cargo not full.
+    // WHY: a spent rock keeps its actor (HUD marker) for 30+ s; the ship sat on it. Before the first ore the no-yield watchdog still applies.
+    constexpr double DEPLETE_S = 5.0;
+    inline bool rock_depleted(int64_t got_this_rock, double idle_t, bool laser_on, bool cargo_full)
+    {
+        return got_this_rock > 0 && laser_on && !cargo_full && idle_t >= DEPLETE_S;
+    }
+
     // WHAT: "rock lost" approach results (another ship took the rock) in a row in SEEK. This many = HALT "rock lost 5x".
     // WHY: a rock lost is a free retry, but the same rock vanishing again and again must still end the loop.
     constexpr int ROCK_LOST_MAX = 5;

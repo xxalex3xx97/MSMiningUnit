@@ -491,6 +491,21 @@ static void t_loop_guards()
     CHECK(fuel_amount_floor(0, 0) == 0);
 }
 
+static void t_rock_depleted()
+{
+    // before the first ore of a rock: never (the no-yield watchdog applies)
+    CHECK(!rock_depleted(0, 0.0, true, false));
+    CHECK(!rock_depleted(0, 60.0, true, false));
+    // after ore: 5 s with no ore = depleted, less = not yet
+    CHECK(rock_depleted(1, DEPLETE_S, true, false));
+    CHECK(rock_depleted(8500, 9.0, true, false));
+    CHECK(!rock_depleted(8500, DEPLETE_S - 0.1, true, false));
+    // cargo full: no (the cargo-full rule takes it); laser off: no
+    CHECK(!rock_depleted(8500, 30.0, true, true));
+    CHECK(!rock_depleted(8500, 30.0, false, false));
+    CHECK(DEPLETE_S == 5.0);
+}
+
 static void t_setting_clamp()
 {
     const SettingBound* idle = find_setting_bound("idle_seconds");
@@ -1246,6 +1261,7 @@ int main()
         {"combat_flee", t_combat_flee}, {"combat_log", t_combat_log},
         {"hazard_flee", t_hazard_flee}, {"targett_entry", t_targett_entry},
         {"path_block", t_path_block}, {"path_perf", t_path_perf}, {"path_waypoint", t_path_waypoint}, {"shield_drop", t_shield_drop}, {"fast_sample", t_fast_sample},
+        {"rock_depleted", t_rock_depleted},
     };
     for (const Case& c : cases)
     {
