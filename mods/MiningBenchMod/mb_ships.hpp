@@ -41,6 +41,14 @@ namespace
     std::map<int, int> g_dead_n;
     std::set<int> g_bench_prev;
 
+    // WHAT: Health read of one ship under SEH (ctx for seh_run). ok = the property was read.
+    struct HpCtx { UObject* ship; int32_t hp; bool ok; };
+    void read_hp_fn(void* p)
+    {
+        auto* c = static_cast<HpCtx*>(p);
+        c->ok = get_int_prop(c->ship, STR("Health"), c->hp);
+    }
+
     // WHAT: scans all player ships. Each ship with bench blocks gets a log line (id, class, bench counts, DockID, MiningBeaconID), and an entry in bench_ships. Then writes ships.txt.
     //       Destroyed ships (SHIP_DEAD_SCANS scans in a row with a signal) go to dead_ids instead, and are written with has-bench 0.
     //       Signals: A = hull Health reads 0. B = the ship had a bench last scan and is missing from FindAllOf (skipped while the list is empty: save load).
@@ -60,8 +68,11 @@ namespace
             int so = count_bench(ship, STR("Subobjects"));
             bool has = bb > 0 || so > 0;
             int32_t id = obj_id(ship);
-            int32_t hp = 0;
-            const bool hull0 = id > 0 && get_int_prop(ship, STR("Health"), hp) && hp <= 0;
+            // a Health read that faults counts as signal A (a destroyed object can fault on read)
+            HpCtx hc{ship, 0, false};
+            const bool hp_fault = id > 0 && !seh_run(read_hp_fn, &hc);
+            if (hp_fault && g_dead_n[id] == 0) log_line(STR("Health read faulted ship=") + std::to_wstring(id) + STR(" ") + seh_describe(g_seh));
+            const bool hull0 = id > 0 && (hp_fault || (hc.ok && hc.hp <= 0));
             std::wstring name = obj_display(ship);
             if (name.empty()) name = ship->GetName();
             if (id > 0)

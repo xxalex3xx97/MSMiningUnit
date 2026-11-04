@@ -2054,14 +2054,24 @@ namespace
     // WHY: a destroyed ship must not stay in the bench, the status/log files, the selector, or hold a dock reservation or queue place other ships wait for.
     // NOTE: the ship's UObject is not read (it may be a dead ghost): only maps are erased, net_leave_slot frees the dock slot (net_release_ship).
     //       No-op for a ship the mod does not know (repeat scans of a dead ship cost nothing). INI sections (g_ship_kv) are not touched.
-    void mine_forget_ship(int sid)
+    // WHAT: the calls of mine_forget_ship that may touch the destroyed ship's UObject (warp, move aim, dock slot, chunk). Plain function for seh_run.
+    struct ForgetCtx { int sid; };
+    void mine_forget_calls_fn(void* p)
     {
-        if (!g_bench_names.count(sid) && !g_mine.count(sid) && !g_mine_log.count(sid)) return;
-        const std::wstring name = g_bench_names.count(sid) ? g_bench_names[sid] : std::wstring(STR("?"));
+        const int sid = static_cast<ForgetCtx*>(p)->sid;
         warp_cancel(sid);
         net_leave_slot(sid);                    // queue place + dock reservation (waiters proceed); also slot_clear
         chunk_hold_release(sid);                // the cube and its target
         mv_cancel(sid);                         // move job (aim offset stopped if the ship answers)
+    }
+
+    void mine_forget_ship(int sid)
+    {
+        if (!g_bench_names.count(sid) && !g_mine.count(sid) && !g_mine_log.count(sid)) return;
+        const std::wstring name = g_bench_names.count(sid) ? g_bench_names[sid] : std::wstring(STR("?"));
+        // the ghost-touching calls run under SEH: a fault is logged once, the map erases below still run
+        ForgetCtx fc{sid};
+        if (!seh_run(mine_forget_calls_fn, &fc)) log_line(STR("purge fault ship=") + std::to_wstring(sid) + STR(" ") + seh_describe(g_seh));
         for (size_t i = 0; i < g_jobs.size();)  // dock job (no result: the ship is gone)
         {
             if (g_jobs[i].sid == sid) g_jobs.erase(g_jobs.begin() + static_cast<std::ptrdiff_t>(i));
