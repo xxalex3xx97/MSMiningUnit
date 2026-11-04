@@ -89,6 +89,7 @@ namespace
         int bubble_clearance_m = 10;         // bubble reflex: extra clearance (m) beyond ship radius + rock block radius. Global only. (INI: bubble_clearance_m)
         int flee_target_range_km = 5;        // a hostile targeter farther than this (km) does not trigger the flee. Global only. (INI: flee_target_range_km)
         int low_power_return = 1;            // 1 = a ship in low power for LOWPOWER_GRACE_S while flying/mining goes to dock like fuel low. Global only. (INI: low_power_return)
+        int reactor_auto_input = 1;          // 1 = reactors of active bench ships get bAutoInputFuel on (checked at task start and every 60 s). Global only. (INI: reactor_auto_input)
         // text distance, e.g. 50km: belt mode only. Rocks farther than this from the ship count as none (the ship warps instead of flying there), and radius is capped by it. Empty/0/bad = 50 km. Per-ship. (INI: warp_range)
         std::string warp_range = "50km";
         std::string mining_distance = "50m";    // per-ship: mining distance from the rock, e.g. 200m / 0.2km (empty = unset)
@@ -1254,6 +1255,10 @@ namespace
     // WHAT: ship must unload before it refuels: only a refuel trip with ore of this dock in cargo.
     inline bool net_unload_first(bool has_dock_ore, Purpose purpose) { return has_dock_ore && purpose == P_REFUEL; }
 
+    // WHAT: a refuel trip unloads first only when the cargo is full: fill >= CARGO_STOP_PCT, or HasSpaceForItems false (full). Below that it refuels directly.
+    // WHY: user rule (live 27 % cargo was sent to unload before refuel). cargo_pct -1 (unknown) is not >= 90, so it refuels directly.
+    inline bool refuel_needs_unload(int cargo_pct, bool full) { return full || cargo_pct >= CARGO_STOP_PCT; }
+
     // WHAT: reservation a ship did not use within NET_CLEAR_S (since = time reserved) is given up, unless that ship already sits at the dock.
     // WHY: a cleared ship that never starts its job must not block the dock; its next net_pick queues it again.
     inline bool net_clear_expired(NetDock& nd, double now)
@@ -1449,6 +1454,7 @@ namespace
         {"bubble_clearance_m", 0, 100, true, false},
         {"flee_target_range_km", 1, 100, false, false},
         {"low_power_return", 0, 1, false, false},
+        {"reactor_auto_input", 0, 1, false, false},
     };
 
     // WHAT: the bound row for key, nullptr when the key is not bounded.
@@ -1781,5 +1787,36 @@ namespace
     {
         const std::wstring st = !lp_known ? L"unknown" : lp ? L"LOW" : L"ok";
         return L"t=" + std::to_wstring(t) + L" lp=" + st + L" PowerGenRate=" + rate + L" PowerDraw=" + draw + L" buffer:" + buf + L" cargo:" + cargo;
+    }
+
+    // ---------- power grid (ship.PowerGrid: TotalProduction, TotalConsumption, ConsumerEfficiency) and reactor auto input ----------
+    constexpr double POWER_BROWNOUT_EFF = 0.5;          // grid efficiency below this with production = brown-out (log only)
+    constexpr double REACTOR_AUTO_PERIOD_S = 60.0;      // reactor auto-input check period while a bench ship is active (s)
+    constexpr uint64_t REACTOR_AUTO_RATE_MS = 30000;    // one write attempt per reactor per this many ms
+    constexpr int REACTOR_AUTO_MAX = 3;                 // attempts per reactor before the give-up line (then no more attempts)
+
+    // WHAT: no power: the grid consumes (cons > 0), produces nothing (prod <= 0) and efficiency is 0. This is the lost state (grace LOWPOWER_GRACE_S).
+    inline bool power_no_power(double cons, double prod, double eff) { return cons > 0.0 && prod <= 0.0 && eff <= 0.0; }
+    // WHAT: brown-out: the grid produces but efficiency is below POWER_BROWNOUT_EFF while it consumes. Log only, no action.
+    inline bool power_brownout(double cons, double prod, double eff) { return cons > 0.0 && prod > 0.0 && eff < POWER_BROWNOUT_EFF; }
+    // WHAT: brown-out log event: 0 = no change, 1 = started, 2 = ended. One line per change, never per sample.
+    inline int power_bo_event(bool was, bool now) { return was == now ? 0 : now ? 1 : 2; }
+    // WHAT: periodic timer: acc += dt; true once per period (acc keeps the remainder).
+    inline bool period_due(double& acc, double dt, double period)
+    {
+        acc += dt;
+        if (acc < period) return false;
+        acc -= period;
+        return true;
+    }
+    // WHAT: reactor auto input action for one reactor. on = bAutoInputFuel already true (NONE). gave_up = the give-up line was written (NONE).
+    //       attempts >= REACTOR_AUTO_MAX -> GIVEUP (once). Within REACTOR_AUTO_RATE_MS of the last attempt -> NONE. Else WRITE.
+    enum ReactorAct { RA_NONE = 0, RA_WRITE = 1, RA_GIVEUP = 2 };
+    inline int reactor_auto_action(bool on, int attempts, bool gave_up, uint64_t last_ms, uint64_t now_ms)
+    {
+        if (on || gave_up) return RA_NONE;
+        if (attempts >= REACTOR_AUTO_MAX) return RA_GIVEUP;
+        if (last_ms != 0 && now_ms - last_ms < REACTOR_AUTO_RATE_MS) return RA_NONE;
+        return RA_WRITE;
     }
 }

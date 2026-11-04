@@ -1973,6 +1973,43 @@ static void t_power_probe_fmt()
     CHECK(power_watch_line(0.0, false, false, L"-", L"-", L"-", L"-").find(L"lp=unknown") != std::wstring::npos);
 }
 
+// power grid rules, brown-out log change, reactor auto input (due / rate / attempt cap), refuel unload rule
+static void t_power_grid_auto()
+{
+    CHECK(power_no_power(40.0, 0.0, 0.0));        // Nickel Miner 1: consumes 40, makes nothing
+    CHECK(!power_no_power(0.0, 0.0, 0.0));        // idle, nothing consumed
+    CHECK(!power_no_power(200.0, 80.0, 0.4));     // Big Miner 1: brown-out, not dead
+    CHECK(power_brownout(200.0, 80.0, 0.4));
+    CHECK(power_brownout(280.0, 80.0, 0.29));     // Cleaner 2
+    CHECK(!power_brownout(0.0, 80.0, 1.0));       // idle ship
+    CHECK(!power_brownout(40.0, 0.0, 0.0));       // dead is not brown-out
+    CHECK(power_bo_event(false, true) == 1);
+    CHECK(power_bo_event(true, false) == 2);
+    CHECK(power_bo_event(true, true) == 0);       // no line while the state holds
+    CHECK(power_bo_event(false, false) == 0);
+    // grace: no power for 10 s counts as the response, not before
+    CHECK(!lowpower_due(9.0));
+    CHECK(lowpower_due(10.0));
+    double acc = 0.0;
+    CHECK(!period_due(acc, 59.0, REACTOR_AUTO_PERIOD_S));
+    CHECK(period_due(acc, 1.0, REACTOR_AUTO_PERIOD_S));  // 60 s: due
+    CHECK(!period_due(acc, 30.0, REACTOR_AUTO_PERIOD_S));
+    // auto input: off -> write once, then rate limit 30 s, then give-up after 3 writes
+    CHECK(reactor_auto_action(true, 0, false, 0, 1000) == RA_NONE);             // already on
+    CHECK(reactor_auto_action(false, 0, false, 0, 1000) == RA_WRITE);           // first write
+    CHECK(reactor_auto_action(false, 1, false, 1000, 20000) == RA_NONE);        // 19 s after the last: rate limited
+    CHECK(reactor_auto_action(false, 1, false, 1000, 31000) == RA_WRITE);       // 30 s: next write
+    CHECK(reactor_auto_action(false, REACTOR_AUTO_MAX, false, 1000, 99999) == RA_GIVEUP);
+    CHECK(reactor_auto_action(false, REACTOR_AUTO_MAX, true, 1000, 99999) == RA_NONE);   // give-up line written once
+    CHECK(reactor_auto_action(true, REACTOR_AUTO_MAX, false, 1000, 99999) == RA_NONE);   // on now: nothing
+    // refuel: unload first only when full (>= 90 % or no space)
+    CHECK(!refuel_needs_unload(27, false));
+    CHECK(!refuel_needs_unload(89, false));
+    CHECK(refuel_needs_unload(90, false));
+    CHECK(refuel_needs_unload(10, true));
+    CHECK(!refuel_needs_unload(-1, false));       // unknown cargo: refuel directly
+}
+
 int main()
 {
     const Case cases[] = {
@@ -2008,7 +2045,7 @@ int main()
         {"box_probe_parse", t_box_probe_parse}, {"box_probe_uu_fwd", t_box_probe_uu_fwd}, {"reg_check_summary", t_reg_check_summary},
         {"reg_cache_round_trip", t_reg_cache_round_trip}, {"reg_cache_reject", t_reg_cache_reject}, {"reg_cache_verdict", t_reg_cache_verdict},
         {"reg_kill_unseen", t_reg_kill_unseen}, {"reg_seed_rings", t_reg_seed_rings}, {"reg_area_ready", t_reg_area_ready},
-        {"reg_cache_bench", t_reg_cache_bench}, {"lowpower", t_lowpower}, {"power_probe_fmt", t_power_probe_fmt},
+        {"reg_cache_bench", t_reg_cache_bench}, {"lowpower", t_lowpower}, {"power_probe_fmt", t_power_probe_fmt}, {"power_grid_auto", t_power_grid_auto},
     };
     for (const Case& c : cases)
     {

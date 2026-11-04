@@ -1469,7 +1469,8 @@ namespace
     {
         auto* c = static_cast<PowerWatchCtx*>(p);
         bool lp = false;
-        const bool known = lp_flag(c->ship, lp);
+        bool known = false;
+        lp = power_dead(c->ship, power_grid(c->ship), known);   // no power on the grid (flag fallback)
         std::wstring buf;
         for (UStruct* st = c->ship->GetClassPrivate(); st && st->GetName() != STR("Object"); st = st->GetSuperStruct())
             for (FProperty* pr : st->ForEachProperty())
@@ -1542,5 +1543,69 @@ namespace
         write_atomic(get_dll_dir() / "MiningProbePower.txt", u8(out));
         log_line(STR("PROBEPOWER dump written ship=") + std::to_wstring(ps) + STR(" bytes=") + std::to_wstring(out.size()));
         return STR("ok MiningProbePower.txt written ship=") + std::to_wstring(ps);
+    }
+
+    // ---------------- probe reactor (MiningProbeReactor.txt) ----------------
+    // WHAT: probe_reactor[:<ship>] writes MiningProbeReactor.txt, read only, under seh_run: each reactor of the ship (ship.Reactors) with all its
+    //       properties, the functions of the reactor class chain with signatures (probe_fn_text), and every UClass of /Script/MainSequence whose
+    //       name ends with Input (the AddInputCommand inputs) with its functions and parameters.
+    // WHY: bAutoInputFuel is set by a direct write (reactor_auto_input) until the game's own input route is found here. The factory that sets
+    //      a machine / reactor flag is the route: its receiver and parameters are in the input class listing.
+    struct ProbeReactorCtx { UObject* ship; int sid; std::wstring* out; };
+
+    void probe_reactor_fn(void* p)
+    {
+        auto* c = static_cast<ProbeReactorCtx*>(p);
+        std::wstring& s = *c->out;
+        const std::vector<UObject*> rs = reactors_of(c->ship);
+        s += STR("MiningProbeReactor ship=") + std::to_wstring(c->sid) + STR(" reactors=") + std::to_wstring(rs.size()) + STR("\n[reactors: properties]\n");
+        for (size_t i = 0; i < rs.size() && i < 4; ++i)
+        {
+            UObject* r = rs[i];
+            s += STR("reactor ") + std::to_wstring(i) + STR(" id=") + std::to_wstring(obj_id(r)) + STR(" class=") + std::wstring(r->GetClassPrivate()->GetName()) + STR("\n");
+            probe_dump_props(s, r);
+        }
+        s += STR("[reactor class chain: functions]\n");
+        if (!rs.empty())
+            for (UStruct* st = rs[0]->GetClassPrivate(); st && st->GetName() != STR("Object"); st = st->GetSuperStruct())
+            {
+                UClass* sc = Cast<UClass>(st);
+                if (!sc) continue;
+                s += STR("  class ") + std::wstring(sc->GetName()) + STR("\n");
+                for (UFunction* f : sc->ForEachFunction()) s += STR("    func ") + probe_fn_text(f) + STR("\n");
+            }
+        s += STR("[input classes /Script/MainSequence *Input: functions and parameters]\n");
+        std::vector<UObject*> all;
+        UObjectGlobals::FindAllOf(STR("Class"), all);
+        int n = 0;
+        for (UObject* o : all)
+        {
+            if (!alive(o)) continue;
+            const std::wstring name = std::wstring(o->GetName());
+            if (name.size() < 5 || name.compare(name.size() - 5, 5, STR("Input")) != 0) continue;
+            UClass* cls = Cast<UClass>(o);
+            if (!cls) continue;
+            UClass* pkg = UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, (std::wstring(STR("/Script/MainSequence.")) + name).c_str());
+            if (pkg != cls) continue;
+            if (++n > 150) break;
+            s += STR("  input ") + name + STR("\n");
+            for (UFunction* f : cls->ForEachFunction()) s += STR("    func ") + probe_fn_text(f) + STR("\n");
+        }
+        s += STR("  input classes listed: ") + std::to_wstring(n) + STR("\n");
+    }
+
+    // WHAT: command entry for probe_reactor and probe_reactor:<ship> (run_cmd, mb_testcmd.hpp). Returns "ok ..." or "error: ...".
+    std::wstring probe_reactor_cmd(int sid, const std::string& cmd)
+    {
+        int ps = sid;
+        if (cmd != "probe_reactor" && !probe_parse_sid_pfx(cmd, "probe_reactor:", ps)) return STR("error: usage probe_reactor[:<ship>]");
+        UObject* ship = find_by_id(STR("DMSPlayerShipObject"), ps);
+        if (!alive(ship)) return STR("error: ship not found");
+        std::wstring out;
+        ProbeReactorCtx c{ship, ps, &out};
+        if (!seh_run(probe_reactor_fn, &c)) return STR("error: probe fault ") + seh_describe(g_seh);
+        write_atomic(get_dll_dir() / "MiningProbeReactor.txt", u8(out));
+        log_line(STR("PROBEREACTOR dump written ship=") + std::to_wstring(ps) + STR(" bytes=") + std::to_wstring(out.size()));
+        return STR("ok MiningProbeReactor.txt written ship=") + std::to_wstring(ps);
     }
 }

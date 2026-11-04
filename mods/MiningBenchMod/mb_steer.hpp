@@ -451,7 +451,7 @@ namespace
     }
 
     // ---------------- low power (FlightModel LowPowerThrottle / MaxLowPowerSpeed, ship flag bInLowPowerMode or bLowPower) ----------------
-    // WHAT: a numeric property (Float or Double) as double; false when missing or another type.
+    // WHAT: a numeric property (Int, Int64, Float or Double) as double; false when missing or another type.
     bool get_num_prop(UObject* o, const TCHAR* prop, double& out)
     {
         FProperty* p = o ? o->GetPropertyByNameInChain(prop) : nullptr;
@@ -459,7 +459,40 @@ namespace
         const uint8_t* base = reinterpret_cast<const uint8_t*>(o) + p->GetOffset_Internal();
         if (CastField<FFloatProperty>(p)) { out = *reinterpret_cast<const float*>(base); return true; }
         if (CastField<FDoubleProperty>(p)) { out = *reinterpret_cast<const double*>(base); return true; }
+        if (CastField<FIntProperty>(p)) { out = *reinterpret_cast<const int32_t*>(base); return true; }
+        if (CastField<FInt64Property>(p)) { out = static_cast<double>(*reinterpret_cast<const int64_t*>(base)); return true; }
         return false;
+    }
+
+    // WHAT: power grid of ship (ship.PowerGrid): TotalProduction, TotalConsumption, ConsumerEfficiency. ok = all three readable.
+    struct PowerGridRead { bool ok = false; double prod = 0.0, cons = 0.0, eff = 0.0; };
+    PowerGridRead power_grid(UObject* ship)
+    {
+        PowerGridRead g;
+        UObject* grid = get_obj_prop(ship, STR("PowerGrid"));
+        if (!alive(grid)) return g;
+        g.ok = get_num_prop(grid, STR("TotalProduction"), g.prod) && get_num_prop(grid, STR("TotalConsumption"), g.cons) &&
+               get_num_prop(grid, STR("ConsumerEfficiency"), g.eff);
+        return g;
+    }
+
+    // WHAT: reactors of ship (ship.Reactors): one object property or an array of objects. Alive objects only, in order.
+    std::vector<UObject*> reactors_of(UObject* ship)
+    {
+        std::vector<UObject*> out;
+        FProperty* p = ship ? ship->GetPropertyByNameInChain(STR("Reactors")) : nullptr;
+        if (!p) return out;
+        if (CastField<FObjectProperty>(p))
+        {
+            UObject* r = get_obj_prop(ship, STR("Reactors"));
+            if (alive(r)) out.push_back(r);
+            return out;
+        }
+        auto* ap = CastField<FArrayProperty>(p);
+        auto* arr = ap && CastField<FObjectProperty>(ap->GetInner()) ? ship->GetValuePtrByPropertyNameInChain<TArray<UObject*>>(STR("Reactors")) : nullptr;
+        if (!arr) return out;
+        for (int32_t i = 0; i < arr->Num(); ++i) if (alive((*arr)[i])) out.push_back((*arr)[i]);
+        return out;
     }
 
     // WHAT: low-power flag name on this build: bInLowPowerMode, else bLowPower (first one the ship has). nullptr until seen.
@@ -494,13 +527,23 @@ namespace
         return true;
     }
 
-    // WHAT: low power for the approach: true when the flag is set and the limits read (thr, frac). false otherwise (normal profile).
+    // WHAT: no power now (power_no_power on the grid). known = a source was readable: the grid, else the low-power flag when the ship has one.
+    bool power_dead(UObject* ship, const PowerGridRead& g, bool& known)
+    {
+        if (g.ok) { known = true; return power_no_power(g.cons, g.prod, g.eff); }
+        bool on = false;
+        known = lp_flag(ship, on);
+        return known && on;
+    }
+
+    // WHAT: no-power approach profile: true only when the grid has no power (efficiency 0, not brown-out) and the limits read (thr, frac).
+    //       false otherwise (normal profile). A brown-out ship keeps the normal timeout and Throttle.
     bool lp_state(UObject* ship, int& thr, double& frac)
     {
-        bool on = false;
+        bool known = false;
         thr = 0;
         frac = 0.0;
-        return lp_flag(ship, on) && on && lp_limits(ship, thr, frac);
+        return power_dead(ship, power_grid(ship), known) && lp_limits(ship, thr, frac);
     }
 
     // WHAT: one step of a move job: phase 1 = aim (rotate until aligned), phase 2 = approach (Throttle profile).

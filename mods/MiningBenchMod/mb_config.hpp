@@ -64,6 +64,7 @@ namespace
             {STR("bubble_clearance_m"), std::to_wstring(c.bubble_clearance_m)},
             {STR("flee_target_range_km"), std::to_wstring(c.flee_target_range_km)},
             {STR("low_power_return"), std::to_wstring(c.low_power_return)},
+            {STR("reactor_auto_input"), std::to_wstring(c.reactor_auto_input)},
             {STR("mining_distance"), STR("'") + widen(c.mining_distance) + STR("'")},
             {STR("fuel_margin"), std::to_wstring(c.fuel_margin)},
             {STR("fuel_amount"), std::to_wstring(c.fuel_amount)},
@@ -163,6 +164,8 @@ namespace
                      "flee_target_range_km=5\n"
                      "# low_power_return: 1 = a ship in low power for 10 s while flying or mining goes to dock to refuel like fuel low, 0 = off (global only)\n"
                      "low_power_return=1\n"
+                     "# reactor_auto_input: 1 = reactors of active bench ships get bAutoInputFuel on (at task start and every 60 s), 0 = off (global only)\n"
+                     "reactor_auto_input=1\n"
                      "# refuel_dock_id: numeric dock id OR in-game dock name of the refuel dock (empty = none; per-ship key allowed)\n"
                      "refuel_dock_id=\n";
                 Output::send<LogLevel::Normal>(STR("[MiningBenchMod] created default {}\n"), path.wstring());
@@ -219,6 +222,7 @@ namespace
             ensure_key("bubble_clearance_m", "10", "bubble_clearance_m: bubble reflex clearance in m beyond ship radius + rock block radius, 0-100 (global only)");
             ensure_key("flee_target_range_km", "5", "flee_target_range_km: flee trigger range in km for hostile targeters, 1-100 (global only)");
             ensure_key("low_power_return", "1", "low_power_return: 1 = low power for 10 s while flying or mining sends the ship to dock like fuel low, 0 = off (global only)");
+            ensure_key("reactor_auto_input", "1", "reactor_auto_input: 1 = reactors of active bench ships get bAutoInputFuel on, 0 = off (global only)");
             ensure_key("warp_range", "50km", "warp_range: belt mode: a rock farther than this from the ship is not flown to, the ship warps to the next sector instead; also caps radius (m/km, empty/0 = 50km; per-ship key allowed)");
             ensure_key("mining_distance", "50m", "mining_distance: distance from the rock in m/km, e.g. 200m (empty = 50m; per-ship key allowed)");
             ensure_key("fuel_margin", "0", "fuel_margin: int fuel margin, 0 = unset (per-ship key allowed)");
@@ -283,6 +287,7 @@ namespace
             if (kv.count("bubble_clearance_m")) nc.bubble_clearance_m = std::clamp(to_int(kv["bubble_clearance_m"], 10), 0, 100);
             if (kv.count("flee_target_range_km")) nc.flee_target_range_km = std::clamp(to_int(kv["flee_target_range_km"], 5), 1, 100);
             if (kv.count("low_power_return")) nc.low_power_return = std::clamp(to_int(kv["low_power_return"], 1), 0, 1);
+            if (kv.count("reactor_auto_input")) nc.reactor_auto_input = std::clamp(to_int(kv["reactor_auto_input"], 1), 0, 1);
             if (nc.log_interval_seconds < 1) nc.log_interval_seconds = 1;
             // WHAT: wait and per-fuel keys (global only). An empty or non-number value falls back to the struct default (to_int).
             // WHY: the INI may predate these keys; ensure_key below adds them on first load.

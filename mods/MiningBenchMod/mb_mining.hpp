@@ -162,6 +162,9 @@ namespace
         bool lp = false;                       // low power flag at the last sample (power_track)
         double lp_t = 0.0;                     // seconds in low power (1 s samples, 0 when not in low power); response at LOWPOWER_GRACE_S
         bool lp_trip = false;                  // a dock trip was started for low power; a dock stage still in low power then HALTs (lowpower_halt_at_dock)
+        bool bo = false;                       // grid brown-out at the last sample (log only, power_track)
+        bool ra_active = false;                // reactor auto input: ship was active (OFF/HALT excluded) at the last sample; a new task triggers a check
+        double ra_acc = 0.0;                   // reactor auto input: seconds since the last periodic check (REACTOR_AUTO_PERIOD_S)
     };
     std::map<int, MineSt> g_mine;
     std::map<int, int> g_mine_fault_n;   // per ship: SEH faults since its Start (mine_fault); reset by Start
@@ -726,10 +729,18 @@ namespace
         std::wstring w;
         m.trip = force.empty() ? auto_rule(sid, ship, w) : force;
         {
-            // a refuel with ore of a dock in cargo unloads first (Control rule); the refuel follows from CHECK with empty cargo
-            std::wstring nm, nd;
+            // a refuel with ore of a dock in cargo unloads first only when the cargo is full (refuel_needs_unload: >= 90 % or no space);
+            // below that the refuel goes straight (user rule, live 27 % cargo). Full: the refuel follows from CHECK with empty cargo
+            std::wstring nm, nd, wf;
             const bool ore = unload_pending(ship, eff_cfg(sid), nm, nd) > 0;
-            if (m.trip == "dock_refuel" && net_unload_first(ore, P_REFUEL))
+            UObject* rit = item_c(eff_cfg(sid).resource, wf);
+            const bool rfull = alive(rit) && cargo_full(ship, rit);
+            if (m.trip == "dock_refuel" && ore && m.cargo_pct >= 0 && !refuel_needs_unload(m.cargo_pct, rfull))
+            {
+                mlog(sid, STR("Refuel: cargo ") + std::to_wstring(m.cargo_pct) + STR("% below 90%, refuelling without unload"));
+                log_line(STR("REFUEL ship=") + std::to_wstring(sid) + STR(" cargo ") + std::to_wstring(m.cargo_pct) + STR("% below 90%, no unload first"));
+            }
+            if (m.trip == "dock_refuel" && net_unload_first(ore, P_REFUEL) && refuel_needs_unload(m.cargo_pct, rfull))
             {
                 m.trip = "dock_mining";
                 mlog(sid, STR("Control: ") + widen(net_ship_label(sid)) + STR(" must unload first, then refuel"));
@@ -2966,17 +2977,45 @@ namespace
     //       On change: "POWER lost|restored" to MiningCombat.txt (combat_log) and the Log tab. The lost line carries the state, speed, Throttle,
     //       fuel cargo and thresholds, and the power fields (PowerGenRate, PowerDraw, ThrusterPowerDraw; absent when the build has no such name).
     // WHY: 2026-11-04: a ship crawled in low power for 12 min with no log line and never refuelled. A restore clears lp_trip (the low-power trip is over).
+    // WHAT: reactor text for the POWER lines: first reactor of ship (bWorking, RemainingFuel, bAutoInputFuel, PowerGenRate), "reactor=none" when absent.
+    std::wstring reactor_text(UObject* ship)
+    {
+        const std::vector<UObject*> rs = reactors_of(ship);
+        if (rs.empty()) return STR("reactor=none");
+        UObject* r = rs[0];
+        return STR("reactor=") + std::to_wstring(obj_id(r)) + STR(" bWorking=") + prop_bool(r, STR("bWorking")) + STR(" RemainingFuel=") +
+               any_prop(r, STR("RemainingFuel")) + STR(" bAutoInputFuel=") + prop_bool(r, STR("bAutoInputFuel")) + STR(" PowerGenRate=") + any_prop(r, STR("PowerGenRate"));
+    }
+
+    // WHAT: POWER monitor, once per status second (mine_sample). lp = no power on the grid (power_dead; flag fallback). Seconds without power go to
+    //       lp_t (el per sample). Brown-out (efficiency < POWER_BROWNOUT_EFF with production) is log only, one line per change.
+    //       On change: "POWER lost|restored" to MiningCombat.txt (combat_log) and the Log tab. The lost line carries state, speed, Throttle, grid
+    //       prod / cons / eff, the first reactor and the cargo fuel totals with their thresholds.
+    // WHY: 2026-11-04: a ship crawled with no power for 12 min with no log line and never refuelled. A restore clears lp_trip (the low-power trip is over).
     void power_track(UObject* ship, int sid, MineSt& m, double el)
     {
-        bool lp = false;
-        if (!lp_flag(ship, lp)) return;
+        const PowerGridRead g = power_grid(ship);
+        bool known = false;
+        const bool lp = power_dead(ship, g, known);
+        if (!known) return;
         if (lp) m.lp_t += el; else m.lp_t = 0.0;
+        const bool bo = g.ok && power_brownout(g.cons, g.prod, g.eff);
+        const int bev = power_bo_event(m.bo, bo);
+        if (bev != 0)
+        {
+            m.bo = bo;
+            const std::wstring head = bev == 1 ? STR("POWER brownout ship=") : STR("POWER brownout end ship=");
+            combat_log(head + std::to_wstring(sid) + STR(" ") + g_bench_names[sid] + STR(" eff=") + std::to_wstring(g.eff) + STR(" prod=") +
+                       std::to_wstring(g.prod) + STR(" cons=") + std::to_wstring(g.cons));
+            mlog(sid, bev == 1 ? STR("Brown-out: production below consumption") : STR("Brown-out ended"));
+        }
         if (lp == m.lp) return;
         m.lp = lp;
         if (!lp)
         {
             m.lp_trip = false;
-            combat_log(STR("POWER restored ship=") + std::to_wstring(sid) + STR(" ") + g_bench_names[sid]);
+            combat_log(STR("POWER restored ship=") + std::to_wstring(sid) + STR(" ") + g_bench_names[sid] + STR(" prod=") + std::to_wstring(g.prod) +
+                       STR(" cons=") + std::to_wstring(g.cons) + STR(" eff=") + std::to_wstring(g.eff) + STR(" ") + reactor_text(ship));
             mlog(sid, STR("Low power restored"));
             return;
         }
@@ -2992,10 +3031,57 @@ namespace
             th += (i ? STR("/") : STR("")) + std::to_wstring(c.fuel[i].threshold);
         }
         combat_log(STR("POWER lost ship=") + std::to_wstring(sid) + STR(" ") + g_bench_names[sid] + STR(" state=") + mine_state_name(m.st) +
-                   STR(" speed=") + std::to_wstring(m.spd) + STR(" throttle=") + std::to_wstring(thr) + STR(" fuel:") + fuel + STR(" thresholds=") + th +
-                   STR(" PowerGenRate=") + power_field(ship, STR("PowerGenRate")) + STR(" PowerDraw=") + power_field(ship, STR("PowerDraw")) +
-                   STR(" ThrusterPowerDraw=") + power_field(ship, STR("ThrusterPowerDraw")));
+                   STR(" speed=") + std::to_wstring(m.spd) + STR(" throttle=") + std::to_wstring(thr) + STR(" prod=") + std::to_wstring(g.prod) +
+                   STR(" cons=") + std::to_wstring(g.cons) + STR(" eff=") + std::to_wstring(g.eff) + STR(" ") + reactor_text(ship) + STR(" fuel:") + fuel +
+                   STR(" thresholds=") + th);
         mlog(sid, STR("Low power: the ship lost power"));
+    }
+
+    // ---------- reactor auto input (bAutoInputFuel on every reactor of an active bench ship) ----------
+    // WHAT: per ship and reactor index: write attempts, give-up flag, time of the last attempt (GetTickCount64 ms).
+    struct ReactorAuto { int attempts = 0; bool gave_up = false; ULONGLONG last_ms = 0; };
+    std::map<int, std::map<int, ReactorAuto>> g_reactor_auto;   // ship id -> reactor index -> state
+    struct ReactorWriteCtx { UObject* r; bool ok; };
+    // WHAT: writes bAutoInputFuel = true (runs under seh_run). Direct property write: see the route note in mb_devcmd.hpp probe_reactor.
+    void reactor_write_fn(void* p) { auto* c = static_cast<ReactorWriteCtx*>(p); c->ok = set_bool_prop(c->r, STR("bAutoInputFuel"), true); }
+    // WHAT: reactor auto input check for ship sid. Runs at a task start (ship not OFF/HALT now, was not before) and every REACTOR_AUTO_PERIOD_S while active.
+    //       Each reactor with bAutoInputFuel false gets one write (REACTOR_AUTO_RATE_MS apart, REACTOR_AUTO_MAX tries, then one give-up line).
+    //       Read back after the write: 'POWER auto-input enabled ship= reactor=' only when it reads true. reactor_auto 0 = off (global setting).
+    void reactor_auto_tick(UObject* ship, int sid, MineSt& m, double el)
+    {
+        const bool active = m.st != MS_OFF && m.st != MS_HALT;
+        const bool start = active && !m.ra_active;
+        m.ra_active = active;
+        if (!active) { m.ra_acc = 0.0; return; }
+        const bool due = period_due(m.ra_acc, el, REACTOR_AUTO_PERIOD_S);
+        if (!due && !start) return;
+        if (g_cfg.reactor_auto_input != 1) return;
+        const ULONGLONG now = GetTickCount64();
+        const std::vector<UObject*> rs = reactors_of(ship);
+        for (size_t i = 0; i < rs.size(); ++i)
+        {
+            UObject* r = rs[i];
+            bool on = false;
+            if (!get_bool_prop(r, STR("bAutoInputFuel"), on)) continue;   // no such property on this reactor: nothing to set
+            ReactorAuto& st = g_reactor_auto[sid][static_cast<int>(i)];
+            const std::wstring tag = STR("ship=") + std::to_wstring(sid) + STR(" reactor=") + std::to_wstring(obj_id(r));
+            const int act = reactor_auto_action(on, st.attempts, st.gave_up, st.last_ms, now);
+            if (act == RA_GIVEUP)
+            {
+                st.gave_up = true;
+                combat_log(STR("POWER auto-input gave up ") + tag + STR(" after ") + std::to_wstring(REACTOR_AUTO_MAX) + STR(" writes, set bAutoInputFuel by hand"));
+                continue;
+            }
+            if (act != RA_WRITE) continue;
+            ++st.attempts;
+            st.last_ms = now;
+            ReactorWriteCtx c{r, false};
+            const bool wrote = seh_run(reactor_write_fn, &c) && c.ok;
+            bool back = false;
+            get_bool_prop(r, STR("bAutoInputFuel"), back);
+            if (wrote && back) combat_log(STR("POWER auto-input enabled ") + tag + STR(" (direct write)"));
+            else combat_log(STR("POWER auto-input write failed ") + tag + STR(" attempt ") + std::to_wstring(st.attempts) + STR("/") + std::to_wstring(REACTOR_AUTO_MAX));
+        }
     }
 
     // WHAT: once per status second per bench ship: cargo probe (first time only), position and speed (m/s) from the actor location delta
@@ -3028,6 +3114,7 @@ namespace
             int slots = 0, fuel_s = 0, other_s = 0;
             m.cargo_pct = cargo_pct(ship, slots, fuel_s, other_s);
             power_track(ship, sid, m, el);   // POWER lost/restored lines, lp_t (mb_mining.hpp power_track)
+            reactor_auto_tick(ship, sid, m, el);   // bAutoInputFuel on the reactors of an active ship (task start + every 60 s)
             m.drop_age += el;
             hull_watch(ship, sid, m, true);
             if (m.hw >= 0) { m.hull_h.push_back(m.hw); if (m.hull_h.size() > 6) m.hull_h.erase(m.hull_h.begin()); }
