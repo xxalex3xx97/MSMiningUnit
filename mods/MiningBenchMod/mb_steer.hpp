@@ -389,7 +389,7 @@ namespace
         {
             double p[3] = {0, 0, 0};
             std::wstring why;
-            if (!alive_seh(mv.rock_act) || !actor_vec_call(mv.rock_act, STR("K2_GetActorLocation"), p, why)) return false;
+            if (!ore_ok(mv.rock_act) || !actor_vec_call(mv.rock_act, STR("K2_GetActorLocation"), p, why)) return false;
             std::copy(p, p + 3, mv.ore_loc);
             mv.ore_fresh = true; mv.ore_t = 0.0;
         }
@@ -533,6 +533,35 @@ namespace
         }
     }
 
+    // WHAT: context of move_job_fn. mv = the job (g_mvs entry), sid = its ship, dt = engine tick.
+    struct MoveStepCtx { MoveJob* mv; int sid; double dt; };
+    // WHAT: one job tick (see move_tick), run under seh_run. Plain function: no __try here, so the C++ objects are allowed.
+    void move_job_fn(void* p)
+    {
+        auto* c = static_cast<MoveStepCtx*>(p);
+        const int sid = c->sid;
+        MoveJob& mv = *c->mv;
+        UObject* ship = find_by_id(STR("DMSPlayerShipObject"), sid);
+        if (!alive_seh(ship)) { mv_finish(sid, STR("error: ship not found during move")); return; }
+        double q[4] = {1, 0, 0, 0};
+        if (!quat4(ship, q)) { mv_finish(sid, STR("error: Quat unreadable")); return; }
+        mv.t += c->dt;
+        mv.pt += c->dt;
+        mv.samp += c->dt;
+        mv.log_acc += c->dt;
+        if (mv.samp >= MV_SAMPLE_S)
+        {
+            mv.rate = quat_angle_deg(mv.qs, q) / mv.samp;
+            std::copy(q, q + 4, mv.qs);
+            mv.samp = 0.0;
+        }
+        move_aim_step(mv, ship, c->dt);   // may end the job (mv_finish): mv is not used after this
+    }
+    // WHAT: context of mv_fault_finish_fn: the ship whose job faulted.
+    struct FinishCtx { int sid; };
+    // WHAT: ends a faulted job under SEH (mv_finish erases the job first, so a second fault cannot repeat it).
+    void mv_fault_finish_fn(void* p) { mv_finish(static_cast<FinishCtx*>(p)->sid, STR("error: target lost")); }
+
     // WHAT: move job tick, every engine tick while a job runs: re-find the ship by id, read the quaternion (turn rate every 0.25 s),
     //       advance the job timers, then call move_aim_step.
     // WHY: the ship and the rock are re-resolved on every tick and never kept, so a freed object is never used (crash lesson).
@@ -544,22 +573,16 @@ namespace
         {
             auto it = g_mvs.find(sid);
             if (it == g_mvs.end() || it->second.kind.empty()) continue;
-            MoveJob& mv = it->second;
-            UObject* ship = find_by_id(STR("DMSPlayerShipObject"), sid);
-            if (!alive_seh(ship)) { mv_finish(sid, STR("error: ship not found during move")); continue; }
-            double q[4] = {1, 0, 0, 0};
-            if (!quat4(ship, q)) { mv_finish(sid, STR("error: Quat unreadable")); continue; }
-            mv.t += dt;
-            mv.pt += dt;
-            mv.samp += dt;
-            mv.log_acc += dt;
-            if (mv.samp >= MV_SAMPLE_S)
-            {
-                mv.rate = quat_angle_deg(mv.qs, q) / mv.samp;
-                std::copy(q, q + 4, mv.qs);
-                mv.samp = 0.0;
-            }
-            move_aim_step(mv, ship, dt);
+            MoveStepCtx sc{&it->second, sid, dt};
+            set_last_step(STR("move_job ship=") + std::to_wstring(sid));
+            if (seh_run(move_job_fn, &sc)) continue;
+            // WHY: a fault inside the job (freed actor read in UE4SS.dll) ends this job only. It is erased, so it never runs again.
+            std::wstring kind = STR("?");
+            if (auto jt = g_mvs.find(sid); jt != g_mvs.end()) kind = widen(jt->second.kind);
+            log_line(STR("MOVE fault ship=") + std::to_wstring(sid) + STR(" job=") + kind + STR(" ") + seh_describe(g_seh));
+            FinishCtx fc{sid};
+            if (g_mvs.count(sid) && !seh_run(mv_fault_finish_fn, &fc)) log_line(STR("MOVE fault finish faulted too: ") + seh_describe(g_seh));
+            g_mvs.erase(sid);
         }
     }
 
@@ -599,7 +622,7 @@ namespace
             m.rock_id = 0;
             m.rock_name = STR("point");
         }
-        else if (alive(target))
+        else if (ore_ok(target))
         {
             m.rock_act = target;
             m.ore_on = true;

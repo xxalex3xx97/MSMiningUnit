@@ -81,6 +81,16 @@ namespace
         __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
     }
 
+    // WHAT: actors the engine freed (queued by RockDeleteListener, drained into this set by rock_drain_dead). Never shrinks; a scan
+    //       that finds a live actor at such an address removes it again (ore_pass_fn).
+    // WHY: alive() cannot see a freed UObject: its memory stays mapped and the flags can still read as alive. The next property call
+    //      then faults inside UE4SS.dll (crash log 2026-11-04, move_tick). Ore actors are not in the HUD list, so this set is the exact check.
+    // ponytail: one pointer per freed rock/ore actor; add a cap if a session ever shows memory growth.
+    std::unordered_set<const void*> g_ore_gone;
+
+    // WHAT: true when a floating ore / rock actor (not in the HUD list) is still alive: not freed (g_ore_gone) and alive_seh.
+    bool ore_ok(UObject* a) { return a && g_ore_gone.count(a) == 0 && alive_seh(a); }
+
     // WHAT: copies the actor pointers of ctrl.ScannableHUDMarkers into out. false = the read faulted (g_seh holds it).
     // WHY: the array is read by index through a raw TArray pointer; a stale controller or array would crash here. Two SEH calls: count, then copy.
     struct MarkersCtx { UObject* ctrl; UObject** buf; int cap; int n; };
@@ -271,6 +281,7 @@ namespace
         std::unordered_set<const void*> dead;
         { RockDeadState& d = dead_state(); std::lock_guard<std::mutex> l(d.mx); if (d.dead.empty()) return; dead.swap(d.dead); }
         auto gone = [&](UObject* a) { return dead.count(a) != 0; };
+        g_ore_gone.insert(dead.begin(), dead.end());
         g_rock_actors.erase(std::remove_if(g_rock_actors.begin(), g_rock_actors.end(), gone), g_rock_actors.end());
         g_fb_list.erase(std::remove_if(g_fb_list.begin(), g_fb_list.end(), gone), g_fb_list.end());
         for (const void* d : dead)

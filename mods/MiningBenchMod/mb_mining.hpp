@@ -314,6 +314,7 @@ namespace
         UObjectGlobals::FindAllOf(STR("BP_FloatingOre_C"), *c->v);
         for (UObject* a : *c->v)
         {
+            g_ore_gone.erase(a);           // the engine lists it now: a re-used address is live again
             if (!alive_seh(a)) continue;   // ore actors are not in the rock lists: actor_ok would always fail
             OreEnt e;
             e.a = a;
@@ -352,7 +353,7 @@ namespace
             double d[3] = {e.p[0] - f.loc[0], e.p[1] - f.loc[1], e.p[2] - f.loc[2]};
             if (norm3(d) / MV_UU_PER_M <= range_m)
             {
-                if (!alive_seh(e.a)) { sc.list.erase(sc.list.begin() + (std::ptrdiff_t)i); continue; }   // picked up / gone
+                if (!ore_ok(e.a)) { sc.list.erase(sc.list.begin() + (std::ptrdiff_t)i); continue; }   // picked up / gone
                 ++n;
             }
             ++i;
@@ -869,8 +870,8 @@ namespace
                 mset(sid, m, STR("mining rock ") + std::to_wstring(m.rock), STR("Mining ") + item_name(c.resource) + STR(" (rock ") + std::to_wstring(m.rock) + STR(")"));
                 return;
             }
-            if (r.find(STR("rock lost")) != std::wstring::npos)
-            {
+            if (r.find(STR("rock lost")) != std::wstring::npos || r.find(STR("target lost")) != std::wstring::npos)
+            {   // target lost = the move job faulted (move_tick SEH): same free retry
                 // rock lost (another ship mined it) = free retry, not a failed attempt; ROCK_LOST_MAX in a row = HALT
                 if (rock_lost_halt(++m.lost_n)) { mine_stop_work(ship, sid); m.st = MS_HALT; mset(sid, m, STR("rock lost ") + std::to_wstring(ROCK_LOST_MAX) + STR("x")); return; }
             }
@@ -1229,7 +1230,7 @@ namespace
                 done[i] = o.done;   // alive_seh only on the chosen entry below (per-entry checks on 9000 actors every pick = lag)
             }
             int i = sweep_nearest(d, done);
-            while (i >= 0 && !alive_seh(m.sw_list[(size_t)i].a))   // picked entry is gone: mark it, take the next nearest
+            while (i >= 0 && !ore_ok(m.sw_list[(size_t)i].a))   // picked entry is gone: mark it, take the next nearest
             {
                 m.sw_list[(size_t)i].done = true; done[(size_t)i] = 1;
                 i = sweep_nearest(d, done);
@@ -1256,6 +1257,7 @@ namespace
                 return;
             }
             m.sw_ore = m.sw_list[(size_t)i].a;
+            g_mv_res.erase(sid);   // SW_APPROACH reads the result of this job only
             const std::wstring r = move_start(sid, "approach_rock", -1, m.sw_ore, nullptr);
             if (r == STR("waiting"))
             {
@@ -1270,6 +1272,13 @@ namespace
         case SW_APPROACH:
         {
             if (mv_active(sid)) return;   // any result: a rock lost here means the tractor already took it
+            if (g_mv_res[sid].find(STR("target lost")) != std::wstring::npos)   // the job faulted (move_tick SEH): this ore is no target
+            {
+                for (SwOre& o : m.sw_list) if (o.a == m.sw_ore) o.done = true;
+                m.sw_ore = nullptr;
+                sw_phase(ship, sid, m, SW_PICK);
+                return;
+            }
             sw_phase(ship, sid, m, SW_PULL);
             run_cmd(-1, sid, "tractor_on");
             run_cmd(-1, sid, "laser_off");
@@ -1278,7 +1287,7 @@ namespace
         case SW_PULL:
         {
             m.sw_t += dt;
-            const bool gone = !alive_seh(m.sw_ore);
+            const bool gone = !ore_ok(m.sw_ore);
             std::wstring w;
             UObject* item = item_c(c.resource, w);
             const bool full = (alive(item) && cargo_full(ship, item)) || m.cargo_pct >= 100;
