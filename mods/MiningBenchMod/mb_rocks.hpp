@@ -471,11 +471,12 @@ namespace
 
     // WHAT: nearest rock actor whose ore == item, by game distance. out = its aim numbers. nullptr when none. Result cached per (sid, item).
     // WHY: filters by ore first (cheap map lookup), so only rocks of that ore have their location read.
-    UObject* nearest_item_actor(int sid, const ActFrame& f, UObject* item, ActAim& out)
+    // skip: this rock actor is left out (no cache use when set: the cached pick may be the skipped one)
+    UObject* nearest_item_actor(int sid, const ActFrame& f, UObject* item, ActAim& out, UObject* skip = nullptr)
     {
         const ULONGLONG now = GetTickCount64();
         PickCache& pc = g_pick_cache[std::make_pair(sid, item)];
-        if (pc.ms != 0 && now - pc.ms < static_cast<ULONGLONG>(MINE_ROCK_CHECK_S * 1000.0) && std::equal(f.loc, f.loc + 3, pc.origin) &&
+        if (!skip && pc.ms != 0 && now - pc.ms < static_cast<ULONGLONG>(MINE_ROCK_CHECK_S * 1000.0) && std::equal(f.loc, f.loc + 3, pc.origin) &&
             (!pc.actor || actor_ok(pc.actor)))
         {
             if (pc.actor) out = pc.aim;
@@ -485,14 +486,14 @@ namespace
         ActAim best_aim;
         for (UObject* a : g_rock_actors)
         {
+            if (a == skip) continue;
             auto it = g_rock_item.find(a);
             if (it == g_rock_item.end() || it->second != item) continue;
             ActAim r;
             if (!act_aim(f, a, r)) continue;
             if (!best || r.dist_m < best_aim.dist_m) { best = a; best_aim = r; }
         }
-        pc.ms = now; pc.actor = best; pc.aim = best_aim;
-        std::copy(f.loc, f.loc + 3, pc.origin);
+        if (!skip) { pc.ms = now; pc.actor = best; pc.aim = best_aim; std::copy(f.loc, f.loc + 3, pc.origin); }
         if (best) out = best_aim;
         return best;
     }

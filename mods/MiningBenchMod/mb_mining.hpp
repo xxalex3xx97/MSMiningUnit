@@ -98,6 +98,7 @@ namespace
         std::wstring col_why;                  // MS_COLLECT: reason it started (text shown at the end)
         double col_t = 0.0, col_stall = 0.0, col_scan_t = 0.0;   // MS_COLLECT: seconds total / since ore count dropped / since the last scan
         int col_last = -1;                     // MS_COLLECT: floating ore count at the last scan (-1 none, 0 scan failed)
+        UObject* abandon = nullptr;            // rock left by the idle watchdog: the next SEEK skips it once (mined anyway when it is the only rock)
         bool sweep = false;                    // MS_SWEEP active (collect ore action)
         int sw_ph = 0, sw_rescans = 0, sw_sys = 0;   // MS_SWEEP phase (SW_*), rescans left, saved system id
         int64_t sw_ch[3] = {0, 0, 0};          // MS_SWEEP: saved ship chunk (return point)
@@ -181,13 +182,13 @@ namespace
 
 
     // nearest rock holding `item` measured from the anchor (not the ship); nullptr when none or outside the radius
-    UObject* rock_in_range(int sid, const double anchor[3], UObject* item, double rad_m)
+    UObject* rock_in_range(int sid, const double anchor[3], UObject* item, double rad_m, UObject* skip = nullptr)
     {
         rock_list_ensure();
         ActFrame f;
         std::copy(anchor, anchor + 3, f.loc);
         ActAim r;
-        UObject* a = nearest_item_actor(sid, f, item, r);
+        UObject* a = nearest_item_actor(sid, f, item, r, skip);
         if (!a || !actor_ok(a)) return nullptr;
         if (rad_m > 0.0 && r.dist_m > rad_m) return nullptr;
         return a;
@@ -542,6 +543,7 @@ namespace
         run_cmd(-1, sid, "tractor_on");
         mv_cancel(sid);
         zero_all(ship);
+        ore_scan(true);   // fresh floating ore list: the shared cache can be a minute old
         m.st = MS_COLLECT; m.t = 0.0; m.col_t = 0.0; m.col_stall = 0.0; m.col_scan_t = COLLECT_SCAN_S; m.col_last = -1;
         m.col_next = kind; m.col_why = text;
         mset(sid, m, STR("collecting leftover ore"), STR("Collecting leftover ore"));
@@ -738,7 +740,7 @@ namespace
         std::wstring w;
         if (auto_rule(sid, ship, w) == "dock_refuel") { trip_begin(ship, sid, m, STR("fuel low")); return; }
         if (m.fin) { trip_begin(ship, sid, m, STR("queue done, unloading")); return; }
-        if (cargo_full(ship, item) || m.cargo_pct >= 100)   // pct 100 = every non-fuel slot used (a partial stack can still take 1: HasSpaceForItems says yes)
+        if (cargo_full(ship, item) || m.cargo_pct >= CARGO_STOP_PCT)   // same stop rule as MS_MINE; HasSpaceForItems still catches a full cargo
         {
             // loop guard: a second unload from CHECK without mining in between means the cargo is not in the unload list
             if (unl_guard_fire(ship, sid, m, item)) { m.st = MS_HALT; mset(sid, m, STR("cargo still full after unload (does the ore have an unload dock?)")); return; }
@@ -838,7 +840,11 @@ namespace
         if (m.chk_t >= MINE_ROCK_CHECK_S)
         {
             m.chk_t = 0.0;
-            UObject* rock = rock_in_range(sid, m.anchor, item, mine_radius_m(c));
+            UObject* rock = rock_in_range(sid, m.anchor, item, mine_radius_m(c), m.abandon);
+            if (!rock && m.abandon) rock = rock_in_range(sid, m.anchor, item, mine_radius_m(c));   // the abandoned rock is the only one: mine it anyway
+            // approach_rock picks the nearest rock by itself: pin the chosen one when it is not the nearest (the abandoned one)
+            if (m.abandon && rock) g_sel_rocks[sid] = rock_id_of(rock);
+            m.abandon = nullptr;
             m.no_rock = !rock;
             if (!rock)
             {
@@ -881,7 +887,7 @@ namespace
             else m.idle_t += dt;
             m.last_ore = inv;
         }
-        const bool full = cargo_full(ship, item) || m.cargo_pct >= 100;   // m.cargo_pct: sampled every status second (mine_sample)
+        const bool full = cargo_full(ship, item) || m.cargo_pct >= CARGO_STOP_PCT;   // m.cargo_pct: sampled every status second (mine_sample)
         m.chk_t += dt;
         if (m.chk_t >= MINE_ROCK_CHECK_S)
         {
@@ -917,7 +923,14 @@ namespace
             return;
         }
         // no gain = rock spent/destroyed, not a reason to dock: look for another rock (SEEK goes home itself when none is in range)
-        if (c.idle_seconds > 0 && m.idle_t >= c.idle_seconds) { begin_collect(ship, sid, m, 0, STR("no ore gained for ") + std::to_wstring(c.idle_seconds) + STR(" s, seeking next rock")); return; }
+        const bool rock_alive = m.rock > 0 && actor_ok(rock_actor_by_id(m.rock));
+        const double idle_lim = idle_limit(c.idle_seconds, rock_alive);
+        if (idle_lim > 0.0 && m.idle_t >= idle_lim)
+        {
+            m.abandon = rock_actor_by_id(m.rock);   // the next seek must not pick this rock again at once
+            begin_collect(ship, sid, m, 0, STR("no ore gained for ") + std::to_wstring((int)idle_lim) + STR(" s, seeking next rock"));
+            return;
+        }
         if (m.rock > 0 && !actor_ok(rock_actor_by_id(m.rock))) { begin_collect(ship, sid, m, 0, STR("rock gone, seeking next rock")); return; }
         return;
     }
@@ -933,6 +946,8 @@ namespace
         m.col_t += dt; m.col_stall += dt; m.col_scan_t += dt;
         if (m.col_scan_t < COLLECT_SCAN_S) return;
         m.col_scan_t = 0.0;
+        // stale list = wrong count (picked-up ore counted, new drops missing): rescan when the shared cache is older than the scan period
+        if (GetTickCount64() - g_ore_scan.ms >= static_cast<ULONGLONG>(COLLECT_SCAN_S * 1000.0)) ore_scan(true);
         const int n = ore_near(ship, COLLECT_RANGE_M);
         if (n < 0) m.col_last = 0;
         else { if (m.col_last < 0 || n < m.col_last) m.col_stall = 0.0; m.col_last = n; }

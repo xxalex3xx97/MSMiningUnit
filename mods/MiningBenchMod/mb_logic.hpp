@@ -364,6 +364,9 @@ namespace
         return (dock_dist_m >= 0.0 && dock_dist_m <= WARP_ARRIVE_M) || t >= WARP_SETTLE_MAX_S;
     }
 
+    // WHAT: mining stops (leftover collect, then unload) when the cargo fill reaches this % (was 100). Also the CHECK rule, so the ship does not undock again at once.
+    constexpr int CARGO_STOP_PCT = 95;
+
     // WHAT: cargo fill % from slot counts: other / (isz - fuel) * 100, clamped 0..100. 0 when no non-fuel slot is used, -1 when the cargo has no free slot base.
     int cargo_pct_calc(int isz, int fuel_s, int other_s)
     {
@@ -405,6 +408,14 @@ namespace
         if (n <= 0) return COL_DONE;
         if (elapsed >= COLLECT_MAX_S || stall >= COLLECT_STALL_S) return COL_GIVEUP;
         return COL_WAIT;
+    }
+
+    // WHAT: idle watchdog limit (s) for MS_MINE. idle_s 0 = off (returned as is). While the rock is alive: at least IDLE_ROCK_MIN_S.
+    // WHY: ore comes in bursts, a 5 s gap is not a spent rock; only a rock that is gone or a long silence ends the mining.
+    constexpr double IDLE_ROCK_MIN_S = 30.0;
+    inline double idle_limit(double idle_s, bool rock_alive)
+    {
+        return (idle_s > 0.0 && rock_alive) ? std::max(idle_s, IDLE_ROCK_MIN_S) : idle_s;
     }
 
     // WHAT: sweep (MS_SWEEP) limits: pick timeout (s), rescans before giving up, fly-back max distance (m), fly timeout (s), warp wait (s).

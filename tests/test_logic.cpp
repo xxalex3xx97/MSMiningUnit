@@ -428,6 +428,14 @@ static void t_ore_scan_due()
     CHECK(ore_scan_due(false, 1000, 61000, 60000) == true);   // period passed
 }
 
+static void t_idle_limit()
+{
+    CHECK(idle_limit(5, true) == 30.0);      // rock alive: at least IDLE_ROCK_MIN_S
+    CHECK(idle_limit(45, true) == 45.0);     // longer setting kept
+    CHECK(idle_limit(5, false) == 5.0);      // rock gone: idle_seconds as set
+    CHECK(idle_limit(0, true) == 0.0);       // 0 = off
+}
+
 static void t_hull_dropped()
 {
     CHECK(!hull_dropped(-1, 0));                    // no baseline: never a drop
@@ -945,7 +953,7 @@ int main()
         {"parse_cmd_line", t_parse_cmd_line}, {"cmd_seq_is_new", t_cmd_seq_is_new},
         {"belt", t_belt}, {"csq", t_csq}, {"sector_contains", t_sector_contains}, {"warp_fuel", t_warp_fuel},
         {"cargo_pct", t_cargo_pct}, {"fuel_low", t_fuel_low}, {"got_delta", t_got_delta}, {"row_done", t_row_done},
-        {"item_next", t_item_next}, {"collect_verdict", t_collect_verdict}, {"sweep", t_sweep}, {"ore_scan_due", t_ore_scan_due}, {"hull_dropped", t_hull_dropped},
+        {"item_next", t_item_next}, {"collect_verdict", t_collect_verdict}, {"sweep", t_sweep}, {"ore_scan_due", t_ore_scan_due}, {"idle_limit", t_idle_limit}, {"hull_dropped", t_hull_dropped},
         {"dock_limit_giveup", t_dock_limit_giveup}, {"unload_chain_more", t_unload_chain_more}, {"unload_cand", t_unload_cand}, {"refuel_stalled", t_refuel_stalled}, {"mine_radius", t_mine_radius},
         {"station", t_station},
         {"net_free_go", t_net_free_go}, {"net_busy_wait", t_net_busy_wait}, {"net_second_dock", t_net_second_dock},
