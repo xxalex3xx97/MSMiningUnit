@@ -1415,6 +1415,73 @@ static void t_reg_abs_m()
     CHECK(reg_cell_idx(-1.0) == -1 && reg_cell_idx(2047.9) == 0 && reg_cell_idx(2048.0) == 1);
 }
 
+// ---------- box probe and reg_check parsers (mb_logic.hpp, mb_registry_logic.hpp) ----------
+static void t_box_probe_parse()
+{
+    int sid = 0, mode = -1;
+    double lo[3] = {0, 0, 0}, hi[3] = {0, 0, 0};
+    CHECK(probe_parse_box("probe_collision_box:41529:-50:-50:-50:50:50:50", sid, lo, hi, mode));
+    CHECK(sid == 41529 && mode == PROBE_BOX_LOCAL && lo[0] == -50.0 && hi[2] == 50.0);
+    CHECK(probe_parse_box("probe_collision_box:7:0:0:0:1:2:3:world", sid, lo, hi, mode) && mode == PROBE_BOX_WORLD && hi[1] == 2.0);
+    CHECK(probe_parse_box("probe_collision_box:7:0:0:0:1:2:3:raw", sid, lo, hi, mode) && mode == PROBE_BOX_RAW);
+    CHECK(probe_parse_box("probe_collision_box:7:0:0:0:1:2:3:local", sid, lo, hi, mode) && mode == PROBE_BOX_LOCAL);
+    CHECK(!probe_parse_box("probe_collision_box:7:0:0:0:1:2:3:bogus", sid, lo, hi, mode));
+    CHECK(!probe_parse_box("probe_collision_box:7:0:0:0:1:2", sid, lo, hi, mode));        // 6 numbers
+    CHECK(!probe_parse_box("probe_collision_box:0:0:0:0:1:2:3", sid, lo, hi, mode));      // ship id
+    CHECK(!probe_parse_box("probe_collision_box:x:0:0:0:1:2:3", sid, lo, hi, mode));
+    CHECK(!probe_parse_box("probe_collision_box:7:5:0:0:1:2:3", sid, lo, hi, mode));      // min > max on x
+    CHECK(!probe_parse_box("probe_collision_box:7:0:0:0:nan:2:3", sid, lo, hi, mode));
+    CHECK(!probe_parse_box("probe_collision_box:7::0:0:1:2:3", sid, lo, hi, mode));       // empty number
+    CHECK(!probe_parse_box("probe_collision_boxwatch:7:5", sid, lo, hi, mode));           // other command
+    double secs = 0.0;
+    CHECK(probe_parse_boxwatch("probe_collision_boxwatch:41529:30", sid, secs, mode) && sid == 41529 && secs == 30.0 && mode == PROBE_BOX_LOCAL);
+    CHECK(probe_parse_boxwatch("probe_collision_boxwatch:7:20:world", sid, secs, mode) && mode == PROBE_BOX_WORLD && secs == 20.0);
+    CHECK(probe_parse_boxwatch("probe_collision_boxwatch:7:500", sid, secs, mode) && secs == PROBE_WATCH_MAX_S);   // clamped
+    CHECK(!probe_parse_boxwatch("probe_collision_boxwatch:7:20:raw", sid, secs, mode));   // raw refused
+    CHECK(!probe_parse_boxwatch("probe_collision_boxwatch:7", sid, secs, mode));
+    CHECK(!probe_parse_boxwatch("probe_collision_boxwatch:7:0", sid, secs, mode));
+    CHECK(!probe_parse_boxwatch("probe_collision_boxwatch:7:x", sid, secs, mode));
+    CHECK(probe_split("a::b").size() == 3 && probe_split("").size() == 1);
+}
+
+static void t_box_probe_uu_fwd()
+{
+    const double m_lo[3] = {1, 2, 3}, m_hi[3] = {4, 5, 6}, ship[3] = {1000, 0, -200};
+    double lo[3], hi[3];
+    probe_box_uu(PROBE_BOX_LOCAL, m_lo, m_hi, ship, lo, hi);
+    NEAR(lo[0], 100.0, 1e-9); NEAR(lo[1], 200.0, 1e-9); NEAR(lo[2], 300.0, 1e-9); NEAR(hi[2], 600.0, 1e-9);
+    probe_box_uu(PROBE_BOX_WORLD, m_lo, m_hi, ship, lo, hi);
+    NEAR(lo[0], 1100.0, 1e-9); NEAR(lo[2], 100.0, 1e-9); NEAR(hi[0], 1400.0, 1e-9);
+    probe_box_uu(PROBE_BOX_RAW, m_lo, m_hi, ship, lo, hi);
+    NEAR(lo[0], 1.0, 1e-9); NEAR(hi[2], 6.0, 1e-9);   // typed numbers as they are
+    NEAR(probe_box_fwd_m(0), 25.0, 1e-9);
+    NEAR(probe_box_fwd_m(3), 25.0, 1e-9);             // 15 m, floored to 25
+    NEAR(probe_box_fwd_m(10), 50.0, 1e-9);
+    NEAR(probe_box_fwd_m(20), 100.0, 1e-9);
+    double al[3], ah[3], fl[3], fh[3];
+    probe_watch_boxes(10, al, ah, fl, fh);
+    NEAR(al[0], -50.0, 1e-9); NEAR(ah[2], 50.0, 1e-9);
+    NEAR(fl[0], 0.0, 1e-9); NEAR(fh[0], 50.0, 1e-9); NEAR(fl[1], -15.0, 1e-9); NEAR(fh[2], 15.0, 1e-9);
+}
+
+static void t_reg_check_summary()
+{
+    int sid = 0;
+    size_t n = 0;
+    CHECK(reg_check_parse("reg_check:207537", sid, n) && sid == 207537 && n == REG_CHECK_DEF_N);
+    CHECK(reg_check_parse("reg_check:207537:5", sid, n) && n == 5);
+    CHECK(reg_check_parse("reg_check:207537:500", sid, n) && n == REG_CHECK_MAX_N);   // capped
+    CHECK(!reg_check_parse("reg_check:0", sid, n));
+    CHECK(!reg_check_parse("reg_check:x", sid, n));
+    CHECK(!reg_check_parse("reg_check:5:0", sid, n));
+    CHECK(!reg_check_parse("reg_check:5:-1", sid, n));
+    CHECK(!reg_check_parse("reg_check:5:3:4", sid, n));
+    CHECK(!reg_check_parse("reg_check:", sid, n));
+    CHECK(reg_summary_line(3, 1.5, 0.5, 2) == "SUMMARY n=3 max_err_m=1.500 mean_err_m=0.500 missing=2");
+    CHECK(reg_summary_line(3, 1.5, 0.5, -1) == "SUMMARY n=3 max_err_m=1.500 mean_err_m=0.500 missing=n/a");
+    CHECK(reg_summary_line(0, 0.0, 0.0, 0) == "SUMMARY n=0 max_err_m=0.000 mean_err_m=0.000 missing=0");
+}
+
 // ---------- runner ----------
 
 struct Case { const char* name; void (*fn)(); };
@@ -1523,6 +1590,7 @@ int main()
         {"rock_depleted", t_rock_depleted},
         {"reg_table", t_reg_table}, {"reg_events", t_reg_events}, {"reg_within_nearest", t_reg_within_nearest}, {"reg_surface_block", t_reg_surface_block_radius},
         {"reg_targeted_ore_budget", t_reg_targeted_ore_budget}, {"reg_bench", t_reg_bench}, {"reg_abs_m", t_reg_abs_m},
+        {"box_probe_parse", t_box_probe_parse}, {"box_probe_uu_fwd", t_box_probe_uu_fwd}, {"reg_check_summary", t_reg_check_summary},
     };
     for (const Case& c : cases)
     {

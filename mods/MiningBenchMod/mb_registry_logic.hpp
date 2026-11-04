@@ -14,7 +14,11 @@
 #pragma once
 #include "mb_logic.hpp"
 
+#include <cstdio>
+#include <cstdlib>
+#include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace
 {
@@ -90,6 +94,47 @@ namespace
 
     // WHAT: true when the registry work of this tick is over budget (elapsed_ms > budget_ms). Stages stop and resume next tick.
     inline bool reg_over_budget(double elapsed_ms, double budget_ms = REG_BUDGET_MS) { return elapsed_ms > budget_ms; }
+
+    // WHAT: reg_check defaults: rows when n is not given, and the cap.
+    constexpr size_t REG_CHECK_DEF_N = 30;
+    constexpr size_t REG_CHECK_MAX_N = 100;
+
+    // WHAT: "reg_check:<ship>" or "reg_check:<ship>:<n>" -> sid and n (default 30, capped at 100). false when the ship id is not positive or n is not a positive whole number.
+    inline bool reg_check_parse(const std::string& cmd, int& sid, size_t& n)
+    {
+        const std::string pre = "reg_check:";
+        if (cmd.rfind(pre, 0) != 0) return false;
+        std::vector<std::string> p;
+        for (size_t st = pre.size();;)
+        {
+            const size_t c = cmd.find(':', st);
+            p.push_back(cmd.substr(st, c == std::string::npos ? std::string::npos : c - st));
+            if (c == std::string::npos) break;
+            st = c + 1;
+        }
+        if (p.empty() || p.size() > 2) return false;
+        if (p[0].empty() || p[0].find_first_not_of("0123456789") != std::string::npos) return false;
+        sid = std::atoi(p[0].c_str());
+        if (sid <= 0) return false;
+        n = REG_CHECK_DEF_N;
+        if (p.size() == 2)
+        {
+            if (p[1].empty() || p[1].find_first_not_of("0123456789") != std::string::npos) return false;
+            n = static_cast<size_t>(std::strtoull(p[1].c_str(), nullptr, 10));
+            if (n == 0) return false;
+            n = std::min(n, REG_CHECK_MAX_N);
+        }
+        return true;
+    }
+
+    // WHAT: the summary line of a compare: "SUMMARY n=.. max_err_m=.. mean_err_m=.. missing=..". missing < 0 = not checked (printed n/a).
+    inline std::string reg_summary_line(size_t n, double max_e, double mean_e, long long missing)
+    {
+        char b[192];
+        if (missing < 0) std::snprintf(b, sizeof(b), "SUMMARY n=%zu max_err_m=%.3f mean_err_m=%.3f missing=n/a", n, max_e, mean_e);
+        else std::snprintf(b, sizeof(b), "SUMMARY n=%zu max_err_m=%.3f mean_err_m=%.3f missing=%lld", n, max_e, mean_e, missing);
+        return b;
+    }
 
     // WHAT: the rock table with its indexes. One instance for the game (mb_registry.hpp); the tests make their own.
     class RockReg

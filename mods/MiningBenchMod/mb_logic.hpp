@@ -1329,6 +1329,118 @@ namespace
         return true;
     }
 
+    // WHAT: box probe modes (probe_collision_box, probe_collision_boxwatch). local: box offsets in m, passed as uu (x100) with no frame change.
+    //       world: the same offsets added to the ship location (uu, K2_GetActorLocation), axis aligned. raw: the typed numbers passed as uu, no conversion.
+    constexpr int PROBE_BOX_LOCAL = 0;
+    constexpr int PROBE_BOX_WORLD = 1;
+    constexpr int PROBE_BOX_RAW = 2;
+    constexpr size_t PROBE_BOX_HIT_LINES = 40;     // hit lines written per box call
+    constexpr double PROBE_BOX_ALL_HALF_M = 50.0;  // boxwatch: box around the ship, half size per axis (m)
+    constexpr double PROBE_BOX_FWD_HALF_M = 15.0;  // boxwatch: forward box half size in y and z (m)
+    constexpr double PROBE_BOX_FWD_MIN_M = 25.0;   // boxwatch: forward box length floor (m)
+
+    // WHAT: splits s on ':' (empty parts kept): "a::b" -> {"a", "", "b"}.
+    inline std::vector<std::string> probe_split(const std::string& s)
+    {
+        std::vector<std::string> out;
+        for (size_t st = 0;;)
+        {
+            const size_t c = s.find(':', st);
+            out.push_back(s.substr(st, c == std::string::npos ? std::string::npos : c - st));
+            if (c == std::string::npos) break;
+            st = c + 1;
+        }
+        return out;
+    }
+
+    // WHAT: a whole string as a finite number (nothing left over). false when empty or not a number.
+    inline bool probe_num(const std::string& t, double& v)
+    {
+        char* e = nullptr;
+        v = std::strtod(t.c_str(), &e);
+        return !t.empty() && e != t.c_str() && *e == '\0' && std::isfinite(v);
+    }
+
+    // WHAT: "local", "world", "raw" -> mode. Empty = local. false for any other word.
+    inline bool probe_parse_box_mode(const std::string& t, int& mode)
+    {
+        if (t.empty() || t == "local") { mode = PROBE_BOX_LOCAL; return true; }
+        if (t == "world") { mode = PROBE_BOX_WORLD; return true; }
+        if (t == "raw") { mode = PROBE_BOX_RAW; return true; }
+        return false;
+    }
+
+    // WHAT: mode as text for the file and the log.
+    inline const char* probe_box_mode_name(int mode) { return mode == PROBE_BOX_WORLD ? "world" : mode == PROBE_BOX_RAW ? "raw" : "local"; }
+
+    // WHAT: "probe_collision_box:<ship>:<minx>:<miny>:<minz>:<maxx>:<maxy>:<maxz>[:local|world|raw]" -> sid, lo[3], hi[3] (as typed) and mode.
+    //       false when the ship id is not positive, a number is missing or not finite, min > max on an axis, or the mode word is unknown.
+    inline bool probe_parse_box(const std::string& cmd, int& sid, double lo[3], double hi[3], int& mode)
+    {
+        const std::string pre = "probe_collision_box:";
+        if (cmd.rfind(pre, 0) != 0) return false;
+        const std::vector<std::string> p = probe_split(cmd.substr(pre.size()));
+        if (p.size() != 7 && p.size() != 8) return false;
+        if (p[0].empty() || p[0].find_first_not_of("0123456789") != std::string::npos) return false;
+        sid = std::atoi(p[0].c_str());
+        if (sid <= 0) return false;
+        for (int i = 0; i < 3; ++i)
+        {
+            if (!probe_num(p[1 + i], lo[i]) || !probe_num(p[4 + i], hi[i])) return false;
+            if (lo[i] > hi[i]) return false;
+        }
+        return probe_parse_box_mode(p.size() == 8 ? p[7] : std::string(), mode);
+    }
+
+    // WHAT: "probe_collision_boxwatch:<ship>:<seconds>[:local|world]" -> sid, seconds (clamped to PROBE_WATCH_MAX_S) and mode. raw is refused:
+    //       the watch boxes are relative to the ship, there is no typed box to give as is.
+    inline bool probe_parse_boxwatch(const std::string& cmd, int& sid, double& secs, int& mode)
+    {
+        const std::string pre = "probe_collision_boxwatch:";
+        if (cmd.rfind(pre, 0) != 0) return false;
+        const std::vector<std::string> p = probe_split(cmd.substr(pre.size()));
+        if (p.size() != 2 && p.size() != 3) return false;
+        if (p[0].empty() || p[0].find_first_not_of("0123456789") != std::string::npos) return false;
+        sid = std::atoi(p[0].c_str());
+        if (sid <= 0 || !probe_num(p[1], secs) || secs <= 0.0) return false;
+        secs = std::min(secs, PROBE_WATCH_MAX_S);
+        if (!probe_parse_box_mode(p.size() == 3 ? p[2] : std::string(), mode)) return false;
+        return mode != PROBE_BOX_RAW;
+    }
+
+    // WHAT: box corners in FVector units from typed metres (m_lo, m_hi) and the ship location (ship_uu, uu). Mode rules in the header above.
+    inline void probe_box_uu(int mode, const double m_lo[3], const double m_hi[3], const double ship_uu[3], double lo_uu[3], double hi_uu[3])
+    {
+        for (int i = 0; i < 3; ++i)
+        {
+            const double base = mode == PROBE_BOX_WORLD ? ship_uu[i] : 0.0;
+            const double k = mode == PROBE_BOX_RAW ? 1.0 : PROBE_UU_PER_M;
+            lo_uu[i] = base + k * m_lo[i];
+            hi_uu[i] = base + k * m_hi[i];
+        }
+    }
+
+    // WHAT: forward box length of the boxwatch (m): 50 * Throttle / 10, at least 25 m.
+    inline double probe_box_fwd_m(int throttle) { return std::max(PROBE_BOX_FWD_MIN_M, PROBE_FWD_FIXED_M * throttle / 10.0); }
+
+    // WHAT: the two boxwatch boxes in metres relative to the ship: all = +-50 m on x, y, z; fwd = x 0..d, y and z +-15 m (d = probe_box_fwd_m).
+    inline void probe_watch_boxes(int throttle, double all_lo[3], double all_hi[3], double fwd_lo[3], double fwd_hi[3])
+    {
+        const double d = probe_box_fwd_m(throttle);
+        for (int i = 0; i < 3; ++i)
+        {
+            all_lo[i] = -PROBE_BOX_ALL_HALF_M;
+            all_hi[i] = PROBE_BOX_ALL_HALF_M;
+        }
+        fwd_lo[0] = 0.0;
+        fwd_hi[0] = d;
+        for (int i = 1; i < 3; ++i)
+        {
+            fwd_lo[i] = -PROBE_BOX_FWD_HALF_M;
+            fwd_hi[i] = PROBE_BOX_FWD_HALF_M;
+        }
+    }
+
     // WHAT: metres to Q16.16 raw (the PNum / PVector Value unit: 65536 raw per m), rounded to the nearest raw unit.
     inline int64_t probe_m_to_q16(double m) { return static_cast<int64_t>(std::llround(m * PROBE_Q16_PER_M)); }
 
