@@ -35,6 +35,7 @@ namespace
     constexpr size_t REG_RAD_TICK = 10;         // GetRadius reads per tick
     constexpr size_t REG_ALIVE_TICK = 64;       // round-robin alive checks per tick
     constexpr size_t REG_K2_TICK = 50;          // K2_GetActorLocation / ore reads per tick
+    constexpr size_t REG_VALID_TICK = 10;       // save validations (2 km of a ship) per tick
     constexpr double REG_NEAR_M = 2000.0;       // a ship this close validates the save object of a rock (game side)
     constexpr double REG_RAD_NEAR_M = 5000.0;   // radius reads only for rocks this close to a ship or to a targeted rock
 
@@ -238,14 +239,14 @@ namespace
         size_t nearest(int sys, const void* item, const double p[3], const void* skip_act, const std::set<int>* skip_ids, double max_m, double& dist_m) const
         {
             const double cap = max_m > 0.0 ? max_m : REG_SEARCH_MAX_M;
-            std::vector<size_t> near;
+            std::vector<size_t> cand;
             for (double r = std::min(REG_SEARCH_START_M, cap);; r = std::min(r * 4.0, cap))
             {
-                near.clear();
-                within(sys, p, r, near);
+                cand.clear();
+                within(sys, p, r, cand);
                 size_t best = npos;
                 double bd = 1e300;
-                for (size_t i : near)
+                for (size_t i : cand)
                 {
                     const RegRock& rk = rocks[i];
                     if (!passes(rk, item, skip_act, skip_ids)) continue;
@@ -263,9 +264,9 @@ namespace
                          std::vector<std::pair<double, size_t>>& out) const
         {
             out.clear();
-            std::vector<size_t> near;
-            within(sys, p, max_m, near);
-            for (size_t i : near)
+            std::vector<size_t> cand;
+            within(sys, p, max_m, cand);
+            for (size_t i : cand)
             {
                 const RegRock& rk = rocks[i];
                 if (!passes(rk, item, skip_act, skip_ids)) continue;
@@ -283,14 +284,14 @@ namespace
         //       npos when none. The search is final once the best surface distance + REG_RAD_MAX_M lies inside the searched radius.
         size_t nearest_surface(int sys, const double p[3], const void* skip_act, double& surf_m) const
         {
-            std::vector<size_t> near;
+            std::vector<size_t> cand;
             for (double r = REG_SEARCH_START_M;; r = std::min(r * 4.0, REG_SEARCH_MAX_M))
             {
-                near.clear();
-                within(sys, p, r, near);
+                cand.clear();
+                within(sys, p, r, cand);
                 size_t best = npos;
                 double bs = 1e300;
-                for (size_t i : near)
+                for (size_t i : cand)
                 {
                     const RegRock& rk = rocks[i];
                     if (skip_act && rk.act == skip_act) continue;
@@ -350,12 +351,12 @@ namespace
         // WHY: the radius is read only for rocks near a ship or a targeted rock.
         void radius_wanted(int sys, const std::vector<std::array<double, 3>>& refs, double r_m, size_t max_n, std::vector<size_t>& out) const
         {
-            std::vector<size_t> near;
+            std::vector<size_t> cand;
             for (const auto& p : refs)
             {
-                near.clear();
-                within(sys, p.data(), r_m, near);
-                for (size_t i : near)
+                cand.clear();
+                within(sys, p.data(), r_m, cand);
+                for (size_t i : cand)
                 {
                     if (out.size() >= max_n) return;
                     if (rocks[i].rad_known || std::find(out.begin(), out.end(), i) != out.end()) continue;

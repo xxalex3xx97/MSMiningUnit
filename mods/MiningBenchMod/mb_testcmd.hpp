@@ -189,6 +189,31 @@ namespace
         try { write_atomic(get_dll_dir() / "MiningCaps.txt", "stop_all_ships\n"); } catch (...) {}
     }
 
+    // WHAT: registry inputs of this tick: mining ships (position from MineSt::anchor, system from sys_id every 2 s per ship) and their rocks.
+    // WHY: the registry (mb_registry.hpp) is fed here because g_mine is declared after it.
+    void registry_frame(double dt)
+    {
+        static std::map<int, std::pair<ULONGLONG, int>> sys_cache;   // sid -> (GetTickCount64 of the read, sys)
+        std::vector<RegShip> ships;
+        std::vector<int> targets;
+        const ULONGLONG now = GetTickCount64();
+        for (const auto& kv : g_mine)
+        {
+            if (kv.second.st == MS_OFF) continue;
+            auto& c = sys_cache[kv.first];
+            if (c.first == 0 || now - c.first >= REG_SYS_MS) { UObject* sh = find_by_id(STR("DMSPlayerShipObject"), kv.first); c = {now, sh ? sys_id(sh) : 0}; }
+            if (c.second <= 0) continue;
+            RegShip r;
+            r.sid = kv.first;
+            r.sys = c.second;
+            for (int k = 0; k < 3; ++k) r.p[k] = kv.second.anchor[k] / MV_UU_PER_M;
+            ships.push_back(r);
+            if (kv.second.rock > 0) targets.push_back(kv.second.rock);
+        }
+        for (const auto& kv : g_mvs) if (kv.second.rock_id > 0) targets.push_back(kv.second.rock_id);
+        registry_tick(dt, ships, targets);
+    }
+
     // WHAT: engine tick driver for the Test tab. Steps: 1 bump the actor_ok() frame (set rebuilt once per tick).
     //       2 move job, every tick. 3 accumulate the poll timer. 4 every CMD_POLL_S (0.25 s): thr readback,
     //       speed monitor, command poll, dock/undock jobs.
@@ -237,6 +262,8 @@ namespace
             fast_watch_tick();
             set_last_step(STR("mining_tick"));   // per-ship labels are set inside (mine ship=N state)
             mining_tick(step);
+            set_last_step(STR("registry_frame"));   // rock registry (mb_registry.hpp): one updater per 0.25 s
+            registry_frame(step);
             set_last_step(STR("station_destroy_tick"));
             station_destroy_tick(step);
         }

@@ -1387,6 +1387,19 @@ static void t_reg_bench()
     CHECK(total / TICKS < 2.0);
 }
 
+static void t_reg_abs_m()
+{
+    // chunk (1, 0, -1) + loc raw (65536, 0, 131072) at 65536 raw per m = (2048 + 1, 0, -2048 + 2) m
+    const int64_t ch[3] = {1, 0, -1};
+    const double loc[3] = {65536.0, 0.0, 131072.0};
+    double c[3];
+    reg_abs_m(ch, loc, 65536.0, c);
+    NEAR(c[0], 2049.0, 1e-9);
+    NEAR(c[1], 0.0, 1e-9);
+    NEAR(c[2], -2046.0, 1e-9);
+    CHECK(reg_cell_idx(-1.0) == -1 && reg_cell_idx(2047.9) == 0 && reg_cell_idx(2048.0) == 1);
+}
+
 // ---------- runner ----------
 
 struct Case { const char* name; void (*fn)(); };
@@ -1433,7 +1446,7 @@ int main()
         {"hazard_flee", t_hazard_flee}, {"targett_entry", t_targett_entry},
         {"path_block", t_path_block}, {"path_perf", t_path_perf}, {"path_waypoint", t_path_waypoint}, {"shield_drop", t_shield_drop}, {"fast_sample", t_fast_sample},
         {"reg_table", t_reg_table}, {"reg_events", t_reg_events}, {"reg_within_nearest", t_reg_within_nearest}, {"reg_surface_block", t_reg_surface_block_radius},
-        {"reg_targeted_ore_budget", t_reg_targeted_ore_budget}, {"reg_bench", t_reg_bench},
+        {"reg_targeted_ore_budget", t_reg_targeted_ore_budget}, {"reg_bench", t_reg_bench}, {"reg_abs_m", t_reg_abs_m},
     };
     for (const Case& c : cases)
     {

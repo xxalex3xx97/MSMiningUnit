@@ -274,6 +274,9 @@ namespace
         g_rock_listener = nullptr;   // not deleted: the engine may be iterating its listener list right now; a tiny one-off leak at exit is safe
     }
 
+    // WHAT: registry hook (mb_registry.hpp, included later): the drained dead actors. Clears the registry actor handles.
+    void reg_on_dead(const std::unordered_set<const void*>& dead);
+
     // WHAT: removes every destroyed actor (queued by RockDeleteListener) from the shared rock containers. First call registers the listener.
     void rock_drain_dead()
     {
@@ -291,6 +294,7 @@ namespace
             g_rock_item.erase(a); g_rock_loc.erase(a);
             if (auto it = g_rock_id.find(a); it != g_rock_id.end()) { if (it->second > 0) g_rock_by_id.erase(it->second); g_rock_id.erase(it); }
         }
+        reg_on_dead(dead);
     }
 
     // WHAT: adds rock actor a to the refresh being built (list, items, ids, by_id). Ore and id are reused from the previous refresh
