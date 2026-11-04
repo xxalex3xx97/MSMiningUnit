@@ -546,7 +546,7 @@ namespace
             if (it == g_mvs.end() || it->second.kind.empty()) continue;
             MoveJob& mv = it->second;
             UObject* ship = find_by_id(STR("DMSPlayerShipObject"), sid);
-            if (!alive(ship)) { mv_finish(sid, STR("error: ship not found during move")); continue; }
+            if (!alive_seh(ship)) { mv_finish(sid, STR("error: ship not found during move")); continue; }
             double q[4] = {1, 0, 0, 0};
             if (!quat4(ship, q)) { mv_finish(sid, STR("error: Quat unreadable")); continue; }
             mv.t += dt;

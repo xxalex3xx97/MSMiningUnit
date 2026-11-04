@@ -293,21 +293,22 @@ namespace
 
     // ---- guard ----
 
-    // WHAT: runs fn(dt) under SEH. false when fn returns false or an SEH exception hits (*code = the exception code, else 0 is left).
+    // WHAT: runs fn(dt) under SEH. false when fn returns false (*code = 0) or an SEH exception hits (*code = the exception code, g_seh filled).
     // WHY: POD arguments only: MSVC forbids __try in a function with C++ objects. C++ exceptions inside fn are caught by fn itself.
     bool compat_seh(bool (*fn)(double), double dt, unsigned long* code)
     {
         bool r = false;
         __try { r = fn(dt); }
-        __except (EXCEPTION_EXECUTE_HANDLER) { *code = GetExceptionCode(); return false; }
+        __except (seh_filter(GetExceptionInformation())) { *code = g_seh.code; return false; }
+        if (!r) *code = 0;
         return r;
     }
 
-    // WHAT: mine_halt(sid) under SEH. false when it faults.
+    // WHAT: mine_halt(sid) under SEH. false when it faults (g_seh holds it).
     bool compat_seh_halt(int sid, unsigned long* code)
     {
         __try { mine_halt(sid); return true; }
-        __except (EXCEPTION_EXECUTE_HANDLER) { *code = GetExceptionCode(); return false; }
+        __except (seh_filter(GetExceptionInformation())) { *code = g_seh.code; return false; }
     }
 
     // WHAT: SAFE MODE: ships stopped (mine_halt each bench ship), every chunk hold released, the file gets SAFE MODE on top. Until restart.
@@ -324,12 +325,15 @@ namespace
         try { write_atomic(get_dll_dir() / "MiningCompat.txt", std::string("SAFE MODE\n") + g_compat_text); } catch (...) {}
     }
 
-    // WHAT: one tick step under SEH and the fault counter. Ok resets the streak. A fault is logged with its code; the limit trips safe mode.
+    // WHAT: one tick step under SEH and the fault counter. Ok resets the streak. A fault is logged with its code, address, module + offset,
+    //       dt and the last step label (g_last_step: which cmd_tick part ran); the limit trips safe mode.
     void compat_run(const char* name, bool (*fn)(double), double dt, SafeMode& sm)
     {
         unsigned long code = 0;
         if (compat_seh(fn, dt, &code)) { sm.ok(); return; }
-        log_line(STR("COMPAT fault in ") + widen(name) + STR(" code=") + nat_hex(code) + (code == 0 ? STR(" (C++ exception, logged above)") : STR("")));
+        const std::wstring where = STR(" dt=") + std::to_wstring(dt) + STR(" step=") + g_last_step;
+        if (code == 0) log_line(STR("COMPAT fault in ") + widen(name) + STR(" (C++ exception, logged above)") + where);
+        else log_line(STR("COMPAT fault in ") + widen(name) + STR(" ") + seh_describe(g_seh) + where);
         if (sm.fault()) compat_safe_enter(name);
     }
 

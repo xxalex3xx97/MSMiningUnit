@@ -118,6 +118,7 @@ namespace
         double dwait_total = 0.0;              // seconds waited for a dock in this trip (dwait); reset per trip, capped by MINE_DWAIT_MAX_S
     };
     std::map<int, MineSt> g_mine;
+    std::map<int, int> g_mine_fault_n;   // per ship: SEH faults since its Start (mine_fault); reset by Start
 
     // WHAT: Log tab. Per ship, the last MINE_LOG_KEEP lines (local time hh:mm:ss + user-readable text), oldest first. Written to MiningLog.txt.
     constexpr size_t MINE_LOG_KEEP = 20;
@@ -304,23 +305,33 @@ namespace
         try { write_atomic(get_dll_dir() / "MiningOre.txt", std::to_string(n) + "|" + std::to_string(static_cast<long long>(std::time(nullptr))) + "\n"); } catch (...) {}
     }
 
-    // WHAT: the shared scan. Refreshed when forced or older than ORE_SCAN_MS (ore_scan_due). Returns the cache (valid until the next call).
-    OreScan& ore_scan(bool force)
+    // WHAT: the ore pass under SEH (see ore_scan): FindAllOf, then one K2 position per live actor into list.
+    // WHY a plain function with a context: seh_run needs a function without __try-blocking objects; the vector work is in here.
+    struct OrePassCtx { std::vector<UObject*>* v; std::vector<OreEnt>* list; };
+    void ore_pass_fn(void* p)
     {
-        const ULONGLONG now = GetTickCount64();
-        if (!ore_scan_due(force, g_ore_scan.ms, now, ORE_SCAN_MS)) return g_ore_scan;
-        std::vector<UObject*> v;
-        UObjectGlobals::FindAllOf(STR("BP_FloatingOre_C"), v);
-        g_ore_scan.list.clear();
-        for (UObject* a : v)
+        auto* c = static_cast<OrePassCtx*>(p);
+        UObjectGlobals::FindAllOf(STR("BP_FloatingOre_C"), *c->v);
+        for (UObject* a : *c->v)
         {
             if (!alive_seh(a)) continue;   // ore actors are not in the rock lists: actor_ok would always fail
             OreEnt e;
             e.a = a;
             std::wstring why;
             if (!actor_vec_call(a, STR("K2_GetActorLocation"), e.p, why)) continue;
-            g_ore_scan.list.push_back(e);
+            c->list->push_back(e);
         }
+    }
+
+    // WHAT: the shared scan. Refreshed when forced or older than ORE_SCAN_MS (ore_scan_due). Returns the cache (valid until the next call).
+    OreScan& ore_scan(bool force)
+    {
+        const ULONGLONG now = GetTickCount64();
+        if (!ore_scan_due(force, g_ore_scan.ms, now, ORE_SCAN_MS)) return g_ore_scan;
+        std::vector<UObject*> v;
+        g_ore_scan.list.clear();
+        OrePassCtx oc{&v, &g_ore_scan.list};
+        if (!seh_run(ore_pass_fn, &oc)) log_line(STR("MINE ore scan faulted: ") + seh_describe(g_seh));
         g_ore_scan.found = (int)v.size();
         g_ore_scan.ms = now;
         ore_publish(g_ore_scan.list.size());
@@ -2102,6 +2113,7 @@ namespace
             m.noy_run = 0; m.noy_visits.clear(); m.noy_skip.clear(); m.lost_n = 0; m.idle_polls = 0; m.dwait_total = 0.0;   // and no no-yield skips, rock lost or idle poll counts
             if (m.st == MS_HALT) m.st = MS_OFF;
             m.chk_t = MINE_ROCK_CHECK_S; m.fails = 0; m.unl_chk = 0; m.leave = false;
+            g_mine_fault_n.erase(sid);   // a new Start: the SEH fault count of this ship starts again
             mset(sid, m, STR("starting"), STR("Loop started"));
         }
         else mlog(sid, STR("Loop stop requested"));
@@ -2221,12 +2233,36 @@ namespace
         }
     }
 
+    struct MineStepCtx { int sid; MineSt* m; double dt; };
+    void mine_step_fn(void* p) { auto* c = static_cast<MineStepCtx*>(p); mine_step(c->sid, *c->m, c->dt); }
+    void mine_halt_fn(void* p) { mine_halt(*static_cast<int*>(p)); }
+
+    // WHAT: a ship's mine_step hit an SEH fault. Only this ship stops: log (ship, state, fault, last step), mine_halt(sid), red ERROR
+    //       "internal fault <state>". Not counted in the compat SafeMode streak (that counts whole-tick faults), so the other ships run on.
+    //       3 faults in a row after Start: logged as left halted. Start clears the count; nothing restarts the ship by itself.
+    // WHY: before this, a fault in one ship's step counted toward SafeMode, which stopped every ship after 5 in a row.
+    void mine_fault(int sid, MineSt& m, const SehInfo& f, const std::wstring& step)
+    {
+        const std::wstring state = mine_state_name(m.st);
+        const int n = ++g_mine_fault_n[sid];
+        log_line(STR("MINE ship=") + std::to_wstring(sid) + STR(" [") + state + STR("] FAULT n=") + std::to_wstring(n) + STR(" ") + seh_describe(f) + STR(" step=") + step);
+        int halt_sid = sid;
+        if (!seh_run(mine_halt_fn, &halt_sid)) log_line(STR("MINE ship=") + std::to_wstring(sid) + STR(" halt faulted too: ") + seh_describe(g_seh));
+        m.st = MS_HALT; m.run = false; m.err = true; m.flee = false; m.sweep = false; m.warp_to = 0;
+        if (n >= 3) log_line(STR("MINE ship=") + std::to_wstring(sid) + STR(" faulted ") + std::to_wstring(n) + STR("x in a row, left halted"));
+        const std::wstring text = STR("ERROR: internal fault ") + state;
+        mset(sid, m, text, text);
+    }
+
     void mining_tick(double dt)
     {
         for (int sid : g_bench_ids)
         {
             MineSt& m = g_mine[sid];
-            try { mine_step(sid, m, dt); }
+            const std::wstring step = STR("mine ship=") + std::to_wstring(sid) + STR(" ") + mine_state_name(m.st);
+            set_last_step(step);
+            MineStepCtx sc{sid, &m, dt};
+            try { if (!seh_run(mine_step_fn, &sc)) mine_fault(sid, m, g_seh, step); }
             catch (...) { m.st = MS_HALT; m.result = STR("exception in mining step"); log_line(STR("MINE ship=") + std::to_wstring(sid) + STR(" exception")); }
         }
         g_mine_status_acc += dt;
@@ -2234,8 +2270,11 @@ namespace
         {
             const double el = g_mine_status_acc;
             g_mine_status_acc = 0.0;
+            set_last_step(STR("mine_sample"));
             mine_sample(el);
+            set_last_step(STR("net_tick"));
             net_tick();
+            set_last_step(STR("net_holder_orders"));
             net_holder_orders();
             mine_status_write();
             mine_status_x_write();

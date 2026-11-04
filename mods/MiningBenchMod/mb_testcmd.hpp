@@ -186,10 +186,12 @@ namespace
     {
         LARGE_INTEGER t0;
         QueryPerformanceCounter(&t0);
-        // 1.
+        // 1. every line sets g_last_step first: a fault line (compat_run) names the part that ran
+        set_last_step(STR("rock_drain_dead"));
         rock_drain_dead();   // deleted actors queued by the engine listener are removed every tick, also while no ship asks for rocks
         ++g_actor_frame;   // invalidates the actor_ok() set: it is rebuilt at most once per engine tick
         // 2.
+        set_last_step(STR("move_tick"));
         move_tick(dt);   // move jobs run every engine tick
         // 3.
         g_cmd_poll_acc += dt;
@@ -198,16 +200,27 @@ namespace
         {
             const double step = g_cmd_poll_acc;
             g_cmd_poll_acc = 0.0;
+            set_last_step(STR("thr_check"));
             thr_check();
+            set_last_step(STR("spd_update"));
             spd_update(step);
+            set_last_step(STR("pin_hook_ensure"));
             pin_hook_ensure();   // retried until the AddInputCommand hook is armed (MapPin id, mb_pin.hpp)
+            set_last_step(STR("cmd_poll"));
             cmd_poll();
+            set_last_step(STR("warp_check"));
             warp_check(step);
+            set_last_step(STR("warp_real_tick"));
             warp_real_tick(step);
+            set_last_step(STR("pin_file_tick"));
             pin_file_tick();
+            set_last_step(STR("jobs_tick"));
             jobs_tick(step);
+            set_last_step(STR("warp_wait_tick"));
             warp_wait_tick();
+            set_last_step(STR("mining_tick"));   // per-ship labels are set inside (mine ship=N state)
             mining_tick(step);
+            set_last_step(STR("station_destroy_tick"));
             station_destroy_tick(step);
         }
         timing_log(STR("cmd_tick"), perf_ms_since(t0), g_rock_actors.size());

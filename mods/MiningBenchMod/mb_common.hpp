@@ -137,12 +137,83 @@ namespace
         {
             std::wstring l = s;
             for (auto& c : l) c = static_cast<wchar_t>(std::towlower(c));
-            static const wchar_t* keep[] = { L"error", L"fail", L"warn", L"exception", L"halt", L"stopped", L"loaded", L"mining loop", L"going to", L"dock retry", L"mine weapons", L"warpsector", L"sector ", L"fuelchk", L"fuelwarp", L"jumpcost", L"warpcur", L"warpreal", L"chunkhold", L"devstation", L"sweep" };
+            static const wchar_t* keep[] = { L"error", L"fail", L"warn", L"exception", L"halt", L"stopped", L"loaded", L"mining loop", L"going to", L"dock retry", L"mine weapons", L"warpsector", L"sector ", L"fuelchk", L"fuelwarp", L"jumpcost", L"warpcur", L"warpreal", L"chunkhold", L"devstation", L"sweep", L"fault", L"compat" };
             bool hit = false;
             for (auto k : keep) if (l.find(k) != std::wstring::npos) { hit = true; break; }
             if (!hit) return;
         }
         Output::send<LogLevel::Normal>(STR("[MiningBenchMod] {}\n"), s);
+    }
+
+    // WHAT: last SEH exception seen by seh_filter: code, ExceptionAddress, module of that address (base, offset, file name), access violation kind
+    //       (0 read, 1 write, 8 DEP, -1 not an access violation) and target address. Game thread only.
+    // WHY: a fault line with the code alone does not say where it hit. The filter runs before the stack unwinds, so the address is still valid there.
+    struct SehInfo
+    {
+        unsigned long code = 0;
+        uint64_t addr = 0;
+        uint64_t mod_base = 0;
+        uint64_t mod_off = 0;
+        wchar_t mod[260] = {0};
+        int av = -1;
+        uint64_t av_target = 0;
+    };
+    SehInfo g_seh;
+    // WHAT: label of the step running now (cmd_tick part, or mine ship + state). Set before each step; copied into every fault line.
+    wchar_t g_last_step[160] = {0};
+
+    // WHAT: sets the step label (g_last_step) that the next fault line shows.
+    void set_last_step(const std::wstring& s) { wcsncpy_s(g_last_step, s.c_str(), _TRUNCATE); }
+
+    // WHAT: __except filter. Fills g_seh from the exception record. C++ exceptions (0xE06D7363) are not taken: they go on to the C++ catches.
+    int seh_filter(EXCEPTION_POINTERS* ep)
+    {
+        EXCEPTION_RECORD* r = ep->ExceptionRecord;
+        if (r->ExceptionCode == 0xE06D7363) return EXCEPTION_CONTINUE_SEARCH;
+        SehInfo s;
+        s.code = r->ExceptionCode;
+        s.addr = reinterpret_cast<uint64_t>(r->ExceptionAddress);
+        if (r->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && r->NumberParameters >= 2)
+        {
+            s.av = static_cast<int>(r->ExceptionInformation[0]);
+            s.av_target = static_cast<uint64_t>(r->ExceptionInformation[1]);
+        }
+        HMODULE hm = nullptr;
+        if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, static_cast<LPCWSTR>(r->ExceptionAddress), &hm) && hm)
+        {
+            s.mod_base = reinterpret_cast<uint64_t>(hm);
+            s.mod_off = s.addr - s.mod_base;
+            GetModuleFileNameW(hm, s.mod, 260);
+        }
+        g_seh = s;
+        return EXCEPTION_EXECUTE_HANDLER;
+    }
+
+    // WHAT: one-line text of a fault: code, address, module + offset, access violation kind and target.
+    std::wstring seh_describe(const SehInfo& s)
+    {
+        wchar_t b[640];
+        const wchar_t* av = s.av == 0 ? L"read" : s.av == 1 ? L"write" : s.av == 8 ? L"dep" : L"-";
+        swprintf(b, 640, L"code=0x%08lx addr=0x%llx module=%ls base=0x%llx off=0x%llx av=%ls target=0x%llx",
+                 s.code, static_cast<unsigned long long>(s.addr), s.mod[0] ? s.mod : L"?", static_cast<unsigned long long>(s.mod_base),
+                 static_cast<unsigned long long>(s.mod_off), av, static_cast<unsigned long long>(s.av_target));
+        return b;
+    }
+
+    // WHAT: fn(ctx) under SEH. false = an SEH fault (g_seh holds it). C++ exceptions pass through to the caller.
+    // WHY: MSVC forbids __try in a function with C++ objects, so this function has none; the work (and its objects) sits in fn.
+    bool seh_run(void (*fn)(void*), void* ctx)
+    {
+        __try { fn(ctx); return true; }
+        __except (seh_filter(GetExceptionInformation())) { return false; }
+    }
+
+    // WHAT: UObjectGlobals::FindAllOf under SEH. false = fault (g_seh holds it); out may be partly filled.
+    struct FindAllCtx { const wchar_t* cls; std::vector<UObject*>* out; };
+    bool find_all_seh(const wchar_t* cls, std::vector<UObject*>& out)
+    {
+        FindAllCtx c{cls, &out};
+        return seh_run([](void* p) { auto* x = static_cast<FindAllCtx*>(p); UObjectGlobals::FindAllOf(x->cls, *x->out); }, &c);
     }
 
 
