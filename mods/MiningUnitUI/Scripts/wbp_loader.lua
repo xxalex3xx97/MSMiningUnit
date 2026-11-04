@@ -1316,6 +1316,8 @@ local function refresh()
     S.docksAt = os.clock(); S.docks = loadDocks(); shipFill(); udRender()
   end
   if not S.sid then return end
+  if M.dropGone then M.dropGone() end
+  if not S.sid then return end
   S.tick = S.tick + 1
   modalTick()
   local st = readStatus(S.sid)
@@ -1628,6 +1630,17 @@ local function applyAll(set, name)
   M.setText("Txt_SelRemote", name)
   paintAllUi()
   refresh()
+end
+-- destroyed bench ship: C++ writes it with has-bench 0 (ships.txt), so benchShips() drops it. Selected ship gone -> first remaining ship, or close when none is left.
+-- An empty list is not a signal (ships.txt is empty for a few seconds after a save load), so nothing happens then.
+function M.dropGone()
+  if S.all or not S.sid or os.clock() - (S.goneT or 0) < 2 then return end
+  S.goneT = os.clock()
+  local list, here = benchShips(), false
+  for _, o in ipairs(list) do if o.id == S.sid then here = true end end
+  if here or #list == 0 then return end
+  L("ship " .. tostring(S.sid) .. " left the bench list (destroyed?)")
+  if list[1] then onShipPick(list[1].id) else M.close() end
 end
 -- Remote X button: all bench ships
 local function setAll() applyAll(nil, "All ships") end

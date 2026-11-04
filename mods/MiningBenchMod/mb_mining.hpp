@@ -2050,8 +2050,39 @@ namespace
         try { write_atomic(get_dll_dir() / "MiningLog.txt", s); } catch (...) {}
     }
 
-    void mine_set_bench(const std::vector<std::pair<UObject*, int>>& bench)
+    // WHAT: a bench ship was destroyed (confirmed by the scan, mb_ships.hpp): every per-ship state of the mod is dropped, one log line.
+    // WHY: a destroyed ship must not stay in the bench, the status/log files, the selector, or hold a dock reservation or queue place other ships wait for.
+    // NOTE: the ship's UObject is not read (it may be a dead ghost): only maps are erased, net_leave_slot frees the dock slot (net_release_ship).
+    //       No-op for a ship the mod does not know (repeat scans of a dead ship cost nothing). INI sections (g_ship_kv) are not touched.
+    void mine_forget_ship(int sid)
     {
+        if (!g_bench_names.count(sid) && !g_mine.count(sid) && !g_mine_log.count(sid)) return;
+        const std::wstring name = g_bench_names.count(sid) ? g_bench_names[sid] : std::wstring(STR("?"));
+        warp_cancel(sid);
+        net_leave_slot(sid);                    // queue place + dock reservation (waiters proceed); also slot_clear
+        chunk_hold_release(sid);                // the cube and its target
+        mv_cancel(sid);                         // move job (aim offset stopped if the ship answers)
+        for (size_t i = 0; i < g_jobs.size();)  // dock job (no result: the ship is gone)
+        {
+            if (g_jobs[i].sid == sid) g_jobs.erase(g_jobs.begin() + static_cast<std::ptrdiff_t>(i));
+            else ++i;
+        }
+        g_mine.erase(sid); g_mine_fault_n.erase(sid); g_mine_log.erase(sid);
+        g_sel_rocks.erase(sid); g_item_idx.erase(sid);
+        g_flee_pick.erase(sid); g_dock_pick.erase(sid); g_unl_ores.erase(sid);
+        g_job_res.erase(sid); g_mv_res.erase(sid); g_skip.erase(sid);
+        g_ob.erase(sid); g_pf.erase(sid); g_spds.erase(sid); g_mvs.erase(sid);
+        g_warp_wait.erase(sid); g_wr_wait.erase(sid);
+        g_net_ship_names.erase(sid);
+        save_rock_picks().erase(sid);
+        for (auto it = g_pick_cache.begin(); it != g_pick_cache.end();) it = it->first.first == sid ? g_pick_cache.erase(it) : std::next(it);
+        g_bench_names.erase(sid);
+        log_line(STR("ship ") + std::to_wstring(sid) + STR(" ") + name + STR(" destroyed, removed"));
+    }
+
+    void mine_set_bench(const std::vector<std::pair<UObject*, int>>& bench, const std::vector<int>& dead)
+    {
+        for (int sid : dead) mine_forget_ship(sid);   // before the rebuild: a destroyed ship is in neither list below
         g_bench_ids.clear();
         for (const auto& p : bench)
             if (p.second > 0)

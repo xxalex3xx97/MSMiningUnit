@@ -461,6 +461,18 @@ namespace
         return baseline >= 0 && h < baseline;
     }
 
+    // WHAT: destroyed-ship debounce. A scan with the destroyed signal adds 1 to the ship's count, a scan without it sets 0.
+    // WHY: one scan can read a transient value (hull 0, ship missing from the list), so a ship counts as destroyed only after SHIP_DEAD_SCANS scans in a row.
+    constexpr int SHIP_DEAD_SCANS = 2;
+    inline int dead_scan_next(int prev, bool signal)
+    {
+        return signal ? prev + 1 : 0;
+    }
+    inline bool dead_confirmed(int count)
+    {
+        return count >= SHIP_DEAD_SCANS;
+    }
+
     // WHAT: dock time limit rounds used (n): from MINE_DOCK_RETRIES on, the next limit hit undocks and goes idle.
     constexpr int MINE_DOCK_RETRIES = 10;   // dock time limit: undock/wait/redock rounds before the ship undocks and goes idle
     bool dock_limit_giveup(int n)
