@@ -24,7 +24,8 @@ UI_ART = ["T_UI_Header_L", "T_UI_Header_Bar", "T_UI_Header_R"]
 ITEM_IDS = ["CobaltOre", "Graphite", "IridiumOre", "NickelOre", "Silica", "TitaniumOre", "WaterIce",
             "EnrichedCobaltOre", "EnrichedNickelOre", "EnrichedTitaniumOre", "EnrichedFuel", "HydrogenFuel", "WarpFuel"]
 ICONS = ["T_IconUp", "T_IconDown", "T_IconTrash", "T_IconShip", "T_IconPin", "T_IconStIdle", "T_IconStMining",
-         "T_IconStDocking", "T_IconStUndocking", "T_IconStRefueling", "T_IconStUnloading"]
+         "T_IconStDocking", "T_IconStUndocking", "T_IconStRefueling", "T_IconStUnloading",
+         "T_IconZz", "T_IconCargo", "T_IconFuel", "T_IconClock", "T_IconPause"]
 SIZE = 32
 BAND = 8
 BLACK = (21, 21, 21)
