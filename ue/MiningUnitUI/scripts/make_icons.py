@@ -92,4 +92,28 @@ d.polygon([(18 * K, 32 * K), (46 * K, 32 * K), (32 * K, 58 * K)], fill=255)
 ell(d, 32, 24, 6, 0)
 d.ellipse([22 * K, 56 * K, 42 * K, 60 * K], fill=255)
 save(t, "T_IconPin")
+# zz: waiting (big Z + small z)
+t = canvas(); d = ImageDraw.Draw(t)
+for pts, w in ((((8, 10), (34, 10), (8, 38), (34, 38)), 6), (((38, 34), (56, 34), (38, 54), (56, 54)), 5)):
+    for a, b in zip(pts, pts[1:]):
+        line(d, a, b, w)
+save(t, "T_IconZz")
+# cargo: hollow crate with a handle slot
+t = canvas(); d = ImageDraw.Draw(t)
+rect(d, 4, 14, 60, 56, 255, 4); rect(d, 10, 26, 54, 50, 0, 2); rect(d, 24, 32, 40, 38, 255, 2)
+save(t, "T_IconCargo")
+# fuel pump: body + window + base + hose
+t = canvas(); d = ImageDraw.Draw(t)
+rect(d, 8, 6, 38, 54, 255, 3); rect(d, 14, 12, 32, 28, 0, 1); rect(d, 3, 52, 43, 59, 255, 2)
+line(d, (38, 22), (50, 22), 4); line(d, (50, 22), (50, 44), 4); ell(d, 50, 46, 5, 255)
+save(t, "T_IconFuel")
+# clock: long wait
+t = canvas(); d = ImageDraw.Draw(t)
+ell(d, 32, 32, 27, 255); ell(d, 32, 32, 20, 0)
+line(d, (32, 32), (32, 16), 4); line(d, (32, 32), (44, 38), 4)
+save(t, "T_IconClock")
+# pause: holding near the dock
+t = canvas(); d = ImageDraw.Draw(t)
+rect(d, 12, 8, 26, 56, 255, 2); rect(d, 38, 8, 52, 56, 255, 2)
+save(t, "T_IconPause")
 print("wrote", OUT)

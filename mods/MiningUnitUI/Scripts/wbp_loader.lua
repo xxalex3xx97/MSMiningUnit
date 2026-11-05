@@ -113,8 +113,8 @@ local function rootW()
 end
 -- Only these python-built names (add_docks_tab.py, add_btn_collect.py) ever use the tree lookup. Every other missing name returns nil at once.
 local WALK_NAMES = { Btn_TabDocks = true, Txt_TabDocks = true, Pnl_PageDocks = true, Txt_DocksHdr = true, Row_DocksScroll = true,
-  Dyn_Docks = true, Btn_Collect = true, Txt_Collect = true }
-local WALK_NODES = 1500   -- hard cap of one index walk
+  Dyn_Docks = true, Btn_DocksHelp = true, Pnl_DocksLegend = true, Btn_Collect = true, Txt_Collect = true }
+local WALK_NODES = 2600   -- hard cap of one index walk
 -- ONE bounded walk per window open (S.wc = name -> widget for WALK_NAMES). Stops early when all are found. Logs time + nodes.
 local function buildIndex()
   local t0 = os.clock()
@@ -1270,10 +1270,22 @@ local function netShips()
     local p = split(l)
     local sid = trim(p[1] or "")
     if sid ~= "" then
-      out[sid] = { name = trim(p[11] or ""), slot = tonumber(trim(p[14] or "")) or 0, prio = tonumber(trim(p[15] or "")) or 0, phase = trim(p[17] or "") }
+      out[sid] = { name = trim(p[11] or ""), slot = tonumber(trim(p[14] or "")) or 0, prio = tonumber(trim(p[15] or "")) or 0, why = trim(p[16] or ""), phase = trim(p[17] or "") }
     end
   end
   return out
+end
+local DOCK_ICON = { FREE = "idle", PARKED = "docking", RESERVED = "docking", FULL = "unloading", GONE = "idle" }   -- Img_Src_<key> in WBP_NetDockCard
+local DOCK_WORK_ICON = { unload = "unloading", refuel = "refueling" }   -- WORKING = what the occupant does there, else mining
+local QUEUE_SHOW = 3   -- ships listed per dock, the rest = "+n waiting"
+local C_RED, C_YEL, C_GRN, C_ORG, C_DIM = rgb(0xE0, 0x40, 0x40), rgb(0xF2, 0xD2, 0x1E), rgb(0x42, 0xDA, 0x41), rgb(0xE6, 0x9A, 0x00), rgb(0xAA, 0xAA, 0xAA)
+-- queue reason (NetShips col 16: "aged" | "cargo 98%" | "fuel low" | "waiting") -> icon, text, urgency colour
+local function queueReason(why)
+  local pct = tonumber(why:match("cargo%s+(%d+)"))
+  if why == "aged" then return "clock", "waited long", C_ORG end
+  if pct then return "cargo", pct .. "%", pct >= 80 and C_RED or pct >= 50 and C_YEL or C_GRN end
+  if why:find("fuel", 1, true) then return "fuel", "low", C_RED end
+  return "zz", "waiting", C_DIM
 end
 local function docksLoad()
   local tags, ships = dockTags(), netShips()
@@ -1288,45 +1300,103 @@ local function docksLoad()
     if id ~= "" and tags[id] then
       local raw, occ, cleared = trim(p[2] or ""), trim(p[3] or ""), trim(p[9] or "")
       local name = trim(p[8] or "")
+      local why = trim(p[4] or "")
       local status = raw
       if cleared ~= "" and cleared ~= "0" and (raw == "FREE" or raw == "RESERVED") then status = "Cleared: " .. nameOf(cleared) end
-      local q = {}
+      local q, total = {}, 0   -- first QUEUE_SHOW waiting ships: name, reason icon + value (urgency colour), phase icon + slot
       for qid in (p[6] or ""):gmatch("[^,]+") do
-        qid = trim(qid)
-        local s = ships[qid] or { prio = 0, slot = 0, phase = "" }
-        local t = nameOf(qid) .. " " .. s.prio .. "%"
-        if s.slot > 0 then t = t .. " slot " .. s.slot end
-        if s.phase == "flying" or s.phase == "holding" then t = t .. " (" .. s.phase .. ")" end
-        q[#q + 1] = t
+        total = total + 1
+        if total <= QUEUE_SHOW then
+          qid = trim(qid)
+          local s = ships[qid] or { why = "", slot = 0, phase = "" }
+          local ricon, rtext, rcol = queueReason(s.why)
+          local fly, hold = s.phase == "flying", s.phase == "holding"
+          q[#q + 1] = { name = nameOf(qid), ricon = ricon, rtext = rtext, rcol = rcol, slot = s.slot > 0 and ("slot " .. s.slot) or "",
+            picon = fly and "ship" or hold and "pause" or nil, pcol = fly and C_YEL or C_ORG }
+        end
       end
       local since = math.floor(tonumber(trim(p[5] or "")) or 0)
       rows[#rows + 1] = { label = name ~= "" and name or ("Dock " .. id), status = status, color = DOCK_COL[raw] or DOCK_COL.GONE,
-        used = (occ ~= "" and occ ~= "0") and nameOf(occ) or "-", purp = DOCK_PURP[trim(p[4] or "")] or "-",
-        since = string.format("%d:%02d", math.floor(since / 60), since % 60), queue = #q > 0 and table.concat(q, ", ") or "-" }
+        icon = raw == "WORKING" and (DOCK_WORK_ICON[why] or "mining") or DOCK_ICON[raw] or "idle",
+        used = (occ ~= "" and occ ~= "0") and nameOf(occ) or "-", purp = DOCK_PURP[why] or "-",
+        since = string.format("%d:%02d", math.floor(since / 60), since % 60), q = q, more = total - #q }
     end
   end
   table.sort(rows, function(a, b) return a.label:lower() < b.label:lower() end)
   return rows
 end
+-- icon texture + tint: textures are read once off the hidden Img_Src_<key> of a card (S.dockTex)
+local function dockIcon(find, img, key, color)
+  if not img or not key then return end
+  S.dockTex = S.dockTex or {}
+  local t = S.dockTex[key]
+  if not (t and ok(t)) then
+    local s, r = pcall(function() return find("Img_Src_" .. key).Brush.ResourceObject end)
+    if s and ok(r) then t = r; S.dockTex[key] = r else return end
+  end
+  try("dock icon", function() img:SetBrushFromTexture(t, false); img:SetColorAndOpacity(color) end)
+end
+-- a card's own Dyn_Queue (one WBP_NetQueueRow per waiting ship); state per card entry e
+local function queueList(e, cardFind, q)
+  S.dockQ = S.dockQ or {}
+  local st = S.dockQ[e]
+  if not (st and ok(st.box)) then
+    local box = cardFind("Dyn_Queue")
+    if not ok(box) then return end
+    st = { box = box, ents = {} }; S.dockQ[e] = st
+    try("dockq reset", function() box:Reset(true) end)
+  end
+  while #st.ents < #q do
+    local s2, ent = pcall(function() return st.box:BP_CreateEntry() end)
+    if not (s2 and ok(ent)) then break end
+    local cache = {}
+    st.ents[#st.ents + 1] = { w = ent, find = function(name)
+      if cache[name] == nil then
+        local s3, root = pcall(function() return ent.WidgetTree.RootWidget end)
+        cache[name] = (s3 and deepFind(root, name)) or false
+      end
+      return cache[name] or nil
+    end }
+  end
+  while #st.ents > #q do
+    local r = table.remove(st.ents); try("RemoveQueueEntry", function() st.box:RemoveEntry(r.w) end)
+  end
+  for i, r in ipairs(st.ents) do
+    local x = q[i]
+    local function put(name, s) local t = r.find(name); if t then try("queue " .. name, function() t:SetText(FText(s)) end) end end
+    put("Txt_QName", x.name); put("Txt_QWhy", x.rtext); put("Txt_QSlot", x.slot)
+    dockIcon(cardFind, r.find("Img_QReason"), x.ricon, x.rcol)
+    local why = r.find("Txt_QWhy"); if why then try("queue why colour", function() why:SetColorAndOpacity({ SpecifiedColor = x.rcol }) end) end
+    local ph = r.find("Img_QPhase")
+    if x.picon then dockIcon(cardFind, ph, x.picon, x.pcol); setVis(r.find("Sz_QPhase"), 0) else setVis(r.find("Sz_QPhase"), 2) end
+  end
+end
 local function docksPaint()
   if M.lastTab ~= 5 then return end   -- Docks = TABS index 5
   local rows = docksLoad()
   local key = {}
-  for i, r in ipairs(rows) do key[i] = table.concat({ r.label, r.status, r.used, r.purp, r.since, r.queue }, "|") end
+  for i, r in ipairs(rows) do
+    local q = {}
+    for j, x in ipairs(r.q) do q[j] = table.concat({ x.name, x.rtext, x.slot, x.picon or "" }, "~") end
+    key[i] = table.concat({ r.label, r.status, r.used, r.purp, r.since, r.more, table.concat(q, ";") }, "|")
+  end
   key = table.concat(key, "\n")
   if key == S.docksKey then return end
   S.docksKey = key
-  dynList{ key = "Docks", anchor = "Row_DocksScroll", box = "Dyn_Docks", n = #rows, paint = function(_, find, i)
+  dynList{ key = "Docks", anchor = "Row_DocksScroll", box = "Dyn_Docks", n = #rows, paint = function(e, find, i)
     local r = rows[i]
     local function put(name, s) local t = find(name); if t then try("docks " .. name, function() t:SetText(FText(s)) end) end end
     put("Txt_DName", r.label); put("Txt_DStatus", r.status); put("Txt_DUsed", r.used)
-    put("Txt_DPurpose", r.purp); put("Txt_DSince", r.since); put("Txt_DQueue", r.queue)
-    local dot, st = find("Img_DDot"), find("Txt_DStatus")
-    if dot then try("docks dot", function() dot:SetColorAndOpacity(r.color) end) end
+    put("Txt_DPurpose", r.purp); put("Txt_DSince", r.since)
+    dockIcon(find, find("Img_DIcon"), r.icon, r.color)
+    local st = find("Txt_DStatus")
     if st then try("docks status colour", function() st:SetColorAndOpacity({ SpecifiedColor = r.color }) end) end
+    setVis(find("Txt_DQueueNone"), #r.q == 0 and 0 or 1)
+    setVis(find("Dyn_Queue"), #r.q > 0 and 0 or 1)
+    put("Txt_DQueueMore", "+" .. r.more .. " waiting"); setVis(find("Txt_DQueueMore"), r.more > 0 and 0 or 1)
+    queueList(e, find, r.q)
   end }
 end
-
 local fleetPaint  -- defined after shipRowRender (needs shipRows)
 local function refresh()
   if S.sid and S.last and os.clock() - (S.docksAt or 0) > 5 then   -- dock renames in game show up without reopening the window
@@ -1821,6 +1891,9 @@ function M.open(ship)
       end
       for i, n in ipairs(TABS) do bind(n, function() M.setTab(i) end) end
       bind("Btn_Close", M.close)
+      bind("Btn_DocksHelp", function()   -- legend panel of the Docks tab: show / hide
+        local lg = w("Pnl_DocksLegend"); if lg then local okv, v = pcall(function() return lg:GetVisibility() end); setVis(lg, (okv and v == 0) and 1 or 0) end
+      end)
       bind("Btn_RemoteAll", setAll)
       bind("Btn_LoopStart", function() sendSeq({ "mine_start" }); S.pend = { k = "start", dl = S.tick + 12 }; S.arm = nil; refresh() end)
       bind("Btn_LoopStop", function() sendSeq({ "mine_stop" }); S.pend = { k = "stop", dl = S.tick + 12 }; S.arm = nil; refresh() end)
