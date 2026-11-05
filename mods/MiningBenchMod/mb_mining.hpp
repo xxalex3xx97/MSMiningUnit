@@ -126,7 +126,8 @@ namespace
         int noy_run = 0;                       // consecutive MINE idle-watchdog exits with no ore gained (reset: ore gained, dock/unload, Start)
         std::map<int, int> noy_visits;         // per rock id: consecutive no-yield visits (reset when ore is gained on it; cleared on a new row and Start)
         std::set<int> noy_skip;                // rock ids the rock search leaves out after NOY_SKIP_VISITS no-yield visits (cleared on a new row and Start)
-        int lost_n = 0;                        // consecutive "rock lost" approach results in SEEK (reset on approach ok and Start)
+        int alive_lost_n = 0;                  // consecutive "rock lost" results with the rock still alive (reset on approach ok)
+        int lost_n = 0;                      // consecutive "rock lost" approach results in SEEK (reset on approach ok and Start)
         int idle_polls = 0;                    // consecutive CHECK returns to OFF with nothing in range (belt off); reset on rock found and Start
         double dwait_total = 0.0;              // seconds waited for a dock in this trip (dwait); reset per trip, capped by MINE_DWAIT_MAX_S
         // combat (target_sample, hull_watch, combat_record): sampled once a second; the flee trigger reads tgt_streak / combat_now / tgt_latch
@@ -1297,7 +1298,7 @@ namespace
         if (!standoff_of(sid, tid, ps, so, tc, tr)) return false;
         double dist = 0.0, bc[3] = {0, 0, 0};
         const int bid = path_blocker(sys, ps, so, tid, dist, bc);
-        if (!bid) return false;
+        if (!bid) { m.strike_n = 0; return false; }   // clear path: strikes are consecutive only
         if (m.strike_tid != tid || m.strike_bid != bid) { m.strike_tid = tid; m.strike_bid = bid; m.strike_n = 0; }
         ++m.strike_n;
         if (strikes_reached(m.strike_n))
@@ -1344,7 +1345,7 @@ namespace
         }
         // 2. one waypoint plan beside the blocker: 4 candidates (2 offsets x 2 sides); the first whose legs ship->wp and wp->target are clear
         const ULONGLONG nowp = GetTickCount64();
-        if (replan_gate(false, tid, m.wp_tid, m.wp_ms, nowp) == RG_COOLDOWN) { replan_suppressed_log(sid, RG_COOLDOWN); return true; }
+        if (replan_gate(false, tid, m.wp_tid, m.wp_ms, nowp) == RG_COOLDOWN) { replan_suppressed_log(sid, RG_COOLDOWN); path_give_up(ship, sid, m, tid, bid, dist); return true; }   // a plan was just used and the path is still blocked: skip the target
         if (m.wp_n < PATH_WP_MAX)
         {
             const double dir[3] = {so[0] - ps[0], so[1] - ps[1], so[2] - ps[2]};
@@ -1467,7 +1468,7 @@ namespace
             }
             if (ok_res(r))
             {
-                m.fails = 0; m.unl_chk = 0; m.lost_n = 0; m.wp_n = 0; m.wp_on = false; m.path_t = 0.0;
+                m.fails = 0; m.unl_chk = 0; m.lost_n = 0; m.alive_lost_n = 0; m.wp_n = 0; m.wp_on = false; m.path_t = 0.0;
                 m.tried.clear();   // a rock is being mined: every sector may be searched again later
                 chunk_hold_target_clear(sid); save_rock_picks().erase(sid);   // at the rock: hold the ship's own chunks again
                 m.last_ore = inv_total(ship, item);
@@ -1488,6 +1489,7 @@ namespace
             {   // target lost = the move job faulted (move_tick SEH): same free retry
                 // rock lost (another ship mined it) = free retry, not a failed attempt; ROCK_LOST_MAX in a row = HALT
                 m.lost_n = rock_lost_next(m.lost_n, true, !alive(rock_actor_by_id(m.rock)), false);   // only a really gone rock counts
+                if (alive(rock_actor_by_id(m.rock)) && ++m.alive_lost_n >= 12) m.lost_n = ROCK_LOST_MAX;   // rock still there but never reached: the free retries are capped
                 if (rock_lost_halt(m.lost_n)) { mine_stop_work(ship, sid); m.st = MS_HALT; mset(sid, m, STR("rock lost ") + std::to_wstring(ROCK_LOST_MAX) + STR("x")); return; }
             }
             else if (++m.fails >= std::max(1, c.max_attempts)) { mine_stop_work(ship, sid); m.st = MS_HALT; mset(sid, m, STR("approach failed ") + std::to_wstring(m.fails) + STR("x: ") + r); return; }
