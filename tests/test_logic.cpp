@@ -4,13 +4,19 @@
 // RUN: tests\run.ps1 (builds with cl, runs, exit code 0 = all PASS). Or by hand: see run.ps1.
 // DEPENDS ON: mods/MiningBenchMod/mb_logic.hpp, mods/MiningBenchMod/mb_math.hpp (mb_math needs <cmath>, included first).
 // NOTE: CHECK counts failures and keeps going; the summary line prints the pass and fail counts.
+#include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <set>
 #include <string>
+#include <vector>
 
 #include "mb_logic.hpp"
 #include "mb_math.hpp"
+#include "mb_registry_logic.hpp"
+#include "mb_wd_logic.hpp"
 
 static int g_pass = 0;
 static int g_fail = 0;
@@ -488,6 +494,21 @@ static void t_loop_guards()
     CHECK(fuel_amount_floor(100, 300) == 300);
     CHECK(fuel_amount_floor(500, 300) == 500);
     CHECK(fuel_amount_floor(0, 0) == 0);
+}
+
+static void t_rock_depleted()
+{
+    // before the first ore of a rock: never (the no-yield watchdog applies)
+    CHECK(!rock_depleted(0, 0.0, true, false));
+    CHECK(!rock_depleted(0, 60.0, true, false));
+    // after ore: 5 s with no ore = depleted, less = not yet
+    CHECK(rock_depleted(1, DEPLETE_S, true, false));
+    CHECK(rock_depleted(8500, 9.0, true, false));
+    CHECK(!rock_depleted(8500, DEPLETE_S - 0.1, true, false));
+    // cargo full: no (the cargo-full rule takes it); laser off: no
+    CHECK(!rock_depleted(8500, 30.0, true, true));
+    CHECK(!rock_depleted(8500, 30.0, false, false));
+    CHECK(DEPLETE_S == 5.0);
 }
 
 static void t_setting_clamp()
@@ -993,6 +1014,52 @@ static void t_combat_flee()
     CHECK(!target_latch_next(false, true));                    // never set without a flee
 }
 
+static void t_hazard_flee()
+{
+    // hazard = hull drop with no hostile targeter
+    CHECK(hazard_flee(0));
+    CHECK(!hazard_flee(1));
+    // stuck = last 3 speed samples below 1 m/s
+    CHECK(speed_stuck({5.0, 0.5, 0.2, 0.1}));
+    CHECK(!speed_stuck({0.1, 0.2, 5.0}));
+    CHECK(!speed_stuck({0.1, 0.2}));                           // fewer than 3 samples
+    CHECK(!speed_stuck({0.0, 0.0, 0.0, 0.0, 0.0, 1.0}));      // 1.0 is not below 1 m/s
+    // hull rate per second over 1 s samples
+    NEAR(hull_rate_per_s({100, 80, 60}), 20.0, 1e-9);
+    NEAR(hull_rate_per_s({214, 174, 134, 94, 54, 14}), 40.0, 1e-9);
+    CHECK(hull_rate_per_s({100}) == 0.0);
+    CHECK(hull_rate_per_s({50, 60}) == 0.0);                  // a gain is not a loss
+    // move-away due: 5 s after the flee, drop in the last 2 s, nothing else moving
+    CHECK(!hazard_move_due(4.9, 0.0, false, false));
+    CHECK(hazard_move_due(5.0, 0.0, false, false));
+    CHECK(!hazard_move_due(5.0, 3.0, false, false));          // no fresh drop
+    CHECK(!hazard_move_due(5.0, 0.0, true, false));           // move job running
+    CHECK(!hazard_move_due(5.0, 0.0, false, true));           // dock job running
+    // circle directions: base turned 90 deg per step, z kept
+    const double base[3] = {1.0, 0.0, 0.5};
+    double d[3];
+    hazard_dir(base, 0, d); CHECK(d[0] == 1.0 && d[1] == 0.0 && d[2] == 0.5);
+    hazard_dir(base, 1, d); NEAR(d[0], 0.0, 1e-9); NEAR(d[1], 1.0, 1e-9); CHECK(d[2] == 0.5);
+    hazard_dir(base, 2, d); NEAR(d[0], -1.0, 1e-9); NEAR(d[1], 0.0, 1e-9);
+    hazard_dir(base, 4, d); NEAR(d[0], 1.0, 1e-9); NEAR(d[1], 0.0, 1e-9);
+    hazard_dir(base, -1, d); NEAR(d[0], 0.0, 1e-9); NEAR(d[1], -1.0, 1e-9);
+}
+
+static void t_targett_entry()
+{
+    CHECK(!target_entry_hostile(true, true, false, true));    // our own bench ship
+    CHECK(!target_entry_hostile(true, false, true, true));    // same owner or faction as the ship
+    CHECK(target_entry_hostile(true, false, false, true));    // readable, other side
+    CHECK(target_entry_hostile(false, false, false, true));   // unreadable object entry
+    CHECK(!target_entry_hostile(false, false, false, false)); // unreadable, not an object type
+    CHECK(clamp_tarray_num(-5) == 0);
+    CHECK(clamp_tarray_num(7) == 7);
+    CHECK(clamp_tarray_num(250000) == TARRAY_NUM_MAX);
+    CHECK(SHIP_DEAD_SCANS == 2 && SHIP_MISSING_SCANS == 3);   // signal A stays at 2, signal B (missing from the list) needs 3
+    CHECK(!dead_confirmed(2, SHIP_MISSING_SCANS) && dead_confirmed(3, SHIP_MISSING_SCANS));
+    CHECK(dead_confirmed(2));
+}
+
 static void t_combat_log()
 {
     CHECK(combat_log_trim("abc\n", 10) == "abc\n");            // under cap: unchanged
@@ -1043,9 +1110,937 @@ static void t_warp_settle()
     CHECK(warp_settle_done(5.0, 1000.0));          // exactly the arrival distance counts
 }
 
+// clear-path geometry: segment vs sphere (in front, behind, beyond the end, tangent)
+static void t_path_block()
+{
+    const double a[3] = {0, 0, 0}, b[3] = {1000, 0, 0};
+    double d = -1.0;
+    const double front[3] = {500, 100, 0}, behind[3] = {-500, 0, 0}, beyond[3] = {1500, 0, 0}, tangent[3] = {500, 150, 0}, inside[3] = {500, 149.9, 0};
+    CHECK(seg_sphere_blocks(a, b, front, 150, d));
+    NEAR(d, 100.0, 1e-9);
+    CHECK(!seg_sphere_blocks(a, b, behind, 600, d));           // behind the start
+    CHECK(!seg_sphere_blocks(a, b, beyond, 600, d));           // past the end (even inside the radius there)
+    CHECK(!seg_sphere_blocks(a, b, tangent, 150, d));          // distance == radius: clear
+    CHECK(seg_sphere_blocks(a, b, inside, 150, d));            // just inside
+    CHECK(!seg_sphere_blocks(a, a, front, 150, d));            // zero-length segment: nothing between
+    NEAR(seg_point_dist(a, b, beyond), 500.0, 1e-9);           // clamped: distance to the end point
+    NEAR(seg_point_dist(a, b, front), 100.0, 1e-9);
+    // the blocker nearest along the path is returned
+    std::vector<PathRock> rk(2);
+    rk[0].c[0] = 800; rk[0].c[1] = 0; rk[0].c[2] = 0; rk[0].r = 100;
+    rk[1].c[0] = 300; rk[1].c[1] = 0; rk[1].c[2] = 0; rk[1].r = 50;
+    double dd = -1.0;
+    CHECK(path_first_blocker(a, b, rk.data(), rk.size(), dd) == 1);
+    CHECK(path_first_blocker(a, b, rk.data(), 1, dd) == 0);
+    rk[0].r = 0.0; rk[1].r = 0.0;
+    CHECK(path_first_blocker(a, b, rk.data(), rk.size(), dd) == -1);             // radius 0 never blocks
+}
+
+// waypoint and stand-off geometry
+static void t_path_waypoint()
+{
+    const double a[3] = {0, 0, 0}, b[3] = {1000, 0, 0};
+    const double c[3] = {500, 100, 0};
+    double w[3] = {0, 0, 0};
+    path_waypoint(a, b, c, 400.0, w);
+    NEAR(w[0], 500.0, 1e-9); NEAR(w[1], 500.0, 1e-9); NEAR(w[2], 0.0, 1e-9);   // beside the blocker, away from the path
+    const double v[3] = {w[0] - c[0], w[1] - c[1], w[2] - c[2]};
+    NEAR(v[0] * 1000.0 + v[1] * 0.0 + v[2] * 0.0, 0.0, 1e-6);                 // perpendicular to the path
+    NEAR(std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]), 400.0, 1e-9);     // exactly radius + clearance from the blocker
+    // blocker exactly on the path line: still perpendicular, still at radius
+    const double on[3] = {500, 0, 0};
+    path_waypoint(a, b, on, 300.0, w);
+    NEAR(w[0], 500.0, 1e-9); NEAR(w[1], -300.0, 1e-9); NEAR(w[2], 0.0, 1e-9);
+    // stand-off: from the rock centre toward the ship, at the given distance
+    const double rc[3] = {1000, 0, 0};
+    double so[3] = {0, 0, 0};
+    standoff_point(a, rc, 200.0, so);
+    NEAR(so[0], 800.0, 1e-9); NEAR(so[1], 0.0, 1e-9); NEAR(so[2], 0.0, 1e-9);
+}
+
+// shield and hull drop with regeneration: a rise is never a drop; the baseline follows each sample
+static void t_shield_drop()
+{
+    CHECK(!shield_dropped(-1, 50));            // no baseline yet
+    CHECK(!shield_dropped(50, -1));            // unreadable shield
+    CHECK(!shield_dropped(50, 60));            // regeneration
+    CHECK(shield_dropped(60, 55));             // loss measured from the regenerated value
+    CHECK(!shield_dropped(60, 60));
+    CHECK(damage_drop_kind(350, 320, 40, 0, false) == DMG_HULL);
+    CHECK(damage_drop_kind(350, 350, 40, 20, false) == DMG_SHIELD);
+    CHECK(damage_drop_kind(350, 350, 40, 20, true) == DMG_NONE);   // docked: ignored
+    CHECK(damage_drop_kind(350, 350, -1, -1, false) == DMG_NONE);
+    CHECK(damage_drop_kind(350, 360, 40, 60, false) == DMG_NONE);  // both rose
+    int drops = 0;
+    int32_t base = 50;
+    const int32_t seq[] = {60, 70, 55, 55, 80};
+    for (int32_t s : seq) { if (shield_dropped(base, s)) ++drops; base = s; }
+    CHECK(drops == 1);
+}
+
+// fast sample period: a rock within SLOW_ZONE_M (500 m, surface) of the ship
+static void t_fast_sample()
+{
+    CHECK(fast_sample_due(0.0));
+    CHECK(fast_sample_due(500.0));
+    CHECK(!fast_sample_due(500.5));
+    CHECK(!fast_sample_due(1500.0));
+    NEAR(FAST_SAMPLE_S, 0.25, 1e-12);
+}
+
+// perf helpers: box prefilter, per-check budget, slow-check log/skip timing, snapshot rebuild
+static void t_path_perf()
+{
+    const double a[3] = {0, 0, 0}, b[3] = {1000, 0, 0};
+    const double near[3] = {500, 4000, 0}, far[3] = {500, 9000, 0}, past[3] = {-6000, 0, 0};
+    CHECK(!path_box_reject(a, b, near, PATH_RMAX_M));   // 4 km off the path: inside the 5 km box
+    CHECK(path_box_reject(a, b, far, PATH_RMAX_M));     // 9 km off: rejected
+    CHECK(path_box_reject(a, b, past, PATH_RMAX_M));    // 6 km before the start
+    // slow check: over 3 ms only
+    CHECK(!path_over_budget(3.0)); CHECK(path_over_budget(3.01));
+    // slow log: first time always, then every 30 s
+    CHECK(path_slow_log_due(0, 1000));
+    CHECK(!path_slow_log_due(10000, 39999));
+    CHECK(path_slow_log_due(10000, 40000));
+    // slow ship skips its periodic checks for 10 s
+    const uint64_t until = path_skip_until(50000);
+    CHECK(until == 60000);
+    CHECK(path_skip_active(until, 59999));
+    CHECK(!path_skip_active(until, 60000));
+    // periodic check due at 2 s of approach
+    CHECK(!path_watch_due(1.99)); CHECK(path_watch_due(2.0));
+    NEAR(PATH_SLOW_MS, 3.0, 1e-12);
+    CHECK(PATH_CANDIDATES == 8);
+}
+
+// ---------- mb_registry_logic.hpp (rock table, chunk grid, events, ore) ----------
+
+static void reg_add(RockReg& g, int id, int sys, double x, double y, double z, void* item = nullptr, double rad = -1.0)   // rad < 0 = radius not read yet
+{
+    const double c[3] = {x, y, z};
+    std::vector<void*> items;
+    if (item) items.push_back(item);
+    const size_t i = g.add(id, sys, c, items);
+    if (rad >= 0.0) g.set_radius(i, rad);
+}
+
+static void t_reg_table()
+{
+    RockReg g;
+    const uint64_t v0 = g.version;
+    reg_add(g, 1, 7, 0, 0, 0);
+    reg_add(g, 2, 7, 100, 0, 0);
+    CHECK(g.version == v0 + 2);
+    reg_add(g, 1, 7, 5, 0, 0);                    // known id: updated, not duplicated
+    CHECK(g.rocks.size() == 2);
+    CHECK(g.version == v0 + 2);
+    CHECK(g.is_alive(1) && g.is_alive(2) && !g.is_alive(3));
+    CHECK(g.kill(2, 10));
+    CHECK(!g.kill(2, 11));                        // already dead: no second event
+    CHECK(!g.is_alive(2));
+    CHECK(g.get(2) != nullptr && g.get(2)->destroyed_at == 10);
+    CHECK(g.version == v0 + 3);
+    CHECK(g.event_seq == 1);
+    int dummy = 0;
+    g.set_act(0, &dummy);
+    CHECK(g.index_of_act(&dummy) == 0);
+    CHECK(g.kill(1, 12) && g.index_of_act(&dummy) == 0);   // dead entry keeps its handle; lookup still by index
+}
+
+static void t_reg_events()
+{
+    RockReg g;
+    for (int i = 1; i <= 70; ++i) reg_add(g, i, 1, i * 10.0, 0, 0);
+    std::vector<RegEvent> ev;
+    for (int i = 1; i <= 70; ++i) g.kill(i, 100 + i);
+    CHECK(g.event_seq == 70);
+    CHECK(!g.events_since(0, ev));                // 64-entry ring: seq 1..6 gone
+    CHECK(ev.size() == 64 && ev.front().seq == 7 && ev.back().seq == 70);
+    CHECK(g.events_since(68, ev) && ev.size() == 2 && ev[0].id == 69 && ev[1].id == 70);
+    CHECK(g.events_since(70, ev) && ev.empty());
+    CHECK(g.events_since(6, ev) && ev.size() == 64);
+}
+
+static void t_reg_within_nearest()
+{
+    RockReg g;
+    int tag = 0;
+    void* ore = &tag;
+    reg_add(g, 1, 7, 0, 0, 0, ore, 10);
+    reg_add(g, 2, 7, 3000, 0, 0, ore, 10);      // another grid cell than rock 1
+    reg_add(g, 3, 7, 1000, 0, 0, nullptr, 10);  // no ore item
+    reg_add(g, 4, 8, 500, 0, 0, ore, 10);       // other system
+    const double o[3] = {0, 0, 0};
+    std::vector<size_t> out;
+    CHECK(g.within(7, o, 1500, out) == 2);      // rocks 1 and 3
+    out.clear();
+    CHECK(g.within(7, o, 5000, out) == 3);
+    double d = 0;
+    size_t n = g.nearest(7, ore, o, nullptr, nullptr, 0, d);
+    CHECK(n != RockReg::npos && g.rocks[n].id == 1 && d == 0.0);
+    std::set<int> skip = {1};
+    n = g.nearest(7, ore, o, nullptr, &skip, 0, d);
+    CHECK(n != RockReg::npos && g.rocks[n].id == 2 && std::fabs(d - 3000.0) < 1e-9);
+    CHECK(g.nearest(7, ore, o, nullptr, &skip, 2000, d) == RockReg::npos);   // max_m
+    CHECK(g.nearest(9, ore, o, nullptr, nullptr, 0, d) == RockReg::npos);     // unknown system
+    int handle = 0;
+    g.set_act(0, &handle);
+    CHECK(g.nearest(7, ore, o, &handle, nullptr, 0, d) == 1);                 // skip by actor handle: rock 1 out, rock 2 found
+    std::vector<std::pair<double, size_t>> nn;
+    CHECK(g.nearest_n(7, ore, o, nullptr, nullptr, 5000, 8, nn) == 2);
+    CHECK(nn[0].first <= nn[1].first && g.rocks[nn[0].second].id == 1);
+    g.kill(1, 1);
+    n = g.nearest(7, ore, o, nullptr, nullptr, 0, d);
+    CHECK(n != RockReg::npos && g.rocks[n].id == 2);
+}
+
+static void t_reg_surface_block_radius()
+{
+    RockReg g;
+    reg_add(g, 1, 7, 1000, 0, 0, nullptr, 900);   // big: surface 100
+    reg_add(g, 2, 7, 500, 0, 0, nullptr, 0);      // centre 500, surface 500
+    const double o[3] = {0, 0, 0};
+    double s = 0;
+    const size_t n = g.nearest_surface(7, o, nullptr, s);
+    CHECK(n != RockReg::npos && g.rocks[n].id == 1 && std::fabs(s - 100.0) < 1e-9);
+
+    RockReg b;
+    reg_add(b, 1, 7, 1000, 0, 0, nullptr, 50);    // on the path y=0, x 0..3000
+    reg_add(b, 2, 7, 1000, 400, 0, nullptr, 50);  // 400 m off the path: clearance 300 + radius 50 = 350 < 400, clear
+    int handle = 0;
+    b.set_act(0, &handle);
+    const double a[3] = {0, 0, 0}, e[3] = {3000, 0, 0};
+    double dd = 0;
+    size_t k = b.first_blocker(7, a, e, 300.0, nullptr, 0, nullptr, 0, dd);
+    CHECK(k != RockReg::npos && b.rocks[k].id == 1 && std::fabs(dd) < 1e-9);
+    CHECK(b.first_blocker(7, a, e, 300.0, nullptr, 1, nullptr, 0, dd) == RockReg::npos);   // skip_id
+    CHECK(b.first_blocker(7, a, e, 300.0, &handle, 0, nullptr, 0, dd) == RockReg::npos);   // skip_act
+    std::set<int> hz = {2};
+    const size_t hb = b.first_blocker(7, a, e, 300.0, &handle, 0, &hz, 500.0, dd);   // rock 2: 50 + 300 + 500 = 850 m reach, 400 m off: blocks
+    CHECK(hb != RockReg::npos && b.rocks[hb].id == 2);
+    CHECK(b.first_blocker(7, a, e, 300.0, &handle, 0, nullptr, 0, dd) == RockReg::npos);   // rock 2: 350 m reach, clear
+    std::vector<std::array<double, 3>> refs = {{{0.0, 0.0, 0.0}}};
+    std::vector<size_t> want;
+    b.radius_wanted(7, refs, 5000, 10, want);
+    CHECK(want.empty());                                      // both radii are known
+    RockReg c;
+    reg_add(c, 1, 7, 1000, 0, 0);                             // radius unknown
+    want.clear();
+    c.radius_wanted(7, refs, 5000, 10, want);
+    CHECK(want.size() == 1);
+}
+
+// approach Throttle (approach_throttle, mb_logic.hpp): full speed beyond APPROACH_RAMP_M, linear to 1 inside, 0 at or past the stand-off point
+static void t_approach_throttle()
+{
+    CHECK(approach_throttle(5000.0, 40.0, 10) == 10);
+    CHECK(approach_throttle(500.0, 40.0, 10) == 10);
+    CHECK(approach_throttle(250.0, 40.0, 10) == 5);
+    CHECK(approach_throttle(250.0, 40.0, 4) == 2);
+    CHECK(approach_throttle(1.0, 0.0, 10) == 1);         // ceil: the last metres still move
+    CHECK(approach_throttle(0.0, 0.0, 10) == 0);
+    CHECK(approach_throttle(-3.0, 0.0, 10) == 0);
+    CHECK(approach_throttle(250.0, 40.0, 0) == 0);
+    CHECK(approach_throttle(300.0, 99.0, 10) == approach_throttle(300.0, 0.0, 10));   // speed does not change the ramp
+    int prev = 0;
+    bool mono = true;
+    for (double d = 1.0; d <= 600.0; d += 1.0)   // never falls as the ship gets farther, always 0..max
+    {
+        const int t = approach_throttle(d, 0.0, 10);
+        if (t < prev || t < 0 || t > 10) mono = false;
+        prev = t;
+    }
+    CHECK(mono);
+}
+
+// bubble geometry (mb_logic.hpp + registry first_blocker): look-ahead, clearance, target exclusion, unknown radius = 35 m
+static void t_bubble()
+{
+    CHECK(bubble_look_ahead(0.0) == 100.0);
+    CHECK(bubble_look_ahead(20.0) == 100.0);               // 80 m < minimum
+    CHECK(bubble_look_ahead(50.0) == 200.0);               // 4 s x 50 m/s
+    CHECK(bubble_look_ahead(-5.0) == 100.0);
+    CHECK(bubble_clear_m(12.0, 30.0) == 42.0);             // ship radius + 30 m clearance
+    RockReg g;
+    reg_add(g, 1, 7, 150, 0, 0, nullptr, 8.0);             // on the nose
+    reg_add(g, 2, 7, 150, 60, 0, nullptr, 8.0);            // 60 m off: 8 + 42 = 50 < 60, clear
+    reg_add(g, 3, 7, 150, 49, 0, nullptr, 8.0);            // 49 m off: inside
+    reg_add(g, 4, 7, 400, 0, 0, nullptr, 8.0);             // beyond the look-ahead
+    const double a[3] = {0, 0, 0}, b[3] = {200, 0, 0};
+    double d = 0.0;
+    size_t i = g.first_blocker(7, a, b, bubble_clear_m(12.0, 30.0), nullptr, 0, nullptr, 0.0, d);
+    CHECK(i != RockReg::npos && g.rocks[i].id == 1 && std::fabs(d) < 1e-9);
+    i = g.first_blocker(7, a, b, bubble_clear_m(12.0, 30.0), nullptr, 1, nullptr, 0.0, d);   // target excluded (stand-off phase)
+    CHECK(i != RockReg::npos && g.rocks[i].id == 3 && std::fabs(d - 49.0) < 1e-9);
+    RockReg u;
+    reg_add(u, 9, 7, 150, 60, 0);                          // radius unknown: 35 m until read, 35 + 42 = 77 > 60 blocks
+    CHECK(u.first_blocker(7, a, b, bubble_clear_m(12.0, 30.0), nullptr, 0, nullptr, 0.0, d) != RockReg::npos);
+    RockReg v;
+    reg_add(v, 9, 7, 150, 0, 0, nullptr, 8.0);
+    CHECK(v.first_blocker(7, a, b, bubble_clear_m(12.0, 30.0), nullptr, 9, nullptr, 0.0, d) == RockReg::npos);   // only the target is there
+}
+
+// bubble ladder (bubble_step): brake on a hit, replan after the stop, give up after BUBBLE_MAX_REPLAN replans
+static void t_bubble_ladder()
+{
+    BubbleState s;
+    CHECK(bubble_step(s, false, 50.0, 5) == BBA_NONE);
+    CHECK(bubble_step(s, true, 50.0, 5) == BBA_BRAKE && s.braking && s.pending == BBA_REPLAN);
+    CHECK(bubble_step(s, true, 10.0, 5) == BBA_NONE);      // still braking: no action until stopped
+    CHECK(bubble_step(s, false, 2.0, 5) == BBA_REPLAN && !s.braking && s.replans == 1);
+    CHECK(bubble_step(s, true, 40.0, 5) == BBA_BRAKE && s.pending == BBA_REPLAN);
+    CHECK(bubble_step(s, false, 0.5, 5) == BBA_REPLAN && s.replans == 2);
+    CHECK(bubble_step(s, true, 40.0, 5) == BBA_BRAKE && s.pending == BBA_RETARGET);   // 2 replans done: give up
+    CHECK(bubble_step(s, false, 1.0, 5) == BBA_RETARGET && s.replans == 0 && !s.braking);
+    CHECK(bubble_step(s, true, 40.0, 6) == BBA_BRAKE && s.pending == BBA_REPLAN);      // new target: fresh count
+    CHECK(bubble_step(s, true, 40.0, 6) == BBA_NONE);
+}
+
+// bubble scope (stage 2b): activation rule, phase per move job, fix per phase
+static void t_bubble_scope()
+{
+    // activation: game autopilot always wins; our thrust job or speed > 3 m/s is active; else idle
+    CHECK(bubble_why(true, false, false, true, 50.0) == BW_AUTOPILOT);
+    CHECK(bubble_why(false, true, false, true, 50.0) == BW_DOCK_AUTOPILOT);
+    CHECK(bubble_why(false, false, true, true, 50.0) == BW_TRAVEL);
+    CHECK(bubble_why(false, false, false, true, 0.0) == BW_ACTIVE);      // our approach job, ship still
+    CHECK(bubble_why(false, false, false, false, 5.0) == BW_ACTIVE);     // drifting, no job
+    CHECK(bubble_why(false, false, false, false, 2.0) == BW_IDLE);       // not moving, no job
+    CHECK(bubble_why(false, false, false, false, 3.0) == BW_IDLE);       // at the threshold: not moving
+    CHECK(bubble_why_name(BW_AUTOPILOT)[0] != 0 && bubble_why_name(BW_IDLE)[0] != 0);
+    // phase from the move job flags
+    CHECK(bubble_phase(true, false, false, false) == BPH_SEEK);
+    CHECK(bubble_phase(true, true, false, false) == BPH_WAYPOINT);
+    CHECK(bubble_phase(true, false, true, false) == BPH_ORE);
+    CHECK(bubble_phase(true, true, true, false) == BPH_ORE);             // ore flight wins over point
+    CHECK(bubble_phase(false, false, false, true) == BPH_MINE);          // drift
+    CHECK(bubble_phase(false, false, false, false) == BPH_NONE);
+    CHECK(std::string(bubble_phase_name(BPH_ORE)) == "ore");
+    // fix per phase: SEEK replans (skip on retarget); waypoint/ore: waypoint while wp < 2, then skip; mine: nudge when near, else resume
+    CHECK(bubble_fix(BPH_SEEK, BBA_REPLAN, 0, false) == BF_REPLAN);
+    CHECK(bubble_fix(BPH_SEEK, BBA_RETARGET, 0, false) == BF_SKIP);
+    CHECK(bubble_fix(BPH_WAYPOINT, BBA_REPLAN, 0, false) == BF_WAYPOINT);
+    CHECK(bubble_fix(BPH_WAYPOINT, BBA_REPLAN, 1, false) == BF_WAYPOINT);
+    CHECK(bubble_fix(BPH_WAYPOINT, BBA_REPLAN, 2, false) == BF_SKIP);   // BUBBLE_MAX_WP = 2 used
+    CHECK(bubble_fix(BPH_ORE, BBA_REPLAN, 2, true) == BF_SKIP);
+    CHECK(bubble_fix(BPH_MINE, BBA_REPLAN, 0, true) == BF_NUDGE);
+    CHECK(bubble_fix(BPH_MINE, BBA_REPLAN, 0, false) == BF_RESUME);
+    CHECK(std::string(bubble_fix_name(BF_NUDGE)) == "nudge" && std::string(bubble_fix_name(BF_WAYPOINT)) == "waypoint");
+    // too near: centre distance below ship radius + rock radius + 10 m
+    CHECK(bubble_too_near(29.0, 12.0, 8.0));
+    CHECK(!bubble_too_near(30.0, 12.0, 8.0));
+    CHECK(BUBBLE_NUDGE_M == 100.0 && BUBBLE_MAX_WP == 2);
+    // state keeps the flight count and the resume destination
+    BubbleState s;
+    s.wp = 1; s.resume = true; s.dst[0] = 5.0;
+    CHECK(s.wp == 1 && s.resume && s.dst[0] == 5.0);
+}
+
+// path2: replan cooldown and wp gate, rock-lost counting, progress, start grace, strikes, bubble closing
+static void t_path2_rules()
+{
+    // replan gate: a waypoint flight blocks new plans; one plan per target per 20 s
+    CHECK(replan_gate(true, 5, 0, 0, 1000) == RG_WP_ACTIVE);
+    CHECK(replan_gate(false, 5, 5, 10000, 29999) == RG_COOLDOWN);   // same target, 19.9 s
+    CHECK(replan_gate(false, 5, 5, 10000, 30000) == RG_OK);         // 20 s: allowed again
+    CHECK(replan_gate(false, 6, 5, 10000, 11000) == RG_OK);         // another target: no cooldown
+    CHECK(replan_gate(false, 5, 5, 0, 11000) == RG_OK);             // no plan yet (last_ms 0)
+    // rock-lost counting: only a really gone rock, not our own cancels, not a rock still there
+    CHECK(rock_lost_next(2, true, true, false) == 3);
+    CHECK(rock_lost_next(2, true, false, false) == 2);              // rock still there: free retry
+    CHECK(rock_lost_next(2, true, true, true) == 2);                // own cancel
+    CHECK(rock_lost_next(2, false, true, false) == 2);              // not a rock-lost result
+    CHECK(!lost_progress(50.0) && lost_progress(50.5));              // progress must be more than 50 m
+    // start grace: overlapping the start and (moving away or first 60 m inside) is ignored
+    CHECK(grace_ignore(10.0, 12.0, 8.0, true, false));              // overlap, moving away
+    CHECK(grace_ignore(10.0, 12.0, 8.0, false, true));              // overlap, first 60 m inside
+    CHECK(!grace_ignore(10.0, 12.0, 8.0, false, false));            // overlap but ahead and clear of the first 60 m
+    CHECK(!grace_ignore(45.0, 12.0, 8.0, true, true));              // not overlapping the start (45 > 12+8+20=40)
+    CHECK(grace_ignore(39.9, 12.0, 8.0, true, false));              // inside the 40 m start zone
+    // strikes: the third block of the same blocker on the same target skips the target
+    CHECK(!strikes_reached(1) && !strikes_reached(2) && strikes_reached(3));
+    // bubble: brake only ahead and closing
+    CHECK(!bubble_brake_ok(-0.2, 100.0, 90.0, true, 30.0));         // behind
+    CHECK(!bubble_brake_ok(0.0, 100.0, 90.0, true, 30.0));          // beside
+    CHECK(bubble_brake_ok(0.9, 100.0, 110.0, true, 30.0));          // ahead and closing (range fell 10 m)
+    CHECK(!bubble_brake_ok(0.9, 100.0, 90.0, true, 30.0));          // ahead but opening
+    CHECK(bubble_brake_ok(0.9, 100.0, 0.0, false, 30.0));           // first sight, moving
+    CHECK(!bubble_brake_ok(0.9, 100.0, 0.0, false, 0.0));           // first sight, not moving
+}
+
+// sweep return arrival (sweep_arrive) and flee target range (target_entry_near)
+static void t_sweep_return_flee()
+{
+    CHECK(sweep_arrive(1.0, 500.0, true) == SA_WAIT);      // inside 1000 m but before the 2 s settle minimum
+    CHECK(sweep_arrive(3.0, 500.0, true) == SA_ARRIVED);
+    CHECK(sweep_arrive(2.0, 1000.0, true) == SA_ARRIVED);  // boundary: 1000 m counts
+    CHECK(sweep_arrive(3.0, 1000.5, true) == SA_WAIT);     // 1000.5 m: not yet
+    CHECK(sweep_arrive(3.0, 500.0, false) == SA_WAIT);     // jumping: system 0, still travelling
+    CHECK(sweep_arrive(5.0, -1.0, true) == SA_WAIT);       // position unreadable while jumping
+    CHECK(sweep_arrive(29.9, 5000.0, false) == SA_WAIT);
+    CHECK(sweep_arrive(30.0, 5000.0, false) == SA_GIVE_UP); // 30 s cap, not arrived
+    CHECK(sweep_arrive(30.0, -1.0, true) == SA_GIVE_UP);
+    // flee range: a targeter within the range (or unreadable distance) counts, a farther one does not
+    CHECK(target_entry_near(4999.0, 5000.0));
+    CHECK(target_entry_near(5000.0, 5000.0));
+    CHECK(!target_entry_near(5001.0, 5000.0));
+    CHECK(!target_entry_near(70000.0, 5000.0));            // 70 km: far
+    CHECK(target_entry_near(-1.0, 5000.0));                // unreadable distance counts as near
+    CHECK(target_entry_near(-1.0, 1000.0));
+    CHECK(!target_entry_near(1500.0, 1000.0));              // 1 km range: 1.5 km is far
+}
+
+// far-trip warp for our flights: decision order, landing candidates, sweep reachability
+static void t_flight_warp()
+{
+    // 10 km, warp_trip_km 5, same system and sector, 100 warp items in the drive: warp
+    CHECK(flight_warp_why(10000.0, 5, true, 3, 3, false, false, false, false, 100, 4.88) == FW_WARP);
+    CHECK(flight_warp_why(4000.0, 5, true, 3, 3, false, false, false, false, 100, 1.95) == FW_NEAR);   // inside the trip distance
+    CHECK(flight_warp_why(10000.0, 0, true, 3, 3, false, false, false, false, 100, 4.88) == FW_OFF);   // km 0: warp off
+    CHECK(flight_warp_why(10000.0, 5, true, 3, 3, false, false, true, false, 100, 4.88) == FW_AUTOPILOT);   // game autopilot (or docking, passed as one)
+    CHECK(flight_warp_why(10000.0, 5, true, 3, 3, false, true, false, false, 100, 4.88) == FW_TRAVEL);
+    CHECK(flight_warp_why(10000.0, 5, true, 3, 3, true, false, false, false, 100, 4.88) == FW_DOCKED);
+    CHECK(flight_warp_why(10000.0, 5, true, 3, 3, false, false, false, true, 100, 4.88) == FW_PILOTED);
+    CHECK(flight_warp_why(10000.0, 5, false, 3, 3, false, false, false, false, 100, 4.88) == FW_OTHER_SYSTEM);
+    CHECK(flight_warp_why(10000.0, 5, true, 0, 3, false, false, false, false, 100, 4.88) == FW_WARP);   // one side unknown: allowed
+    CHECK(flight_warp_why(10000.0, 5, true, 3, 0, false, false, false, false, 100, 4.88) == FW_WARP);
+    CHECK(flight_warp_why(10000.0, 5, true, 0, 0, false, false, false, false, 100, 4.88) == FW_WARP);   // both unknown: allowed
+    CHECK(flight_warp_why(10000.0, 5, true, 3, 3, false, false, false, false, 100, 4.88) == FW_WARP);   // same known sector
+    CHECK(!sectors_conflict(0, 3) && !sectors_conflict(3, 0) && !sectors_conflict(0, 0) && !sectors_conflict(3, 3));
+    CHECK(sectors_conflict(3, 4));   // both known, different
+    CHECK(flight_warp_why(10000.0, 5, true, 3, 4, false, false, false, false, 100, 4.88) == FW_OTHER_SECTOR);
+    CHECK(flight_warp_why(10000.0, 5, true, 3, 3, false, false, false, false, 0, 4.88) == FW_NO_FUEL);
+    CHECK(flight_unreachable(FW_OTHER_SECTOR) && flight_unreachable(FW_OTHER_SYSTEM));
+    CHECK(!flight_unreachable(FW_NO_FUEL) && !flight_unreachable(FW_WARP));
+    // landing candidates toward T = (5000,0,0) from the origin: base 300 m short, 600 m short, 200 m sideways both ways
+    const double T[3] = {5000, 0, 0}, dir[3] = {1, 0, 0};
+    double L[3];
+    landing_candidate(0, T, dir, L); CHECK(std::fabs(L[0] - 4700) < 1e-9 && std::fabs(L[1]) < 1e-9);
+    landing_candidate(1, T, dir, L); CHECK(std::fabs(L[0] - 4400) < 1e-9);
+    landing_candidate(2, T, dir, L); CHECK(std::fabs(L[0] - 4700) < 1e-9 && std::fabs(L[1] + 200) < 1e-9);
+    landing_candidate(3, T, dir, L); CHECK(std::fabs(L[0] - 4700) < 1e-9 && std::fabs(L[1] - 200) < 1e-9);
+    CHECK(!point_blocked(20.0, 8.0, 8.0));    // 20 m from an 8 m rock with 8 m clearance: block radius 14.4
+    CHECK(point_blocked(10.0, 8.0, 8.0));
+    CHECK(point_blocked(30.0, 35.0, 8.0));    // big rock: block radius 36
+}
+
+// tuning (fix/0.2.3-tune): block radius, leg clearance, waypoint candidates and pick, retarget score, 60 s approach cap
+static void t_tune_geom()
+{
+    CHECK(std::fabs(block_r_m(10.0, 8.0) - 16.0) < 1e-9);          // 10 x 0.8 + 8
+    CHECK(std::fabs(block_r_m(35.0, 8.0) - 36.0) < 1e-9);          // 35 x 0.8 + 8
+    CHECK(std::fabs(block_r_m(-1.0, 8.0) - 8.0) < 1e-9);           // negative radius counts as 0
+    // side points: dir along +X, centre at (100,0,0), offset 50: side +1 is -Y, side -1 is +Y
+    const double c[3] = {100, 0, 0}, dx[3] = {1, 0, 0}, dz[3] = {0, 0, 1};
+    double o[3];
+    side_point(c, dx, 50.0, 1, o);
+    CHECK(std::fabs(o[0] - 100) < 1e-9 && std::fabs(o[1] + 50) < 1e-9 && std::fabs(o[2]) < 1e-9);
+    side_point(c, dx, 50.0, -1, o);
+    CHECK(std::fabs(o[1] - 50) < 1e-9);
+    side_point(c, dz, 50.0, 1, o);                                  // dir along Z: +Y fallback
+    CHECK(std::fabs(o[1] - 50) < 1e-9 && std::fabs(o[0] - 100) < 1e-9);
+    // candidates: 0 = +1.0x, 1 = -1.0x, 2 = +1.6x, 3 = -1.6x (block radius 20)
+    double w[3];
+    waypoint_candidate(0, c, dx, 20.0, w); CHECK(std::fabs(w[1] + 20) < 1e-9);
+    waypoint_candidate(1, c, dx, 20.0, w); CHECK(std::fabs(w[1] - 20) < 1e-9);
+    waypoint_candidate(2, c, dx, 20.0, w); CHECK(std::fabs(w[1] + 32) < 1e-9);
+    waypoint_candidate(3, c, dx, 20.0, w); CHECK(std::fabs(w[1] - 32) < 1e-9);
+    const bool none[4] = {false, false, false, false};
+    const bool second[4] = {false, true, false, true};
+    CHECK(waypoint_pick(none, 4) == -1);
+    CHECK(waypoint_pick(second, 4) == 1);                            // first clear candidate in order
+    // leg clearance through path_first_blocker: rock at 20 m off a 1 km leg blocks (block 36), at 50 m does not (block 14.4)
+    const double a[3] = {0, 0, 0}, b[3] = {1000, 0, 0};
+    PathRock pr[2];
+    pr[0].c[0] = 500; pr[0].c[1] = 20; pr[0].c[2] = 0; pr[0].r = block_r_m(35.0, 8.0);
+    pr[1].c[0] = 500; pr[1].c[1] = 50; pr[1].c[2] = 0; pr[1].r = block_r_m(8.0, 8.0);
+    double dd = 0.0;
+    CHECK(path_first_blocker(a, b, pr, 1, dd) == 0);
+    CHECK(path_first_blocker(a, b, pr + 1, 1, dd) == -1);
+    // retarget score: a blocked candidate loses to a clear one unless it is 1500 m nearer
+    CHECK(std::fabs(pick_score(100.0, false) - 100.0) < 1e-9);
+    CHECK(pick_score(500.0, true) > pick_score(1000.0, false));
+    CHECK(pick_score(2000.0, true) > pick_score(1000.0, false));
+    // 60 s cap from the first path event
+    CHECK(!appr_capped(0, 999999));                                  // no path event yet
+    CHECK(!appr_capped(10000, 69999));
+    CHECK(appr_capped(10000, 70000));
+    CHECK(!appr_capped(70000, 80000) && appr_capped(70000, 130000));
+}
+
+static void t_reg_targeted_ore_budget()
+{
+    RockReg g;
+    reg_add(g, 5, 1, 0, 0, 0);
+    g.target_set(5, true);
+    CHECK(g.targeted().count(5) == 1);
+    g.target_set(5, false);
+    CHECK(g.targeted().empty());
+    int a1 = 0, a2 = 0;
+    const double p[3] = {0, 0, 0}, q[3] = {10, 0, 0};
+    g.ore_put(&a1, p);
+    g.ore_put(&a2, q);
+    CHECK(g.ore_ok(&a1) && g.ore_within(p, 20) == 2 && g.ore_within(p, 5) == 1);
+    CHECK(g.ore_kill(&a1) && !g.ore_ok(&a1) && g.ore_within(p, 20) == 1);
+    g.ore_prune();
+    CHECK(g.ore.size() == 1 && g.ore_ok(&a2) && !g.ore_ok(&a1));
+    CHECK(!reg_over_budget(0.9) && reg_over_budget(1.1));
+}
+
+// WHAT: micro-benchmark: 24000 rocks in one system (100 km cube), 7 ships, 4 Hz. Each tick = 7 queries (4 nearest + 3 first_blocker).
+//       Prints ms per query. Bound: a tick of 7 queries under 2 ms (wall clock, loose).
+static void t_reg_bench()
+{
+    RockReg g;
+    uint64_t s = 12345;
+    auto rnd = [&s]() { s = s * 6364136223846793005ull + 1442695040888963407ull; return static_cast<double>(s >> 11) / 9007199254740992.0; };
+    int tag = 0;
+    void* ore = &tag;
+    const int N = 24000;
+    for (int i = 0; i < N; ++i)
+    {
+        const double c[3] = {rnd() * 100000.0, rnd() * 100000.0, rnd() * 100000.0};
+        reg_add(g, i + 1, 7, c[0], c[1], c[2], ore, 8.0 + rnd() * 60.0);
+    }
+    double ships[7][3];
+    for (auto& sh : ships) { sh[0] = rnd() * 100000.0; sh[1] = rnd() * 100000.0; sh[2] = rnd() * 100000.0; }
+    const int TICKS = 200;
+    double worst = 0.0, total = 0.0;
+    int hits = 0;
+    for (int t = 0; t < TICKS; ++t)
+    {
+        for (auto& sh : ships) { sh[0] += 3.0; sh[1] -= 2.0; }   // ships move a little each tick
+        const auto t0 = std::chrono::steady_clock::now();
+        for (int k = 0; k < 7; ++k)
+        {
+            double d = 0.0;
+            if (k < 4) hits += g.nearest(7, ore, ships[k], nullptr, nullptr, 0, d) != RockReg::npos;
+            else
+            {
+                const double b[3] = {ships[k][0] + 3000.0, ships[k][1], ships[k][2]};
+                hits += g.first_blocker(7, ships[k], b, 300.0, nullptr, 0, nullptr, 0, d) != RockReg::npos;
+            }
+        }
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        total += ms;
+        if (ms > worst) worst = ms;
+    }
+    std::printf("bench: rocks=%d ships=7 ticks=%d avg tick(7 queries)=%.4f ms worst=%.4f ms per query=%.4f ms hits=%d\n",
+                N, TICKS, total / TICKS, worst, total / TICKS / 7.0, hits);
+    CHECK(total / TICKS < 2.0);
+}
+
+static void t_reg_abs_m()
+{
+    // chunk (1, 0, -1) + loc raw (65536, 0, 131072) at 65536 raw per m = (2048 + 1, 0, -2048 + 2) m
+    const int64_t ch[3] = {1, 0, -1};
+    const double loc[3] = {65536.0, 0.0, 131072.0};
+    double c[3];
+    reg_abs_m(ch, loc, 65536.0, c);
+    NEAR(c[0], 2049.0, 1e-9);
+    NEAR(c[1], 0.0, 1e-9);
+    NEAR(c[2], -2046.0, 1e-9);
+    CHECK(reg_cell_idx(-1.0) == -1 && reg_cell_idx(2047.9) == 0 && reg_cell_idx(2048.0) == 1);
+}
+
+// ---------- box probe and reg_check parsers (mb_logic.hpp, mb_registry_logic.hpp) ----------
+static void t_box_probe_parse()
+{
+    int sid = 0, mode = -1;
+    double lo[3] = {0, 0, 0}, hi[3] = {0, 0, 0};
+    CHECK(probe_parse_box("probe_collision_box:41529:-50:-50:-50:50:50:50", sid, lo, hi, mode));
+    CHECK(sid == 41529 && mode == PROBE_BOX_LOCAL && lo[0] == -50.0 && hi[2] == 50.0);
+    CHECK(probe_parse_box("probe_collision_box:7:0:0:0:1:2:3:world", sid, lo, hi, mode) && mode == PROBE_BOX_WORLD && hi[1] == 2.0);
+    CHECK(probe_parse_box("probe_collision_box:7:0:0:0:1:2:3:raw", sid, lo, hi, mode) && mode == PROBE_BOX_RAW);
+    CHECK(probe_parse_box("probe_collision_box:7:0:0:0:1:2:3:local", sid, lo, hi, mode) && mode == PROBE_BOX_LOCAL);
+    CHECK(!probe_parse_box("probe_collision_box:7:0:0:0:1:2:3:bogus", sid, lo, hi, mode));
+    CHECK(!probe_parse_box("probe_collision_box:7:0:0:0:1:2", sid, lo, hi, mode));        // 6 numbers
+    CHECK(!probe_parse_box("probe_collision_box:0:0:0:0:1:2:3", sid, lo, hi, mode));      // ship id
+    CHECK(!probe_parse_box("probe_collision_box:x:0:0:0:1:2:3", sid, lo, hi, mode));
+    CHECK(!probe_parse_box("probe_collision_box:7:5:0:0:1:2:3", sid, lo, hi, mode));      // min > max on x
+    CHECK(!probe_parse_box("probe_collision_box:7:0:0:0:nan:2:3", sid, lo, hi, mode));
+    CHECK(!probe_parse_box("probe_collision_box:7::0:0:1:2:3", sid, lo, hi, mode));       // empty number
+    CHECK(!probe_parse_box("probe_collision_boxwatch:7:5", sid, lo, hi, mode));           // other command
+    double secs = 0.0;
+    CHECK(probe_parse_boxwatch("probe_collision_boxwatch:41529:30", sid, secs, mode) && sid == 41529 && secs == 30.0 && mode == PROBE_BOX_LOCAL);
+    CHECK(probe_parse_boxwatch("probe_collision_boxwatch:7:20:world", sid, secs, mode) && mode == PROBE_BOX_WORLD && secs == 20.0);
+    CHECK(probe_parse_boxwatch("probe_collision_boxwatch:7:500", sid, secs, mode) && secs == PROBE_WATCH_MAX_S);   // clamped
+    CHECK(!probe_parse_boxwatch("probe_collision_boxwatch:7:20:raw", sid, secs, mode));   // raw refused
+    CHECK(!probe_parse_boxwatch("probe_collision_boxwatch:7", sid, secs, mode));
+    CHECK(!probe_parse_boxwatch("probe_collision_boxwatch:7:0", sid, secs, mode));
+    CHECK(!probe_parse_boxwatch("probe_collision_boxwatch:7:x", sid, secs, mode));
+    CHECK(probe_split("a::b").size() == 3 && probe_split("").size() == 1);
+}
+
+static void t_box_probe_uu_fwd()
+{
+    const double m_lo[3] = {1, 2, 3}, m_hi[3] = {4, 5, 6}, ship[3] = {1000, 0, -200};
+    double lo[3], hi[3];
+    probe_box_uu(PROBE_BOX_LOCAL, m_lo, m_hi, ship, lo, hi);
+    NEAR(lo[0], 100.0, 1e-9); NEAR(lo[1], 200.0, 1e-9); NEAR(lo[2], 300.0, 1e-9); NEAR(hi[2], 600.0, 1e-9);
+    probe_box_uu(PROBE_BOX_WORLD, m_lo, m_hi, ship, lo, hi);
+    NEAR(lo[0], 1100.0, 1e-9); NEAR(lo[2], 100.0, 1e-9); NEAR(hi[0], 1400.0, 1e-9);
+    probe_box_uu(PROBE_BOX_RAW, m_lo, m_hi, ship, lo, hi);
+    NEAR(lo[0], 1.0, 1e-9); NEAR(hi[2], 6.0, 1e-9);   // typed numbers as they are
+    NEAR(probe_box_fwd_m(0), 25.0, 1e-9);
+    NEAR(probe_box_fwd_m(3), 25.0, 1e-9);             // 15 m, floored to 25
+    NEAR(probe_box_fwd_m(10), 50.0, 1e-9);
+    NEAR(probe_box_fwd_m(20), 100.0, 1e-9);
+    double al[3], ah[3], fl[3], fh[3];
+    probe_watch_boxes(10, al, ah, fl, fh);
+    NEAR(al[0], -50.0, 1e-9); NEAR(ah[2], 50.0, 1e-9);
+    NEAR(fl[0], 0.0, 1e-9); NEAR(fh[0], 50.0, 1e-9); NEAR(fl[1], -15.0, 1e-9); NEAR(fh[2], 15.0, 1e-9);
+}
+
+static void t_reg_check_summary()
+{
+    int sid = 0;
+    size_t n = 0;
+    CHECK(reg_check_parse("reg_check:207537", sid, n) && sid == 207537 && n == REG_CHECK_DEF_N);
+    CHECK(reg_check_parse("reg_check:207537:5", sid, n) && n == 5);
+    CHECK(reg_check_parse("reg_check:207537:500", sid, n) && n == REG_CHECK_MAX_N);   // capped
+    CHECK(!reg_check_parse("reg_check:0", sid, n));
+    CHECK(!reg_check_parse("reg_check:x", sid, n));
+    CHECK(!reg_check_parse("reg_check:5:0", sid, n));
+    CHECK(!reg_check_parse("reg_check:5:-1", sid, n));
+    CHECK(!reg_check_parse("reg_check:5:3:4", sid, n));
+    CHECK(!reg_check_parse("reg_check:", sid, n));
+    CHECK(reg_summary_line(3, 1.5, 0.5, 2) == "SUMMARY n=3 max_err_m=1.500 mean_err_m=0.500 missing=2");
+    CHECK(reg_summary_line(3, 1.5, 0.5, -1) == "SUMMARY n=3 max_err_m=1.500 mean_err_m=0.500 missing=n/a");
+    CHECK(reg_summary_line(0, 0.0, 0.0, 0) == "SUMMARY n=0 max_err_m=0.000 mean_err_m=0.000 missing=0");
+}
+
 // ---------- runner ----------
 
 struct Case { const char* name; void (*fn)(); };
+
+static void t_watchdog()
+{
+    CHECK(!wd_is_stalled(9.9));
+    CHECK(wd_is_stalled(10.0));
+    CHECK(wd_is_stalled(120.0));
+    CHECK(wd_line_due(0, true, 0.0));          // first line of an episode is due at once
+    CHECK(!wd_line_due(1, false, 29.9));       // repeat waits 30 s
+    CHECK(wd_line_due(1, false, 30.0));
+    CHECK(!wd_line_due(WD_MAX_LINES, true, 999.0)); // hard cap
+    CHECK(!wd_line_due(WD_MAX_LINES, false, 999.0));
+    CHECK(wd_line_due(WD_MAX_LINES - 1, false, 30.0));
+}
+
+static void t_probe()
+{
+    int sid = 0;
+    double secs = 0.0;
+    CHECK(probe_parse_watch("probe_avoid_watch:41529:30", sid, secs) && sid == 41529 && secs == 30.0);
+    CHECK(probe_parse_watch("probe_avoid_watch:7:500", sid, secs) && sid == 7 && secs == 120.0);   // clamped
+    CHECK(!probe_parse_watch("probe_avoid_watch:7", sid, secs));
+    CHECK(!probe_parse_watch("probe_avoid_watch:x:5", sid, secs));
+    CHECK(!probe_parse_watch("probe_avoid_watch:7:0", sid, secs));
+    CHECK(!probe_parse_watch("probe_avoid_watch:7:-3", sid, secs));
+    CHECK(!probe_parse_watch("probe_avoid", sid, secs));
+    CHECK(probe_parse_sid("probe_avoid:41529", sid) && sid == 41529);
+    CHECK(!probe_parse_sid("probe_avoid", sid));
+    CHECK(!probe_parse_sid("probe_avoid:", sid));
+    CHECK(probe_watch_more(0, 0.0, 30.0));
+    CHECK(!probe_watch_more(PROBE_WATCH_MAX_LINES, 0.0, 30.0));   // line cap
+    CHECK(!probe_watch_more(PROBE_WATCH_MAX_LINES - 1, 0.0, 30.0)); // last line kept for the end line
+    CHECK(probe_watch_more(PROBE_WATCH_MAX_LINES - 2, 0.0, 30.0));
+    CHECK(!probe_watch_more(10, 30.0, 30.0));                     // time asked for
+    CHECK(probe_name_match(L"bAvoidanceEnabled"));
+    CHECK(probe_name_match(L"WorldImpulse"));
+    CHECK(probe_name_match(L"bAutopilot"));
+    CHECK(!probe_name_match(L"Throttle"));
+}
+
+static void t_probe_collision()
+{
+    CHECK(probe_m_to_q16(1.0) == 65536);
+    CHECK(probe_m_to_q16(-0.5) == -32768);
+    CHECK(probe_m_to_q16(2.5) == 163840);
+    CHECK(probe_m_to_q16(1.0 / 65536.0) == 1);
+    CHECK(probe_m_to_q16(0.0) == 0);
+    NEAR(probe_m_to_uu(1.25), 125.0, 1e-9);
+    CHECK(probe_fwd_m(0) == 5.0);
+    CHECK(probe_fwd_m(-3) == 5.0);
+    CHECK(probe_fwd_m(1) == 5.0);
+    CHECK(probe_fwd_m(3) == 15.0);
+    CHECK(probe_fwd_m(10) == 50.0);
+    const uint8_t bytes[3] = {0x00, 0xff, 0x0a};
+    CHECK(probe_hex(bytes, 3) == L"00 ff 0a");
+    CHECK(probe_hex(bytes, 0).empty());
+    int sid = 0;
+    double v[3] = {0.0, 0.0, 0.0};
+    CHECK(probe_parse_call("probe_collision_call:41529:1.5:-2:20", sid, v) && sid == 41529 && v[0] == 1.5 && v[1] == -2.0 && v[2] == 20.0);
+    CHECK(probe_parse_call("probe_collision_call:41529:1e2:0:0", sid, v) && v[0] == 100.0);
+    CHECK(!probe_parse_call("probe_collision_call:41529:1:2", sid, v));
+    CHECK(!probe_parse_call("probe_collision_call:41529:1:2:3:4", sid, v));
+    CHECK(!probe_parse_call("probe_collision_call:0:1:2:3", sid, v));
+    CHECK(!probe_parse_call("probe_collision_call:41529:x:2:3", sid, v));
+    CHECK(!probe_parse_call("probe_collision_call:41529::2:3", sid, v));
+    CHECK(!probe_parse_call("probe_collision_call:41529:1:2:nan", sid, v));
+    CHECK(!probe_parse_call("probe_avoid:41529:1:2:3", sid, v));
+    double secs = 0.0;
+    CHECK(probe_parse_cwatch("probe_collision_watch:41529:5", sid, secs) && sid == 41529 && secs == 5.0);
+    CHECK(probe_parse_cwatch("probe_collision_watch:7:500", sid, secs) && secs == 120.0);
+    CHECK(!probe_parse_cwatch("probe_avoid_watch:7:5", sid, secs));
+    CHECK(probe_parse_sid_pfx("probe_collision:41529", "probe_collision:", sid) && sid == 41529);
+    CHECK(!probe_parse_sid_pfx("probe_collision:", "probe_collision:", sid));
+}
+
+// ---------- seed order, seeded areas, disk cache (mb_registry_logic.hpp) ----------
+
+static RegCacheData t_cache_sample()
+{
+    RegCacheData d;
+    d.kinds = {"Iron", "Ice ore"};
+    RegCacheRec a; a.id = 11; a.sys = 7; a.c[0] = 1.5; a.c[1] = -2048.25; a.c[2] = 4096.0; a.rad = 12.5f; a.ore = 0;
+    RegCacheRec b; b.id = 12; b.sys = 7; b.c[0] = 0.0; b.c[1] = 0.0; b.c[2] = 0.0; b.rad = -1.0f; b.ore = -1;
+    RegCacheRec c; c.id = 13; c.sys = 8; c.c[0] = 3.0; c.c[1] = 4.0; c.c[2] = 5.0; c.rad = 0.0f; c.ore = 1;
+    d.recs = {a, b, c};
+    d.h.exe_size = 1234;
+    d.h.save_n = 3;
+    return d;
+}
+
+static void t_reg_cache_round_trip()
+{
+    const std::vector<uint8_t> img = reg_cache_encode(t_cache_sample());
+    CHECK(img.size() == REG_CACHE_HDR + 3 * REG_CACHE_REC + 4 + (2 + 4) + (2 + 7));
+    RegCacheData o;
+    std::string why;
+    CHECK(reg_cache_parse(img.data(), img.size(), 1234, o, why));
+    CHECK(o.h.save_n == 3 && o.h.rock_n == 3 && o.h.exe_size == 1234);
+    CHECK(o.kinds.size() == 2 && o.kinds[0] == "Iron" && o.kinds[1] == "Ice ore");
+    CHECK(o.recs.size() == 3);
+    CHECK(o.recs[0].id == 11 && o.recs[0].sys == 7 && o.recs[0].c[1] == -2048.25 && o.recs[0].rad == 12.5f && o.recs[0].ore == 0);
+    CHECK(o.recs[1].rad == -1.0f && o.recs[1].ore == -1);
+    CHECK(o.recs[2].c[2] == 5.0 && o.recs[2].rad == 0.0f && o.recs[2].ore == 1);
+}
+
+static void t_reg_cache_reject()
+{
+    const std::vector<uint8_t> good = reg_cache_encode(t_cache_sample());
+    RegCacheData o;
+    std::string why;
+    auto bad = [&](const std::vector<uint8_t>& img, uint64_t exe) { return !reg_cache_parse(img.data(), img.size(), exe, o, why); };
+    CHECK(bad(good, 999));                                                   // exe size changed
+    CHECK(bad(good, 0));                                                     // exe size unknown
+    { auto x = good; x[0] ^= 0xFF; CHECK(bad(x, 1234)); }                    // magic
+    { auto x = good; x[4] = 2; CHECK(bad(x, 1234)); }                        // version
+    { auto x = good; x[REG_CACHE_HDR + 9] ^= 0x10; CHECK(bad(x, 1234)); }    // record byte: checksum
+    { auto x = good; x.pop_back(); CHECK(bad(x, 1234)); }                    // truncated
+    { auto x = good; x.resize(20); CHECK(bad(x, 1234)); }                    // short
+    { RegCacheData d = t_cache_sample(); d.recs[0].ore = 5; CHECK(bad(reg_cache_encode(d), 1234)); }     // ore index out of range
+    { RegCacheData d = t_cache_sample(); d.recs[1].id = 0; CHECK(bad(reg_cache_encode(d), 1234)); }     // id 0
+    { RegCacheData d = t_cache_sample(); d.recs[0].c[0] = std::nan(""); CHECK(bad(reg_cache_encode(d), 1234)); }
+    { RegCacheData d = t_cache_sample(); d.recs[0].rad = -5.0f; CHECK(bad(reg_cache_encode(d), 1234)); }
+    CHECK(reg_cache_parse(good.data(), good.size(), 1234, o, why));          // the good image still passes
+    RegCacheData e;
+    e.h.exe_size = 5;
+    const std::vector<uint8_t> eimg = reg_cache_encode(e);                  // empty table is a valid image
+    CHECK(reg_cache_parse(eimg.data(), eimg.size(), 5, o, why) && o.recs.empty());
+}
+
+static void t_reg_cache_verdict()
+{
+    CHECK(reg_cache_verdict(5, 5, 50, 0) == RCV_TRUST);
+    CHECK(reg_cache_verdict(5, 6, 50, 0) == RCV_MERGE);
+    CHECK(reg_cache_verdict(5, 5, 50, 1) == RCV_RESEED);
+    CHECK(reg_cache_verdict(5, 5, 0, 0) == RCV_RESEED);
+    const double a[3] = {1, 2, 3}, b[3] = {1.005, 2, 3}, c[3] = {1.02, 2, 3};
+    CHECK(reg_same_pos(a, b) && !reg_same_pos(a, c));
+}
+
+static void t_reg_kill_unseen()
+{
+    RockReg g;
+    const double p[3] = {0, 0, 0};
+    g.add(1, 7, p, {});
+    g.add(2, 7, p, {});
+    g.add(3, 7, p, {});
+    const std::vector<uint64_t> seen = {5, 4, 5};   // pass 5: rock 2 not seen
+    CHECK(reg_kill_unseen(g, seen, 5, 9) == 1);
+    CHECK(g.is_alive(1) && !g.is_alive(2) && g.is_alive(3));
+    CHECK(reg_kill_unseen(g, seen, 5, 10) == 0);    // already dead: not counted again
+    CHECK(g.add(4, 7, p, {}) == 3 && g.is_alive(4));   // a new id is merged in alive
+    CHECK(g.kill(4, 11) && !g.is_alive(4));
+}
+
+static void t_reg_seed_rings()
+{
+    std::vector<RegSrc> src(1);
+    src[0].sys = 7;   // ship in chunk (0,0,0)
+    const int64_t a0[3] = {0, 0, 0}, a3[3] = {3, 0, -1}, a13[3] = {13, 0, 0}, a20[3] = {20, 0, 0}, far[3] = {10000, 0, 0};
+    CHECK(reg_ring_of(7, a0, src) == 0);
+    CHECK(reg_ring_of(7, a3, src) == 3);
+    CHECK(reg_ring_of(7, a13, src) == 13);
+    CHECK(reg_ring_of(7, far, src) == REG_RING_CAP);
+    CHECK(reg_ring_of(9, a0, src) == REG_RING_FAR);   // no ship in that system
+    const std::vector<int> ring = {13, 0, REG_RING_FAR, 3, 20};
+    std::vector<size_t> order;
+    size_t near_n = 0;
+    reg_order_rings(ring, REG_PRIORITY_CHUNKS, order, near_n);
+    CHECK(order.size() == 5 && near_n == 2);   // phase A = rings 0 and 3
+    CHECK(order[0] == 1 && order[1] == 3 && order[2] == 0 && order[3] == 4 && order[4] == 2);
+    // the chunk of a metre position: 2048 m per chunk, floor for negatives
+    const double pm[3] = {2047.9, -0.5, 4096.0};
+    int64_t cm[3] = {0, 0, 0};
+    reg_chunk_of_m(pm, cm);
+    CHECK(cm[0] == 0 && cm[1] == -1 && cm[2] == 2);
+}
+
+static void t_reg_area_ready()
+{
+    RockReg g;
+    std::vector<RegSrc> src(1);
+    src[0].sys = 7;
+    g.zones_begin(1, src, REG_PRIORITY_CHUNKS);
+    const int64_t c0[3] = {0, 0, 0}, c11[3] = {11, 0, 0}, c12[3] = {12, 0, 0}, cm12[3] = {-12, 0, 0};
+    CHECK(!g.area_ready(7, c0, 0));              // not ready yet
+    g.zones_ready(1);
+    CHECK(g.area_ready(7, c11, 1));              // 11 + 1 <= 12
+    CHECK(!g.area_ready(7, c12, 1));             // 12 + 1 > 12
+    CHECK(g.area_ready(7, cm12, 0));
+    CHECK(!g.area_ready(8, c0, 0));              // other system
+    std::vector<RegSrc> src2(1);
+    src2[0].sys = 9;
+    g.zones_begin(2, src2, REG_PRIORITY_CHUNKS); // drops the zones not ready, keeps the ready one
+    CHECK(g.area_ready(7, c0, 0));
+    CHECK(!g.area_ready(9, c0, 0));
+}
+
+static void t_reg_cache_bench()
+{
+    // 160,799 records (the live save count). Encode once; time the parse (file bytes -> records) and the table build (RockReg::add).
+    RegCacheData d;
+    d.kinds = {"Iron", "Ice", "Gold"};
+    d.h.exe_size = 99;
+    d.h.save_n = 160799;
+    d.recs.resize(160799);
+    uint64_t s = 42;
+    for (size_t i = 0; i < d.recs.size(); ++i)
+    {
+        s = s * 6364136223846793005ull + 1442695040888963407ull;
+        RegCacheRec& r = d.recs[i];
+        r.id = static_cast<int32_t>(i + 1);
+        r.sys = 7 + static_cast<int32_t>(i % 3);
+        r.c[0] = static_cast<double>(s >> 40) - 8.0e6;
+        r.c[1] = static_cast<double>((s >> 20) & 0xFFFFF) - 5.0e5;
+        r.c[2] = static_cast<double>(s & 0xFFFFF) - 5.0e5;
+        r.rad = (i % 4) ? 12.5f : -1.0f;
+        r.ore = static_cast<int32_t>(i % 3);
+    }
+    const std::vector<uint8_t> img = reg_cache_encode(d);
+    RegCacheData o;
+    std::string why;
+    const auto t0 = std::chrono::steady_clock::now();
+    const bool ok = reg_cache_parse(img.data(), img.size(), 99, o, why);
+    const auto t1 = std::chrono::steady_clock::now();
+    CHECK(ok && o.recs.size() == 160799);
+    RockReg tab;
+    tab.kinds = o.kinds;
+    for (const RegCacheRec& c : o.recs)
+    {
+        const size_t i = tab.add(c.id, c.sys, c.c, {});
+        tab.rocks[i].ore = c.ore;
+        if (c.rad >= 0.0f) tab.set_radius(i, static_cast<double>(c.rad));
+    }
+    const auto t2 = std::chrono::steady_clock::now();
+    CHECK(tab.rocks.size() == 160799);
+    std::printf("bench reg_cache_parse n=%zu bytes=%zu ms=%.2f\n", o.recs.size(), img.size(), std::chrono::duration<double, std::milli>(t1 - t0).count());
+    std::printf("bench reg_cache_table n=%zu ms=%.2f\n", tab.rocks.size(), std::chrono::duration<double, std::milli>(t2 - t1).count());
+}
+
+// low power: response grace, dock loop guard, approach timeout and Throttle cap, power name matchers, low_power_return bound
+static void t_lowpower()
+{
+    CHECK(!lowpower_due(9.9));
+    CHECK(lowpower_due(10.0));
+    CHECK(lowpower_due(12.5));
+    CHECK(!lowpower_halt_at_dock(false, true));   // no low-power trip: the dock stage is not stopped
+    CHECK(!lowpower_halt_at_dock(true, false));   // power restored at the dock: go on
+    CHECK(lowpower_halt_at_dock(true, true));     // still low power after the dock stage of a low-power trip: HALT
+    NEAR(approach_timeout_s(300.0, true, 0.333), 300.0 / 0.333, 1e-9);
+    CHECK(approach_timeout_s(300.0, false, 0.333) == 300.0);
+    CHECK(approach_timeout_s(300.0, true, 0.0) == 300.0);   // unreadable fraction: base
+    CHECK(approach_timeout_s(300.0, true, 1.0) == 300.0);   // full speed in low power: base
+    CHECK(lowpower_throttle_cap(10, true, 5) == 5);
+    CHECK(lowpower_throttle_cap(3, true, 5) == 3);
+    CHECK(lowpower_throttle_cap(10, false, 5) == 10);
+    CHECK(lowpower_throttle_cap(10, true, 0) == 10);
+    CHECK(power_name_match(std::wstring(L"PowerGenRate")));
+    CHECK(power_name_match(std::wstring(L"ThrusterPowerDraw")));
+    CHECK(power_name_match(std::wstring(L"bInLowPowerMode")));
+    CHECK(!power_name_match(std::wstring(L"Health")));
+    CHECK(power_obj_match(std::wstring(L"BP_ThrusterComponent_C")));
+    CHECK(!power_obj_match(std::wstring(L"DMSPlayerShipObject")));
+    const SettingBound* b = find_setting_bound("low_power_return");
+    CHECK(b != nullptr);
+    double out = -1.0;
+    CHECK(b && clamp_setting(*b, 5.0, out));
+    CHECK(out == 1.0);
+    CHECK(b && !clamp_setting(*b, 0.0, out));
+    CHECK(out == 0.0);
+}
+
+// probe_power: highlight and buffer matchers, 1 s watch cadence, watch line text
+static void t_power_probe_fmt()
+{
+    CHECK(power_highlight_match(std::wstring(L"bAutoPullFuel")));
+    CHECK(power_highlight_match(std::wstring(L"FeedMode")));
+    CHECK(power_highlight_match(std::wstring(L"bEnabled")));
+    CHECK(!power_highlight_match(std::wstring(L"Health")));
+    CHECK(power_buffer_match(std::wstring(L"StoredFuel")));
+    CHECK(!power_buffer_match(std::wstring(L"Health")));
+    CHECK(power_obj_match(std::wstring(L"BP_FuelCell_C")));
+    double acc = 0.0;
+    CHECK(!power_watch_due(acc, 0.4));
+    CHECK(power_watch_due(acc, 0.7));   // 1.1 s total: due, 0.1 s left over
+    CHECK(!power_watch_due(acc, 0.5));
+    CHECK(power_watch_due(acc, 0.5));
+    const std::wstring line = power_watch_line(3.0, true, true, L"5", L"2", L"fuel=10", L"hydrogen=7");
+    CHECK(line.find(L"lp=LOW") != std::wstring::npos);
+    CHECK(line.find(L"PowerGenRate=5") != std::wstring::npos);
+    CHECK(line.find(L"cargo:hydrogen=7") != std::wstring::npos);
+    CHECK(power_watch_line(0.0, false, false, L"-", L"-", L"-", L"-").find(L"lp=unknown") != std::wstring::npos);
+}
+
+// power grid rules, brown-out log change, reactor auto input (due / rate / attempt cap), refuel unload rule
+static void t_power_grid_auto()
+{
+    CHECK(power_no_power(40.0, 0.0, 0.0));        // Nickel Miner 1: consumes 40, makes nothing
+    CHECK(!power_no_power(0.0, 0.0, 0.0));        // idle, nothing consumed
+    CHECK(!power_no_power(200.0, 80.0, 0.4));     // Big Miner 1: brown-out, not dead
+    CHECK(power_brownout(200.0, 80.0, 0.4));
+    CHECK(power_brownout(280.0, 80.0, 0.29));     // Cleaner 2
+    CHECK(!power_brownout(0.0, 80.0, 1.0));       // idle ship
+    CHECK(!power_brownout(40.0, 0.0, 0.0));       // dead is not brown-out
+    CHECK(power_bo_event(false, true) == 1);
+    CHECK(power_bo_event(true, false) == 2);
+    CHECK(power_bo_event(true, true) == 0);       // no line while the state holds
+    CHECK(power_bo_event(false, false) == 0);
+    // grace: no power for 10 s counts as the response, not before
+    CHECK(!lowpower_due(9.0));
+    CHECK(lowpower_due(10.0));
+    double acc = 0.0;
+    CHECK(!period_due(acc, 59.0, REACTOR_AUTO_PERIOD_S));
+    CHECK(period_due(acc, 1.0, REACTOR_AUTO_PERIOD_S));  // 60 s: due
+    CHECK(!period_due(acc, 30.0, REACTOR_AUTO_PERIOD_S));
+    // auto input: off -> write once, then rate limit 30 s, then give-up after 3 writes
+    CHECK(reactor_auto_action(true, 0, false, 0, 1000) == RA_NONE);             // already on
+    CHECK(reactor_auto_action(false, 0, false, 0, 1000) == RA_WRITE);           // first write
+    CHECK(reactor_auto_action(false, 1, false, 1000, 20000) == RA_NONE);        // 19 s after the last: rate limited
+    CHECK(reactor_auto_action(false, 1, false, 1000, 31000) == RA_WRITE);       // 30 s: next write
+    CHECK(reactor_auto_action(false, REACTOR_AUTO_MAX, false, 1000, 99999) == RA_GIVEUP);
+    CHECK(reactor_auto_action(false, REACTOR_AUTO_MAX, true, 1000, 99999) == RA_NONE);   // give-up line written once
+    CHECK(reactor_auto_action(true, REACTOR_AUTO_MAX, false, 1000, 99999) == RA_NONE);   // on now: nothing
+    // refuel: unload first only when full (>= 90 % or no space)
+    CHECK(!refuel_needs_unload(27, false));
+    CHECK(!refuel_needs_unload(89, false));
+    CHECK(refuel_needs_unload(90, false));
+    CHECK(refuel_needs_unload(10, true));
+    CHECK(!refuel_needs_unload(-1, false));       // unknown cargo: refuel directly
+}
 
 int main()
 {
@@ -1068,10 +2063,21 @@ int main()
         {"net_full", t_net_full}, {"net_bad_holder", t_net_bad_holder}, {"unload_stalled", t_unload_stalled},
         {"net_log_gate", t_net_log_gate}, {"net_self_occupant", t_net_self_occupant}, {"net_queue_never_occupant", t_net_queue_never_occupant}, {"net_blocked_by_never_self", t_net_blocked_by_never_self},
         {"net_reconcile", t_net_reconcile}, {"net_release", t_net_release}, {"net_text", t_net_text},
+        {"watchdog", t_watchdog}, {"probe", t_probe}, {"probe_collision", t_probe_collision},
         {"net_score_order", t_net_score_order}, {"net_higher_cargo_wins", t_net_higher_cargo_wins}, {"net_non_preempt", t_net_non_preempt},
         {"net_flee_no_slot", t_net_flee_no_slot}, {"net_slots", t_net_slots}, {"net_slot_pos", t_net_slot_pos}, {"net_offset_carry", t_net_offset_carry}, {"net_line_spacing", t_net_line_spacing},
         {"net_clear_expired", t_net_clear_expired}, {"net_unload_first", t_net_unload_first}, {"dock_undock_first", t_dock_undock_first},
         {"combat_flee", t_combat_flee}, {"combat_log", t_combat_log},
+        {"hazard_flee", t_hazard_flee}, {"targett_entry", t_targett_entry},
+        {"path_block", t_path_block}, {"path_perf", t_path_perf}, {"path_waypoint", t_path_waypoint}, {"shield_drop", t_shield_drop}, {"fast_sample", t_fast_sample},
+        {"rock_depleted", t_rock_depleted},
+        {"reg_table", t_reg_table}, {"reg_events", t_reg_events}, {"reg_within_nearest", t_reg_within_nearest}, {"reg_surface_block", t_reg_surface_block_radius},
+        {"approach_throttle", t_approach_throttle}, {"bubble", t_bubble}, {"bubble_ladder", t_bubble_ladder}, {"bubble_scope", t_bubble_scope}, {"tune_geom", t_tune_geom}, {"flight_warp", t_flight_warp}, {"sweep_return_flee", t_sweep_return_flee}, {"path2_rules", t_path2_rules},
+        {"reg_targeted_ore_budget", t_reg_targeted_ore_budget}, {"reg_bench", t_reg_bench}, {"reg_abs_m", t_reg_abs_m},
+        {"box_probe_parse", t_box_probe_parse}, {"box_probe_uu_fwd", t_box_probe_uu_fwd}, {"reg_check_summary", t_reg_check_summary},
+        {"reg_cache_round_trip", t_reg_cache_round_trip}, {"reg_cache_reject", t_reg_cache_reject}, {"reg_cache_verdict", t_reg_cache_verdict},
+        {"reg_kill_unseen", t_reg_kill_unseen}, {"reg_seed_rings", t_reg_seed_rings}, {"reg_area_ready", t_reg_area_ready},
+        {"reg_cache_bench", t_reg_cache_bench}, {"lowpower", t_lowpower}, {"power_probe_fmt", t_power_probe_fmt}, {"power_grid_auto", t_power_grid_auto},
     };
     for (const Case& c : cases)
     {

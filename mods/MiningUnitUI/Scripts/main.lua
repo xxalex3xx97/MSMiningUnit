@@ -27,23 +27,40 @@ end
 local BTN = {}
 -- WHY: the ForceLayoutPrepass hook fires for EVERY widget in the game every frame; keep it registered only while our window has buttons (perf lesson: constant FPS cost + BTN grew forever).
 local HOOK = "/Script/UMG.Widget:ForceLayoutPrepass"
-local hookIds
+-- hookIds = registered pre/post ids (at most one registration at a time).
+-- hookOff = removal scheduled by close. Removal never runs inside the hook callback: clearClicks arms a delayed
+-- timer, and the timer hands the UnregisterHook call to the game-thread queue. A reopen before it fires cancels it
+-- (the hook is still registered, so no second RegisterHook is made).
+local hookIds, hookOff, hookOpens = nil, nil, 0
 local function onPrepass(self)
     local okn, key = pcall(function() return self:get():GetFullName() end)
     local fn = okn and BTN[key]
     if fn then pcall(ExecuteInGameThread, function() pcall(fn) end) end
 end
+local function hookRemove()
+    if hookOff and hookIds then
+        local ids = hookIds
+        hookIds, hookOff = nil, nil
+        local s = pcall(UnregisterHook, HOOK, ids[1], ids[2])
+        print(TAG .. "prepass hook removed ids=" .. ids[1] .. "," .. ids[2] .. " ok=" .. tostring(s) .. "\n")
+    end
+    hookOff = nil
+end
 local function onClick(btn, fn)
     if not hookIds then
         local s, pre, post = pcall(RegisterHook, HOOK, onPrepass)
-        if s then hookIds = { pre, post } end
+        if s then hookIds = { pre, post }; hookOpens = hookOpens + 1; print(TAG .. "prepass hook registered ids=" .. pre .. "," .. post .. " n=" .. hookOpens .. "\n") end
     end
+    hookOff = nil   -- window in use again: keep the hook registered
     BTN[btn:GetFullName()] = fn
     btn.OnClicked:Add(btn, FName("ForceLayoutPrepass"))
 end
 local function clearClicks()
     BTN = {}
-    if hookIds then pcall(UnregisterHook, HOOK, hookIds[1], hookIds[2]); hookIds = nil end
+    if hookIds and not hookOff then
+        hookOff = true
+        pcall(ExecuteWithDelay, 100, function() pcall(ExecuteInGameThread, hookRemove) end)
+    end
 end
 W.bind({ onClick = onClick, clear = clearClicks })
 

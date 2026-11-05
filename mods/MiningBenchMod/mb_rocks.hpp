@@ -98,7 +98,7 @@ namespace
     {
         auto* c = static_cast<MarkersCtx*>(p);
         auto* arr = c->ctrl->GetValuePtrByPropertyNameInChain<TArray<FScriptInterface>>(STR("ScannableHUDMarkers"));
-        c->n = arr ? arr->Num() : 0;
+        c->n = arr ? clamp_tarray_num(arr->Num()) : 0;
         for (int32_t i = 0; c->buf && arr && i < c->n && i < c->cap; ++i) c->buf[i] = (*arr)[i].ObjectPointer;
     }
     bool markers_read(UObject* ctrl, std::vector<UObject*>& out)
@@ -179,6 +179,10 @@ namespace
 
     // WHAT: ObjectId -> actor (only ids > 0). Lookup for rock_sel and the status target.
     std::map<int, UObject*> g_rock_by_id;
+
+    // WHAT: rock ids found depleted (ore stopped, see rock_depleted) or reported spent by another ship. Global (all ships), cleared only by a game restart.
+    // WHY: a depleted rock is never chosen again (rock search, approach, retarget, save-data rocks), even as the only rock.
+    std::set<int> g_depleted_rocks;
 
     // WHAT: ObjectId -> SmallResourceAsteroidObject (save object, source of GetRadius). Rebuilt on every list refresh.
     std::map<int, UObject*> g_save_by_id;
@@ -274,6 +278,9 @@ namespace
         g_rock_listener = nullptr;   // not deleted: the engine may be iterating its listener list right now; a tiny one-off leak at exit is safe
     }
 
+    // WHAT: registry hook (mb_registry.hpp, included later): the drained dead actors. Clears the registry actor handles.
+    void reg_on_dead(const std::unordered_set<const void*>& dead);
+
     // WHAT: removes every destroyed actor (queued by RockDeleteListener) from the shared rock containers. First call registers the listener.
     void rock_drain_dead()
     {
@@ -291,6 +298,7 @@ namespace
             g_rock_item.erase(a); g_rock_loc.erase(a);
             if (auto it = g_rock_id.find(a); it != g_rock_id.end()) { if (it->second > 0) g_rock_by_id.erase(it->second); g_rock_id.erase(it); }
         }
+        reg_on_dead(dead);
     }
 
     // WHAT: adds rock actor a to the refresh being built (list, items, ids, by_id). Ore and id are reused from the previous refresh
@@ -509,7 +517,7 @@ namespace
         PickCache& pc = g_pick_cache[std::make_pair(sid, item)];
         const bool bypass = skip || (skip_ids && !skip_ids->empty());
         if (!bypass && pc.ms != 0 && now - pc.ms < static_cast<ULONGLONG>(MINE_ROCK_CHECK_S * 1000.0) && std::equal(f.loc, f.loc + 3, pc.origin) &&
-            (!pc.actor || actor_ok(pc.actor)))
+            (!pc.actor || (actor_ok(pc.actor) && !g_depleted_rocks.count(rock_id_of(pc.actor)))))
         {
             if (pc.actor) out = pc.aim;
             return pc.actor;
@@ -522,6 +530,7 @@ namespace
             auto it = g_rock_item.find(a);
             if (it == g_rock_item.end() || it->second != item) continue;
             if (skip_ids && skip_ids->count(rock_id_of(a))) continue;
+            if (g_depleted_rocks.count(rock_id_of(a))) continue;
             ActAim r;
             if (!act_aim(f, a, r)) continue;
             if (!best || r.dist_m < best_aim.dist_m) { best = a; best_aim = r; }
@@ -541,7 +550,7 @@ namespace
         if (sel > 0)
         {
             UObject* a = rock_actor_by_id(sel);
-            if (alive(a)) { rule = STR("rock_sel"); return a; }
+            if (alive(a) && !g_depleted_rocks.count(sel)) { rule = STR("rock_sel"); return a; }
         }
         rule = STR("INI resource");
         UObject* item = find_item(eff_cfg(sid).resource, why);

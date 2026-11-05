@@ -1109,6 +1109,11 @@ local function sendSeq(cmds)
     end
   end
 end
+-- command listed in MiningCaps.txt (written by the DLL at load): an older DLL without it = false
+local function hasCap(name)
+  for _, l in ipairs(rdlines(M.DATA .. "MiningCaps.txt") or {}) do if l == name then return true end end
+  return false
+end
 
 local function fmtEta(sec)
   sec = math.floor(sec + 0.5)
@@ -1451,16 +1456,25 @@ function M.close()
   S.fleet, S.holoOut, S.tc = nil, nil, nil
   S.ud, S.rd, S.warn, S.dyn, S.dynWarn = nil, nil, nil, nil, nil
   if not (S.root or S.p or S.frame) then return end
-  local root, p = S.root, S.p
+  if M.closing then return end   -- already closing: idempotent
+  M.closes = (M.closes or 0) + 1
+  M.closing = true
+  local root, p, ep, n = S.root, S.p, M.opens or 0, M.closes
   S.root, S.p, S.w, S.frame = nil, nil, nil, nil
-  if ok(root) then try("RemoveFromParent", function() root:RemoveFromParent() end) end
-  if ok(p) then
-    try("look unignore", function() p:SetIgnoreLookInput(false) end)
-    try("move unignore", function() p:SetIgnoreMoveInput(false) end)
-    try("mouse off", function() p.bShowMouseCursor = false end)
-    try("input GameOnly", function() StaticFindObject(LIB):SetInputMode_GameOnly(p, false) end)
+  -- RemoveFromParent + input restore run on a later tick, outside the caller (button / refresh / dropGone / key) stack
+  local function teardown()
+    if ok(root) then try("RemoveFromParent", function() root:RemoveFromParent() end) end
+    -- input restore only if no window was opened since this close (a new open already set its own input mode)
+    if ok(p) and ep == (M.opens or 0) then
+      try("look unignore", function() p:SetIgnoreLookInput(false) end)
+      try("move unignore", function() p:SetIgnoreMoveInput(false) end)
+      try("mouse off", function() p.bShowMouseCursor = false end)
+      try("input GameOnly", function() StaticFindObject(LIB):SetInputMode_GameOnly(p, false) end)
+    end
+    M.closing = false
+    L("closed n=" .. tostring(n) .. " opens=" .. tostring(M.opens or 0) .. " closes=" .. tostring(M.closes))
   end
-  L("closed")
+  if not pcall(ExecuteWithDelay, 50, function() pcall(ExecuteInGameThread, teardown) end) then teardown() end
 end
 
 -- i = 1..3 (Ship, Items, Operation) -> PageSwitcher index 0..2
@@ -1722,14 +1736,11 @@ end
 -- Toggle: if the window is open, any open closes it.
 function M.open(ship)
   ExecuteInGameThread(function()
+    if M.closing then return end   -- previous close still tearing down: ignore the key (no second widget / hook)
+    -- toggle: any open request while a window is open (or half-open) closes it and does not open another
+    if M.isOpen() or S.root or S.p then M.close(); return end
     local mode = (ship ~= nil) and "mu" or "f4"
     local wantTab, wantAll, wantSet, wantName = M.lastTab, M.lastAll, M.lastSet, M.lastSetName   -- F4 reopens on the last tab / last committed ship set
-    if M.isOpen() then
-      local same = (S.mode == mode)
-      M.close()
-      if same then return end
-    end
-    if S.root or S.p then M.close() end                 -- stale half-open window
     if not ok(S.cls) then S.cls = nil end                -- class object can be GC'd / stale after docking or level change: reload
     if not S.cls and not M.load() then
       L("WBP not found - opening nothing")
@@ -1814,7 +1825,9 @@ function M.open(ship)
       bind("Btn_LoopStart", function() sendSeq({ "mine_start" }); S.pend = { k = "start", dl = S.tick + 12 }; S.arm = nil; refresh() end)
       bind("Btn_LoopStop", function() sendSeq({ "mine_stop" }); S.pend = { k = "stop", dl = S.tick + 12 }; S.arm = nil; refresh() end)
       bind("Btn_EmergencyStop", function()
-        sendSeq({ "stop_all" })                          -- hard stop for THIS ship (lasers/scooper off, jobs cancelled, loop halted); All ships: every ship
+        -- hard stop (lasers/scooper off, jobs cancelled, loop halted). One command: the DLL stops every bench ship in the same tick
+        -- (stop_all_ships). Old DLL (not in MiningCaps.txt): per ship stop_all, 400 ms apart.
+        if hasCap("stop_all_ships") then sendCmd("stop_all_ships", S.sid or 0) else sendSeq({ "stop_all" }) end
         S.arm = nil; S.pend = nil; S.estop = S.tick + 12
         L("emergency stop sent ship=" .. tostring(S.sid))
         refresh()
@@ -1873,7 +1886,8 @@ function M.open(ship)
     end
     refresh()
     startLoop()
-    L("open sid=" .. tostring(S.sid) .. " isOpen=" .. tostring(M.isOpen()))
+    M.opens = (M.opens or 0) + 1
+    L("open n=" .. M.opens .. " mode=" .. mode .. " sid=" .. tostring(S.sid) .. " isOpen=" .. tostring(M.isOpen()))
   end)
 end
 

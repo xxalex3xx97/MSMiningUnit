@@ -38,6 +38,15 @@ namespace
         if (cmd == "mine_start_all" || cmd == "mine_stop_all") g_dock_pick.clear();
         // 0. Start all / Stop all (sid 0): every bench ship, before any ship lookup
         if (cmd == "mine_start_all" || cmd == "mine_stop_all") return mine_cmd_all(cmd == "mine_start_all");
+        // 0b. Emergency stop, all bench ships: stop_all for each bench ship inside this one command (one tick, no 400 ms fan-out)
+        if (cmd == "stop_all_ships")
+        {
+            const std::vector<int> ids = g_bench_ids;   // copy: the list is not changed by stop_all, kept safe anyway
+            int bad = 0;
+            for (int s : ids) if (run_cmd(-1, s, "stop_all").rfind(STR("error"), 0) == 0) ++bad;
+            tlog(STR("stop_all_ships ships=") + std::to_wstring(ids.size()) + STR(" errors=") + std::to_wstring(bad));
+            return bad == 0 ? STR("ok ships=") + std::to_wstring(ids.size()) : STR("error: stop_all_ships failed for ") + std::to_wstring(bad);
+        }
         // Dock picker: dock_to:<id> = the Dock button flow (trip/hold states) with the chosen dock; ini untouched
         if (cmd.rfind("dock_to:", 0) == 0)
         {
@@ -132,6 +141,10 @@ namespace
         // 7. Operation tab "Warp to belt": the ship's belt sector (refused while the loop runs)
         if (cmd == "collect_ore") return sweep_cmd(sid);   // collect ore action: MS_SWEEP (mb_mining.hpp)
         if (cmd == "warp_belt") return warp_belt_cmd(sid);
+        // 7b. probe avoidance: probe_avoid[:<ship>] dump, probe_avoid_watch:<ship>:<seconds> sampler, probe_collision* (mb_devcmd.hpp)
+        if (cmd.rfind("probe_avoid", 0) == 0 || cmd.rfind("probe_collision", 0) == 0) return probe_avoid_cmd(sid, cmd);
+        if (cmd.rfind("probe_power", 0) == 0) return probe_power_cmd(sid, cmd);   // MiningProbePower.txt, read only (mb_devcmd.hpp)
+        if (cmd.rfind("probe_reactor", 0) == 0) return probe_reactor_cmd(sid, cmd);   // MiningProbeReactor.txt, read only (mb_devcmd.hpp)
         // 8. dev commands (Dev Menu / Test tab only): mb_devcmd.hpp
         bool dev_handled = false;
         const std::wstring dev = dev_cmd(seq, sid, cmd, dev_handled);
@@ -176,6 +189,43 @@ namespace
         int seq = 0, sid = 0;
         if (read_cmd_line(line) && parse_cmd_line(line, seq, sid, cmd)) g_cmd.seq = seq;
         tlog(STR("poller ready, last seq=") + std::to_wstring(g_cmd.seq));
+        // command capabilities for the Lua side: one name per line. The emergency stop uses stop_all_ships only when it is listed (else the old per-ship sequence).
+        try { write_atomic(get_dll_dir() / "MiningCaps.txt", "stop_all_ships\n"); } catch (...) {}
+    }
+
+    // WHAT: registry inputs of this tick: mining ships (position from MineSt::anchor, system from sys_id every 2 s per ship) and their rocks.
+    // WHY: the registry (mb_registry.hpp) is fed here because g_mine is declared after it.
+    void registry_frame(double dt)
+    {
+        static std::map<int, std::pair<ULONGLONG, int>> sys_cache;   // sid -> (GetTickCount64 of the read, sys)
+        std::vector<RegShip> ships;
+        std::vector<int> targets;
+        const ULONGLONG now = GetTickCount64();
+        for (const auto& kv : g_mine)
+        {
+            if (kv.second.st == MS_OFF) continue;
+            auto& c = sys_cache[kv.first];
+            if (c.first == 0 || now - c.first >= REG_SYS_MS) { UObject* sh = find_by_id(STR("DMSPlayerShipObject"), kv.first); c = {now, sh ? sys_id(sh) : 0}; }
+            if (c.second <= 0) continue;
+            RegShip r;
+            r.sid = kv.first;
+            r.sys = c.second;
+            for (int k = 0; k < 3; ++k) r.p[k] = kv.second.anchor[k] / MV_UU_PER_M;
+            ships.push_back(r);
+            if (kv.second.rock > 0) targets.push_back(kv.second.rock);
+        }
+        for (const auto& kv : g_mvs) if (kv.second.rock_id > 0) targets.push_back(kv.second.rock_id);
+        // approach segments: ship -> target rock centre (radius reads first, see reg_radius_stage)
+        for (RegShip& r : ships)
+        {
+            auto mv = g_mvs.find(r.sid);
+            if (mv == g_mvs.end() || mv->second.kind != "approach_rock" || mv->second.rock_id <= 0) continue;
+            const RegRock* tr = reg_st().tab.get(mv->second.rock_id);
+            if (!tr) continue;
+            r.has_seg = true;
+            std::copy(tr->c, tr->c + 3, r.q);
+        }
+        registry_tick(dt, ships, targets);
     }
 
     // WHAT: engine tick driver for the Test tab. Steps: 1 bump the actor_ok() frame (set rebuilt once per tick).
@@ -184,12 +234,16 @@ namespace
     // WHY: work is spread over different periods so no single tick does everything (perf lessons: heavy reads caused freezes).
     void cmd_tick(double dt)
     {
+        // WHAT: heartbeat for the freeze watchdog (mb_watchdog.hpp): one beat per game-thread frame, plus this thread's id.
+        g_heartbeat.fetch_add(1, std::memory_order_relaxed);
+        g_game_tid.store(static_cast<std::uint32_t>(GetCurrentThreadId()), std::memory_order_relaxed);
         LARGE_INTEGER t0;
         QueryPerformanceCounter(&t0);
         // 1. every line sets g_last_step first: a fault line (compat_run) names the part that ran
         set_last_step(STR("rock_drain_dead"));
         rock_drain_dead();   // deleted actors queued by the engine listener are removed every tick, also while no ship asks for rocks
         ++g_actor_frame;   // invalidates the actor_ok() set: it is rebuilt at most once per engine tick
+        path_tick_begin();   // path check: one periodic check per tick (mb_mining.hpp)
         // 2.
         set_last_step(STR("move_tick"));
         move_tick(dt);   // move jobs run every engine tick
@@ -218,8 +272,17 @@ namespace
             jobs_tick(step);
             set_last_step(STR("warp_wait_tick"));
             warp_wait_tick();
+            set_last_step(STR("fast_watch_tick"));   // hull/shield samples every 0.25 s for ships near rock (mb_mining.hpp)
+            fast_watch_tick();
+            set_last_step(STR("probe_avoid_tick"));
+            probe_avoid_tick(step);   // MiningProbeAvoid.txt sampler, idle unless a watch runs (mb_devcmd.hpp)
+            probe_power_tick(step);   // MiningProbePower.txt watch (probe_power_watch), idle unless a watch runs
+            set_last_step(STR("bubble_tick"));   // bubble reflex for every manual move (mb_bubble.hpp): before the state machines, so a flown waypoint resumes first
+            bubble_tick(step);
             set_last_step(STR("mining_tick"));   // per-ship labels are set inside (mine ship=N state)
             mining_tick(step);
+            set_last_step(STR("registry_frame"));   // rock registry (mb_registry.hpp): one updater per 0.25 s
+            registry_frame(step);
             set_last_step(STR("station_destroy_tick"));
             station_destroy_tick(step);
         }

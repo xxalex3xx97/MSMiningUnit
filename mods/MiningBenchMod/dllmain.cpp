@@ -1,11 +1,12 @@
 // FILE: mods/MiningBenchMod/dllmain.cpp
 // WHAT: UE4SS C++ mod entry point. Includes the mb_*.hpp parts in order, hooks the engine tick, runs the ship scan every log_interval_seconds, and exports start_mod / uninstall_mod.
 // WHY separate: UE4SS needs start_mod and uninstall_mod in the DLL entry file; everything else lives in headers so it can be read in pieces.
-// DEPENDS ON (exact, include order matters): mb_version.hpp, mb_common.hpp, mb_pattern.hpp, mb_compat.hpp, mb_config.hpp, mb_ue.hpp, mb_mscore.hpp, mb_math.hpp, mb_docks.hpp, mb_ships.hpp, mb_weapons.hpp, mb_orders.hpp, mb_filters.hpp, mb_cmdstate.hpp, mb_rocks.hpp, mb_steer.hpp, mb_dockjob.hpp, mb_pin.hpp, mb_warp.hpp, mb_warpreal.hpp, mb_belt.hpp, mb_mining.hpp, mb_natives.hpp, mb_chunkhold.hpp, mb_devcmd.hpp, mb_testcmd.hpp, mb_compat_run.hpp
+// DEPENDS ON (exact, include order matters): mb_version.hpp, mb_common.hpp, mb_pattern.hpp, mb_compat.hpp, mb_config.hpp, mb_ue.hpp, mb_mscore.hpp, mb_math.hpp, mb_docks.hpp, mb_ships.hpp, mb_weapons.hpp, mb_orders.hpp, mb_filters.hpp, mb_cmdstate.hpp, mb_rocks.hpp, mb_registry.hpp, mb_steer.hpp, mb_dockjob.hpp, mb_pin.hpp, mb_warp.hpp, mb_warpreal.hpp, mb_belt.hpp, mb_mining.hpp, mb_natives.hpp, mb_chunkhold.hpp, mb_devcmd.hpp, mb_testcmd.hpp, mb_compat_run.hpp
 // USED BY: the UE4SS loader (mods.txt line "MiningBenchMod : 1"), which calls start_mod and uninstall_mod.
 // GAME FACTS: the engine tick hook (UE4SS RegisterEngineTickPostCallback) fires every frame with dt in seconds. Crash history (brief Update 21): a Lua reload (Ctrl+R) with this DLL loaded crashed inside the tick hook, so restart the game fully after any change.
 #include "mb_version.hpp"
 #include "mb_common.hpp"
+#include "mb_wd_logic.hpp"
 #include "mb_pattern.hpp"
 #include "mb_compat.hpp"
 #include "mb_config.hpp"
@@ -19,6 +20,7 @@
 #include "mb_filters.hpp"
 #include "mb_cmdstate.hpp"
 #include "mb_rocks.hpp"
+#include "mb_registry.hpp"
 #include "mb_steer.hpp"
 #include "mb_net.hpp"
 #include "mb_dockjob.hpp"
@@ -27,10 +29,12 @@
 #include "mb_warpreal.hpp"
 #include "mb_belt.hpp"
 #include "mb_mining.hpp"
+#include "mb_bubble.hpp"
 #include "mb_natives.hpp"
 #include "mb_chunkhold.hpp"
 #include "mb_devcmd.hpp"
 #include "mb_testcmd.hpp"
+#include "mb_watchdog.hpp"
 #include "mb_compat_run.hpp"
 
 namespace
@@ -91,12 +95,14 @@ public:
         log_line(widen(std::string("MiningBenchMod v") + kVersion));
         std::wstring ms_err;
         ms_load(ms_err);   // logs MSCORE loaded / load failed once; each call site retries if it failed
+        mb_wd::start(get_dll_dir().wstring());   // freeze watchdog thread (INI watchdog=0 idles it)
     }
 
     // WHAT: sets g_shutdown and unregisters the tick callback.
     // WHY: UE4SS can unload the mod while the engine keeps ticking; the callback must not run after this object is gone.
     ~MiningBenchMod() override
     {
+        mb_wd::stop();   // first: the watchdog must not write or suspend the game thread during teardown
         g_shutdown = true;
         if (g_tick_cb) { Hook::UnregisterCallback(g_tick_cb); g_tick_cb = 0; }
         g_hook_registered = false;

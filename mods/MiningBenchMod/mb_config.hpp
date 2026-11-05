@@ -60,6 +60,11 @@ namespace
             {STR("record_interval_seconds"), std::to_wstring(c.record_interval_seconds)},
             {STR("kill_switch"), std::to_wstring(c.kill_switch ? 1 : 0)},
             {STR("flee_on_target"), std::to_wstring(c.flee_on_target)},
+            {STR("path_clearance_m"), std::to_wstring(c.path_clearance_m)},
+            {STR("bubble_clearance_m"), std::to_wstring(c.bubble_clearance_m)},
+            {STR("flee_target_range_km"), std::to_wstring(c.flee_target_range_km)},
+            {STR("low_power_return"), std::to_wstring(c.low_power_return)},
+            {STR("reactor_auto_input"), std::to_wstring(c.reactor_auto_input)},
             {STR("mining_distance"), STR("'") + widen(c.mining_distance) + STR("'")},
             {STR("fuel_margin"), std::to_wstring(c.fuel_margin)},
             {STR("fuel_amount"), std::to_wstring(c.fuel_amount)},
@@ -151,6 +156,16 @@ namespace
                      "record_interval_seconds=2\n"
                      "# flee_on_target: 1 = a ship targeted by a hostile (2 samples in a row) or in combat flees to a dock like after a hull hit (global only)\n"
                      "flee_on_target=1\n"
+                     "# path_clearance_m: clear-path check, metres kept from a rock beyond its block radius (0-100, global only)\n"
+                     "path_clearance_m=4\n"
+                     "# bubble_clearance_m: bubble reflex, metres beyond ship radius + rock block radius (0-100, global only)\n"
+                     "bubble_clearance_m=6\n"
+                     "# flee_target_range_km: a hostile targeter farther than this many km does not trigger the flee (1-100, global only)\n"
+                     "flee_target_range_km=5\n"
+                     "# low_power_return: 1 = a ship in low power for 10 s while flying or mining goes to dock to refuel like fuel low, 0 = off (global only)\n"
+                     "low_power_return=1\n"
+                     "# reactor_auto_input: 1 = reactors of active bench ships get bAutoInputFuel on (at task start and every 60 s), 0 = off (global only)\n"
+                     "reactor_auto_input=1\n"
                      "# refuel_dock_id: numeric dock id OR in-game dock name of the refuel dock (empty = none; per-ship key allowed)\n"
                      "refuel_dock_id=\n";
                 Output::send<LogLevel::Normal>(STR("[MiningBenchMod] created default {}\n"), path.wstring());
@@ -201,7 +216,13 @@ namespace
             ensure_key("record", "0", "record: no effect since 0.0.1 (recorder removed)");
             ensure_key("record_interval_seconds", "2", "record_interval_seconds: seconds between recorder lines (global only)");
             ensure_key("kill_switch", "0", "kill_switch: 1 = the mod stops touching the game completely (hot reload, global only)");
+            ensure_key("watchdog", "1", "watchdog: 1 = freeze watchdog: if the game thread does not tick for 10 s, MiningFreeze.txt gets its stack (max 20 lines); 0 = off (global only)");
             ensure_key("flee_on_target", "1", "flee_on_target: 1 = a ship targeted by a hostile or in combat flees to a dock like after a hull hit (global only)");
+            ensure_key("path_clearance_m", "4", "path_clearance_m: clear-path check clearance in m beyond the rock block radius, 0-100 (global only)");
+            ensure_key("bubble_clearance_m", "6", "bubble_clearance_m: bubble reflex clearance in m beyond ship radius + rock block radius, 0-100 (global only)");
+            ensure_key("flee_target_range_km", "5", "flee_target_range_km: flee trigger range in km for hostile targeters, 1-100 (global only)");
+            ensure_key("low_power_return", "1", "low_power_return: 1 = low power for 10 s while flying or mining sends the ship to dock like fuel low, 0 = off (global only)");
+            ensure_key("reactor_auto_input", "1", "reactor_auto_input: 1 = reactors of active bench ships get bAutoInputFuel on, 0 = off (global only)");
             ensure_key("warp_range", "50km", "warp_range: belt mode: a rock farther than this from the ship is not flown to, the ship warps to the next sector instead; also caps radius (m/km, empty/0 = 50km; per-ship key allowed)");
             ensure_key("mining_distance", "50m", "mining_distance: distance from the rock in m/km, e.g. 200m (empty = 50m; per-ship key allowed)");
             ensure_key("fuel_margin", "0", "fuel_margin: int fuel margin, 0 = unset (per-ship key allowed)");
@@ -260,7 +281,13 @@ namespace
             if (kv.count("record_interval_seconds")) nc.record_interval_seconds = to_int(kv["record_interval_seconds"], 2);
             if (nc.record_interval_seconds < 1) nc.record_interval_seconds = 1;
             if (kv.count("kill_switch")) nc.kill_switch = to_int(kv["kill_switch"], 0) != 0;
+            if (kv.count("watchdog")) nc.watchdog = to_int(kv["watchdog"], 1) != 0;
             if (kv.count("flee_on_target")) nc.flee_on_target = to_int(kv["flee_on_target"], 1) != 0 ? 1 : 0;
+            if (kv.count("path_clearance_m")) nc.path_clearance_m = std::clamp(to_int(kv["path_clearance_m"], 4), 0, 100);
+            if (kv.count("bubble_clearance_m")) nc.bubble_clearance_m = std::clamp(to_int(kv["bubble_clearance_m"], 6), 0, 100);
+            if (kv.count("flee_target_range_km")) nc.flee_target_range_km = std::clamp(to_int(kv["flee_target_range_km"], 5), 1, 100);
+            if (kv.count("low_power_return")) nc.low_power_return = std::clamp(to_int(kv["low_power_return"], 1), 0, 1);
+            if (kv.count("reactor_auto_input")) nc.reactor_auto_input = std::clamp(to_int(kv["reactor_auto_input"], 1), 0, 1);
             if (nc.log_interval_seconds < 1) nc.log_interval_seconds = 1;
             // WHAT: wait and per-fuel keys (global only). An empty or non-number value falls back to the struct default (to_int).
             // WHY: the INI may predate these keys; ensure_key below adds them on first load.
@@ -289,6 +316,7 @@ namespace
             Fields old_f = config_fields(g_cfg);
             Fields new_f = config_fields(nc);
             g_cfg = nc;
+            g_wd_enabled.store(nc.watchdog);
             g_ship_kv = skv;
             // WHAT: logs each [ship.<id>] section and its effective values.
             // WHY: so the user can check what the mod read.

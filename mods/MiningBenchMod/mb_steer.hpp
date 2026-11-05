@@ -66,11 +66,7 @@ namespace
     constexpr double MV_APPROACH_TIMEOUT_S = 300.0;
 
     // approach Throttle profile (see move_aim_step phase 2).
-    // WHAT: remaining distance per Throttle step (m): target step = floor(remaining / this), clamped to 1..MV_APPROACH_MAX_THR.
-    // WHY: the ship slows down step by step as it nears the stop distance. Value unknown (ported as is).
-    constexpr double MV_APPROACH_M_PER_STEP = 25.0;
-
-    // WHAT: top forward Throttle step used by the approach (steps). The game has steps -10..+10.
+    // WHAT: top forward Throttle step used by the approach (steps). The game has steps -10..+10. Full speed until APPROACH_RAMP_M (mb_logic.hpp).
     // WHY: fixed step 1 made the ship crawl at about 2 m/s (observed), so the approach uses steps up to this.
     constexpr int MV_APPROACH_MAX_THR = 10;
 
@@ -175,11 +171,19 @@ namespace
         UObject* rock_act = nullptr;    // rock ACTOR for face/approach (game list); alive-checked each tick, 'rock lost' when gone
         bool pt_on = false;             // point move: target is ptg (no actor). Named pt_on: pt is the phase timer.
         PtTarget ptg;
+        bool warp_wait = false;         // far-trip warp sent for this flight: wait until it has landed (warp_settle_done), no thrust, no aim
+        double warp_t = 0.0;            // time since the warp was sent (s)
     };
 
     // WHAT: move jobs per ship (sid -> job). Empty kind = no job for that ship. Each ship can steer on its own.
     std::map<int, MoveJob> g_mvs;
+    // WHAT: far-trip warp of an approach flight (mb_mining.hpp): sends the warp when the destination is far, sets mv.warp_wait. true = warp sent.
+    bool move_warp_begin(int sid, UObject* ship, MoveJob& mv);
     bool mv_active(int sid) { auto it = g_mvs.find(sid); return it != g_mvs.end() && !it->second.kind.empty(); }
+
+    // WHAT: bubble ladder state per ship (mb_bubble.hpp). braking = the move job holds Throttle 0 (see move_aim_step).
+    std::map<int, BubbleState> g_bubble;
+    bool bubble_braking(int sid) { auto it = g_bubble.find(sid); return it != g_bubble.end() && it->second.braking; }
 
     // Body-frame axes for the aim offset. Measured earlier in game (old code, removed); the working steering confirms them.
     // WHAT: unit body-frame axis of the YAW offset = +Z (unitless). WHY: a yaw offset turns the nose about +Z.
@@ -446,6 +450,102 @@ namespace
         return true;
     }
 
+    // ---------------- low power (FlightModel LowPowerThrottle / MaxLowPowerSpeed, ship flag bInLowPowerMode or bLowPower) ----------------
+    // WHAT: a numeric property (Int, Int64, Float or Double) as double; false when missing or another type.
+    bool get_num_prop(UObject* o, const TCHAR* prop, double& out)
+    {
+        FProperty* p = o ? o->GetPropertyByNameInChain(prop) : nullptr;
+        if (!p) return false;
+        const uint8_t* base = reinterpret_cast<const uint8_t*>(o) + p->GetOffset_Internal();
+        if (CastField<FFloatProperty>(p)) { out = *reinterpret_cast<const float*>(base); return true; }
+        if (CastField<FDoubleProperty>(p)) { out = *reinterpret_cast<const double*>(base); return true; }
+        if (CastField<FIntProperty>(p)) { out = *reinterpret_cast<const int32_t*>(base); return true; }
+        if (CastField<FInt64Property>(p)) { out = static_cast<double>(*reinterpret_cast<const int64_t*>(base)); return true; }
+        return false;
+    }
+
+    // WHAT: power grid of ship (ship.PowerGrid): TotalProduction, TotalConsumption, ConsumerEfficiency. ok = all three readable.
+    struct PowerGridRead { bool ok = false; double prod = 0.0, cons = 0.0, eff = 0.0; };
+    PowerGridRead power_grid(UObject* ship)
+    {
+        PowerGridRead g;
+        UObject* grid = get_obj_prop(ship, STR("PowerGrid"));
+        if (!alive(grid)) return g;
+        g.ok = get_num_prop(grid, STR("TotalProduction"), g.prod) && get_num_prop(grid, STR("TotalConsumption"), g.cons) &&
+               get_num_prop(grid, STR("ConsumerEfficiency"), g.eff);
+        return g;
+    }
+
+    // WHAT: reactors of ship (ship.Reactors): one object property or an array of objects. Alive objects only, in order.
+    std::vector<UObject*> reactors_of(UObject* ship)
+    {
+        std::vector<UObject*> out;
+        FProperty* p = ship ? ship->GetPropertyByNameInChain(STR("Reactors")) : nullptr;
+        if (!p) return out;
+        if (CastField<FObjectProperty>(p))
+        {
+            UObject* r = get_obj_prop(ship, STR("Reactors"));
+            if (alive(r)) out.push_back(r);
+            return out;
+        }
+        auto* ap = CastField<FArrayProperty>(p);
+        auto* arr = ap && CastField<FObjectProperty>(ap->GetInner()) ? ship->GetValuePtrByPropertyNameInChain<TArray<UObject*>>(STR("Reactors")) : nullptr;
+        if (!arr) return out;
+        for (int32_t i = 0; i < arr->Num(); ++i) if (alive((*arr)[i])) out.push_back((*arr)[i]);
+        return out;
+    }
+
+    // WHAT: low-power flag name on this build: bInLowPowerMode, else bLowPower (first one the ship has). nullptr until seen.
+    // WHY: the names come from the exe strings, not from a read; the flag is logged once so the user sees which one is used.
+    const TCHAR* g_lp_name = nullptr;
+    bool g_lp_logged = false;
+
+    // WHAT: low-power flag of ship into out. false when the ship is gone or has no such flag (out untouched).
+    bool lp_flag(UObject* ship, bool& out)
+    {
+        if (!alive(ship)) return false;
+        if (!g_lp_name)
+        {
+            g_lp_name = ship->GetPropertyByNameInChain(STR("bInLowPowerMode")) ? STR("bInLowPowerMode") : ship->GetPropertyByNameInChain(STR("bLowPower")) ? STR("bLowPower") : nullptr;
+            if (!g_lp_logged)
+            {
+                g_lp_logged = true;
+                log_line(g_lp_name ? STR("POWER flag uses ") + std::wstring(g_lp_name) : std::wstring(STR("POWER flag: neither bInLowPowerMode nor bLowPower on the ship")));
+            }
+        }
+        return g_lp_name && get_bool_prop(ship, g_lp_name, out);
+    }
+
+    // WHAT: FlightModel LowPowerThrottle (Throttle step cap) and MaxLowPowerSpeed (fraction of max speed). false when either is unreadable.
+    bool lp_limits(UObject* ship, int& thr, double& frac)
+    {
+        UObject* fm = get_obj_prop(ship, STR("FlightModel"));
+        if (!alive(fm)) return false;
+        int32_t t = 0;
+        if (!get_int_prop(fm, STR("LowPowerThrottle"), t) || !get_num_prop(fm, STR("MaxLowPowerSpeed"), frac)) return false;
+        thr = t;
+        return true;
+    }
+
+    // WHAT: no power now (power_no_power on the grid). known = a source was readable: the grid, else the low-power flag when the ship has one.
+    bool power_dead(UObject* ship, const PowerGridRead& g, bool& known)
+    {
+        if (g.ok) { known = true; return power_no_power(g.cons, g.prod, g.eff); }
+        bool on = false;
+        known = lp_flag(ship, on);
+        return known && on;
+    }
+
+    // WHAT: no-power approach profile: true only when the grid has no power (efficiency 0, not brown-out) and the limits read (thr, frac).
+    //       false otherwise (normal profile). A brown-out ship keeps the normal timeout and Throttle.
+    bool lp_state(UObject* ship, int& thr, double& frac)
+    {
+        bool known = false;
+        thr = 0;
+        frac = 0.0;
+        return power_dead(ship, power_grid(ship), known) && lp_limits(ship, thr, frac);
+    }
+
     // WHAT: one step of a move job: phase 1 = aim (rotate until aligned), phase 2 = approach (Throttle profile).
     //       Steps: 1 re-check the rock and get the aim numbers; an unreadable rock ends the job ("rock lost").
     //       2 store err in g_mv.err and g_last_err. 3 phase 1 ends: face_rock when err < MV_FACE_DONE_DEG (ok) or after
@@ -457,9 +557,40 @@ namespace
     // WHY: the ship only approaches when it is roughly aligned; the Throttle slows down step by step, so the stop is smooth and the speed
     //      safety (spd_update) is not triggered. Stop on SURFACE distance (user choice, Update 28).
     //      Caveat (ported as is): when no speed sample exists (spd_of(sid).have false) the speed is taken as 0, so a brake ends at once.
+    // WHAT: remaining distance (m) of job mv to its destination (registry rock surface, point, or ore), for the warp settle. 1e9 when unknown.
+    double warp_remain_m(const MoveJob& mv, UObject* ship)
+    {
+        ActFrame f;
+        if (!act_frame(ship, f)) return 1e9;
+        const double p[3] = {f.loc[0] / MV_UU_PER_M, f.loc[1] / MV_UU_PER_M, f.loc[2] / MV_UU_PER_M};
+        double q[3] = {0, 0, 0}, rad = 0.0;
+        if (mv.pt_on) reg_abs_m(mv.ptg.ch, mv.ptg.loc, g_raw_per_m, q);
+        else if (mv.rock_id > 0)
+        {
+            const RegRock* r = reg_st().tab.get(mv.rock_id);
+            if (!r) return 1e9;
+            std::copy(r->c, r->c + 3, q);
+            rad = reg_eff_rad(*r);
+        }
+        else for (int i = 0; i < 3; ++i) q[i] = mv.ore_loc[i] / MV_UU_PER_M;
+        return std::sqrt((p[0] - q[0]) * (p[0] - q[0]) + (p[1] - q[1]) * (p[1] - q[1]) + (p[2] - q[2]) * (p[2] - q[2])) - rad;
+    }
+    // WHAT: one tick of a flight with warp_wait: no thrust, the job ends the wait when warp_settle_done (2 s minimum, near the destination or 30 s).
+    void warp_wait_step(MoveJob& mv, UObject* ship, double dt)
+    {
+        mv.warp_t += dt;
+        set_int_prop(ship, STR("Throttle"), 0);
+        mv.thr = 0;
+        mv.thr_t = 0.0;
+        if (!warp_settle_done(mv.warp_t, warp_remain_m(mv, ship))) return;
+        mv.warp_wait = false;
+        tlog(STR("far warp landed ship=") + std::to_wstring(mv.sid) + STR(" after ") + std::to_wstring(mv.warp_t) + STR(" s"));
+    }
+
     void move_aim_step(MoveJob& mv, UObject* ship, double dt)
     {
         const int sid = mv.sid;
+        if (mv.warp_wait) { warp_wait_step(mv, ship, dt); return; }
         // 1. rock still valid, aim numbers
         double a[3] = {0, 0, 0}, dist = 0.0, rad = 0.0, err = 0.0;
         if (mv.pt_on) { if (!aim_calc_pt(ship, mv, err, a, dist, rad)) { mv_finish(sid, STR("error: point lost")); return; } }
@@ -480,15 +611,19 @@ namespace
         }
         // 4. rotation runs in both phases
         if (!view_aim_drive(mv, a, err, dt)) return;   // rotation via view_send
+        if (bubble_braking(sid)) { set_int_prop(ship, STR("Throttle"), 0); mv.thr = 0; mv.thr_t = 0.0; return; }   // bubble brake: no thrust until stopped
         if (mv.phase != 2) return;
-        // 5. approach timeout
-        if (mv.t >= MV_APPROACH_TIMEOUT_S) { mv_finish(sid, STR("error: approach timeout")); return; }
+        // 5. approach timeout; low power: base / MaxLowPowerSpeed, and the Throttle cap of step 9 is LowPowerThrottle
+        int lp_thr = 0;
+        double lp_frac = 0.0;
+        const bool lp = lp_state(ship, lp_thr, lp_frac);
+        if (mv.t >= approach_timeout_s(MV_APPROACH_TIMEOUT_S, lp, lp_frac)) { mv_finish(sid, STR("error: approach timeout")); return; }
         // 6. surface distance (m) and the per-ship stop distance (m)
         const double surface = (dist - rad) / g_raw_per_m;
         const double md = parse_distance(eff_cfg(sid).mining_distance);
         if (md < 0.0) { mv_finish(sid, STR("error: mining_distance unset")); return; }
         // Approach Throttle profile. WHY: remaining = surface - mining distance (m). Target step = floor(remaining / 25 m) clamped to
-        // 1..min(10, steps): full speed above 250 m, linear slow-down to step 1 near the stop distance. Heading error > MV_APPROACH_HEAD_DEG -> 0.
+        // 1..min(10, steps): full speed above APPROACH_RAMP_M (500 m), linear slow-down to step 1 near the stop distance. Heading error > MV_APPROACH_HEAD_DEG -> 0.
         // Applied step rises by 1 at most every MV_THR_RAMP_S (gradual accel, keeps the 1.1x speed abort far away); it falls straight to target.
         // Past the stop distance (overshoot): reverse step MV_BRAKE_THR while speed >= MV_BRAKE_DONE_MS, then 0 and the job ends.
         // 7. remaining distance (m) and speed (m/s)
@@ -513,8 +648,8 @@ namespace
         {
             // 9. still before the stop distance: ramped forward step toward the target
             if (mv.thr < 0) mv.thr = 0;   // only if pushed back out after a brake: restart forward from 0
-            const int cap = std::min(MV_APPROACH_MAX_THR, mv.steps);
-            target = err > MV_APPROACH_HEAD_DEG ? 0 : std::clamp(static_cast<int>(std::floor(remaining / MV_APPROACH_M_PER_STEP)), 1, cap);
+            const int cap = lowpower_throttle_cap(std::min(MV_APPROACH_MAX_THR, mv.steps), lp, lp_thr);
+            target = err > MV_APPROACH_HEAD_DEG ? 0 : approach_throttle(remaining, v_ms, cap);
             if (target > mv.thr)
             {
                 mv.thr_t += dt;
@@ -644,6 +779,7 @@ namespace
         // WHY: aiming starts at once (no forward-axis test phase before it)
         m.phase = 1;
         if (sid == g_cmd.ship) g_last_err = -1.0;
+        if (cmd == "approach_rock") move_warp_begin(sid, ship, m);   // far-trip warp first (mb_mining.hpp): the job then waits for the landing
         g_mvs[sid] = m;
         tlog(STR("start ") + widen(cmd) + STR(" ship=") + std::to_wstring(sid) + STR(" seq=") + std::to_wstring(seq) +
              STR(" cid=") + std::to_wstring(m.cid) +

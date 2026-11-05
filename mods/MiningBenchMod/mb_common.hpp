@@ -138,7 +138,7 @@ namespace
         {
             std::wstring l = s;
             for (auto& c : l) c = static_cast<wchar_t>(std::towlower(c));
-            static const wchar_t* keep[] = { L"error", L"fail", L"warn", L"exception", L"halt", L"stopped", L"loaded", L"mining loop", L"going to", L"dock retry", L"mine weapons", L"warpsector", L"sector ", L"fuelchk", L"fuelwarp", L"jumpcost", L"warpcur", L"warpreal", L"chunkhold", L"devstation", L"sweep", L"fault", L"compat", L"combat", L"attack" };
+            static const wchar_t* keep[] = { L"error", L"fail", L"warn", L"exception", L"halt", L"stopped", L"loaded", L"mining loop", L"going to", L"dock retry", L"mine weapons", L"warpsector", L"sector ", L"fuelchk", L"fuelwarp", L"jumpcost", L"warpcur", L"warpreal", L"chunkhold", L"devstation", L"sweep", L"fault", L"compat", L"combat", L"attack", L"reg " };
             bool hit = false;
             for (auto k : keep) if (l.find(k) != std::wstring::npos) { hit = true; break; }
             if (!hit) return;
