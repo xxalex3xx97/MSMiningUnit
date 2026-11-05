@@ -4,7 +4,8 @@ Current version: **0.2.1** (`mods/MiningBenchMod/mb_version.hpp`).
 
 **Ownership notice.** All game assets, textures, names, code, binaries and data belong to the game's developer and publisher. This is an unofficial fan mod; no ownership is claimed. Game-derived files in this repo are included only to build the mod (see `docs/ASSETS.md`). They are not covered by the MIT license.
 
-> **Build prerequisite.** `build.ps1` needs the RE-UE4SS source tree (MIT, not included). Clone https://github.com/UE4SS/RE-UE4SS to `build\RE-UE4SS` (init submodules) before building; for the asset packs also put retoc (MIT) in `toolsetoc\`. Without them the build fails.
+> **Build prerequisite.** `build.ps1` needs the RE-UE4SS source tree (MIT, not included). Clone https://github.com/UE4SS/RE-UE4SS to `build\RE-UE4SS` (init submodules) before building; for the asset packs also put retoc (MIT) in `tools
+etoc\`. Without them the build fails.
 
 ## License
 
@@ -23,15 +24,14 @@ A Mining Unit window (F4) automates mining for the bench ships: mine rocks, coll
 
 ## Install
 
-1. Close the game. Copy the `Binaries` and `Content` folders from the zip into `<game>\Windows\MainSequence\` (merge, keep existing files). Steam default: `<SteamLibrary>\steamapps\common\Main Sequence Demo\Windows\MainSequence`.
-2. In `Binaries\Win64\ue4ss\Mods\mods.txt` add (or set to 1):
-   ```
-   MiningBenchMod : 1
-   MiningUnitUI : 1
-   ```
-3. Start the game, press F4. The package has 2 paks: `pakchunk98-MiningUnitUI_P` (window) and `pakchunk99-ClonedBlock_P` (mining building block).
+Use **MSCoreManager.exe** from [MSCore](https://github.com/xxalex3xx97/MSCore/releases/latest). It installs and updates the mod for you. Do not copy files by hand unless you have to.
 
-**Uninstall.** Set both lines to 0 (or delete them). Delete `Binaries\Win64\ue4ss\Mods\MiningBenchMod` and `Binaries\Win64\ue4ss\Mods\MiningUnitUI`. Delete `Content\Paks\pakchunk98-MiningUnitUI_P.*` and `Content\Paks\pakchunk99-ClonedBlock_P.*`.
+1. Close the game.
+2. Run `MSCoreManager.exe` and click **Install/Repair MSCore**.
+3. Click **Add mod...** and enter `xxalex3xx97/MiningBenchMod`.
+4. Start the game, press F4.
+
+**Uninstall.** Select the mod in MSCoreManager and click **Remove mod**.
 
 **Disable without uninstalling.** Set `kill_switch=1` in `Binaries\Win64\ue4ss\Mods\MiningBenchMod\dlls\MiningBench.ini`. The mod then stops touching the game (hot reload). `0` turns it back on.
 
@@ -45,6 +45,17 @@ A Mining Unit window (F4) automates mining for the bench ships: mine rocks, coll
 - A native crash (access violation) cannot be caught by C++ `try/catch`. Tick steps run under an SEH guard, but cached raw object pointers can still go stale when the game streams actors out.
 - The natives and the game's property names can change in a game update. The compat self-test disables a feature that no longer matches (see "After a game update").
 - Dev test commands can be sent through `MiningCmd.txt` (instant warp, chunk release, debug). They are not in the UI, but they are reachable from that file.
+
+**Manual install (only if the manager cannot be used).**
+1. Close the game. Copy the `Binaries` and `Content` folders from the zip into `<game>\Windows\MainSequence\` (merge, keep existing files). Steam default: `<SteamLibrary>\steamapps\common\Main Sequence Demo\Windows\MainSequence`.
+2. In `Binaries\Win64\ue4ss\Mods\mods.txt` add (or set to 1):
+   ```
+   MiningBenchMod : 1
+   MiningUnitUI : 1
+   ```
+3. Start the game, press F4. The package has 2 paks: `pakchunk98-MiningUnitUI_P` (window) and `pakchunk99-ClonedBlock_P` (mining building block).
+
+**Manual uninstall.** Set both lines to 0 (or delete them). Delete `Binaries\Win64\ue4ss\Mods\MiningBenchMod` and `Binaries\Win64\ue4ss\Mods\MiningUnitUI`. Delete `Content\Paks\pakchunk98-MiningUnitUI_P.*` and `Content\Paks\pakchunk99-ClonedBlock_P.*`.
 
 ## Known issues
 
