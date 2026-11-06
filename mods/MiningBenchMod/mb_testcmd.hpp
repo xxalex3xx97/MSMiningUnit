@@ -9,6 +9,7 @@
 //             rock_kind, actor_ok, g_sel_rock), mb_steer.hpp (move_start, move_tick, spd_update,
 //             g_mv, MoveJob, view_zero, zero_all, g_spd, g_last_err, MV_SPEED_ABORT), mb_dockjob.hpp (job_start, jobs_tick, g_jobs,
 //             g_undock_state), mb_mining.hpp (mining_tick, mine_halt: M3 loop).
+//             mb_bpprobe.hpp (bp_cmd, bp_tick: M0 probe logger).
 // USED BY: dllmain.cpp (cmd_init at load, cmd_tick from the engine tick hook). The Lua Test tab writes MiningCmd.txt
 //          (no status file is read any more).
 // GAME FACTS (fact = seen in game; ASSUMPTION = from code/notes; UNVERIFIED = not confirmed):
@@ -33,6 +34,7 @@ namespace
     // WHY: one place lists every Test tab command. The multi-step commands return "waiting" and finish later through their job.
     std::wstring run_cmd(int seq, int sid, const std::string& cmd)
     {
+        if (cmd.rfind("bp_", 0) == 0) return bp_cmd(cmd);   // M0 probe logger (mb_bpprobe.hpp), ship id not used
         // dock pick is cleared by stop, loop start/stop and the all-ship commands
         if (cmd == "stop_all" || cmd == "mine_start" || cmd == "mine_stop") g_dock_pick.erase(sid);
         if (cmd == "mine_start_all" || cmd == "mine_stop_all") g_dock_pick.clear();
@@ -285,6 +287,8 @@ namespace
             registry_frame(step);
             set_last_step(STR("station_destroy_tick"));
             station_destroy_tick(step);
+            set_last_step(STR("bp_tick"));
+            bp_tick(step);   // M0 probe logger (mb_bpprobe.hpp); idle unless bp_arm
         }
         timing_log(STR("cmd_tick"), perf_ms_since(t0), g_rock_actors.size());
     }
