@@ -139,16 +139,15 @@ for (const f of [BP_NEW + '.uasset', BP_NEW + '.uexp', PROMPT + '.uasset', PROMP
     if (n > -2) { console.log('LEFTOVER ' + s + ' in ' + f); bad = true; }
   }
 }
-// ---- Job D: hidden default container machine = clone of vanilla large container SIM only (BP_ContainerObject_2 -> BP_BPUnitStoreObj_01) ----
-// Actor NOT cloned/renamed: the sim imports its actor as BP_Container_2_C from package /Game/Blueprints/Machines/BP_Container
-// (vanilla quirk, kept). Renaming the actor broke that import. Parent BP_ContainerObject stays.
+// ---- Job D: hidden default container machine = clone of vanilla large container SIM (BP_ContainerObject_2 -> BP_BPUnitStoreObj_01)
+// + clone of its actor BP_Container_2 -> BP_BPUnitSto_2 (mesh -> SM2_BPUnitHidden00, pak97). Parent BP_ContainerObject stays.
+// The sim's actor import is package name base "BP_Container" with FName number 3 (= suffix _2). Base rename to BP_BPUnitSto (same length) keeps number 3 -> BP_BPUnitSto_2.
 // Off unless BPU_CONTAINER=1 (build_pak.ps1 -Container clone).
 if (process.env.BPU_CONTAINER === '1') {
 const MACH_IN = (process.env.MS_MODS_ROOT || 'F:\\MSDemoMods') + '\\legacy\\MainSequence\\Content\\Blueprints\\Machines';
 const MACH_OUT = path.join(__dirname, 'stage', 'MainSequence', 'Content', 'Blueprints', 'Machines');
 fs.mkdirSync(MACH_OUT, { recursive: true });
 const SIM_OLD = 'BP_ContainerObject_2', SIM_NEW = 'BP_BPUnitStoreObj_01';
-const ACT_OLD = 'BP_Container_2';  // not renamed; checked only in the sim leftover scan (import "BP_Container_2_C" stays)
 if (SIM_OLD.length !== SIM_NEW.length) throw new Error('length mismatch: machine');
 // sim uexp int32 (BP_ContainerObject_2.uexp, from diff_container.py): InventorySize @120, StackSizeBonusMultiplier @124
 const INV_OFF = 120, INV_OLD = 32, INV_NEW = 120;
@@ -160,8 +159,12 @@ function machJob(src, dst, fn) {
   fs.writeFileSync(path.join(MACH_OUT, dst), buf);
   return c;
 }
-const simUa = machJob(SIM_OLD + '.uasset', SIM_NEW + '.uasset', (b) => ({ sim: both(b, SIM_OLD, SIM_NEW) }));
-need('machine sim uasset self', simUa.sim);
+const simUa = machJob(SIM_OLD + '.uasset', SIM_NEW + '.uasset', (b) => ({
+  sim: both(b, SIM_OLD, SIM_NEW),
+  actPkg: both(b, '/Game/Blueprints/Machines/BP_Container\0', '/Game/Blueprints/Machines/BP_BPUnitSto\0'),  // actor package (FName base, number 3)
+  actCls: both(b, 'BP_Container_2_C', 'BP_BPUnitSto_2_C'),
+}));
+need('machine sim uasset self', simUa.sim); need('machine sim actor package', simUa.actPkg); need('machine sim actor class', simUa.actCls);
 const simUe = machJob(SIM_OLD + '.uexp', SIM_NEW + '.uexp', (b) => {
   const inv = b.readInt32LE(INV_OFF), bon = b.readInt32LE(BONUS_OFF);
   if (inv !== INV_OLD || bon !== BONUS_OLD) throw new Error('machine layout shift: InventorySize ' + inv + ' bonus ' + bon);
@@ -169,15 +172,53 @@ const simUe = machJob(SIM_OLD + '.uexp', SIM_NEW + '.uexp', (b) => {
   return { sim: both(b, SIM_OLD, SIM_NEW) };
 });
 console.log('machine sim uexp: inventory ' + INV_OLD + '->' + INV_NEW + ' @' + INV_OFF + ', bonus ' + BONUS_OLD + '->' + BONUS_NEW + ' @' + BONUS_OFF + ', refs ' + JSON.stringify(simUe));
-// parent import must survive; leftover scan on the sim outputs (actor import BP_Container_2_C is expected to stay)
-const simOut = fs.readFileSync(path.join(MACH_OUT, SIM_NEW + '.uasset'));
+// ---- actor clone: BP_Container_2 -> BP_BPUnitSto_2. Base rename skips WBP_Container (W before) and BP_ContainerObject (Object after).
+const ACT_BASE_OLD = 'BP_Container', ACT_BASE_NEW = 'BP_BPUnitSto';
+const ACT_MESH_OLD = 'SM2_LargeContainer', ACT_MESH_NEW = 'SM2_BPUnitHidden00';
+if (ACT_BASE_OLD.length !== ACT_BASE_NEW.length || ACT_MESH_OLD.length !== 18 || ACT_MESH_NEW.length !== 18) throw new Error('length mismatch: actor');
+const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const wEsc = (s) => s.split('').map((c) => esc(c) + '\\x00').join('');
+function baseRename(buf, from, to) {
+  let n = 0, t = buf.toString('latin1');
+  const go = (f, r, pre, post) => { t = t.replace(new RegExp('(?<!' + pre + ')' + f + '(?!' + post + ')', 'g'), () => { n++; return r; }); };
+  go(esc(from), to, 'W', 'Object');
+  go(wEsc(from), Buffer.from(to, 'utf16le').toString('latin1'), wEsc('W'), wEsc('Object'));
+  const o = Buffer.from(t, 'latin1'); if (o.length !== buf.length) throw new Error('length changed (baseRename)');
+  o.copy(buf); return n;
+}
+function actJob(src, dst, fn) {
+  const buf = fs.readFileSync(path.join(MACH_IN, src)); const len = buf.length;
+  const c = fn(buf);
+  if (buf.length !== len) throw new Error('length changed ' + src);
+  fs.writeFileSync(path.join(MACH_OUT, dst), buf);
+  return c;
+}
+const actUa = actJob('BP_Container_2.uasset', 'BP_BPUnitSto_2.uasset', (b) => ({
+  base: baseRename(b, ACT_BASE_OLD, ACT_BASE_NEW), mesh: both(b, ACT_MESH_OLD, ACT_MESH_NEW),
+}));
+need('actor uasset base rename', actUa.base); need('actor uasset mesh', actUa.mesh);
+const actUe = actJob('BP_Container_2.uexp', 'BP_BPUnitSto_2.uexp', (b) => ({
+  base: baseRename(b, ACT_BASE_OLD, ACT_BASE_NEW), mesh: both(b, ACT_MESH_OLD, ACT_MESH_NEW),
+}));
+console.log('actor uasset ' + JSON.stringify(actUa) + ' uexp ' + JSON.stringify(actUe));
+// actor leftovers: no vanilla mesh, no non-W/non-Object BP_Container base
+for (const f of ['BP_BPUnitSto_2.uasset', 'BP_BPUnitSto_2.uexp']) {
+  const t = fs.readFileSync(path.join(MACH_OUT, f)).toString('latin1');
+  if (/(?<!W)BP_Container(?!Object)/.test(t) || /SM2_LargeContainer/.test(t)) { console.log('LEFTOVER vanilla actor name in ' + f); bad = true; }
+}
+{
+  const t = fs.readFileSync(path.join(MACH_OUT, 'BP_BPUnitSto_2.uasset')).toString('latin1');
+  if (t.indexOf('/Game/Blueprints/Machines/BP_BPUnitSto_2\0', 0, 'latin1') === -1 && t.indexOf('/Game/Blueprints/Machines/BP_BPUnitSto_2', 0, 'latin1') === -1) { console.log('ERROR actor header FString BP_BPUnitSto_2 missing'); bad = true; }
+}
+// sim: parent import must survive; actor refs renamed; no vanilla actor ref left
+const simOut = fs.readFileSync(path.join(MACH_OUT, SIM_NEW + '.uasset')).toString('latin1');
 if (simOut.indexOf('/Game/Blueprints/Machines/BP_ContainerObject', 0, 'latin1') === -1) { console.log('ERROR parent import BP_ContainerObject missing'); bad = true; }
-if (simOut.indexOf('/Game/Blueprints/Machines/BP_Container\0', 0, 'latin1') === -1) { console.log('ERROR actor import package BP_Container missing'); bad = true; }
+if (simOut.indexOf('/Game/Blueprints/Machines/BP_BPUnitSto\0', 0, 'latin1') === -1) { console.log('ERROR sim actor package BP_BPUnitSto missing'); bad = true; }
+if (simOut.indexOf('BP_BPUnitSto_2_C', 0, 'latin1') === -1) { console.log('ERROR sim actor class BP_BPUnitSto_2_C missing'); bad = true; }
 for (const f of [SIM_NEW + '.uasset', SIM_NEW + '.uexp']) {
-  const b = fs.readFileSync(path.join(MACH_OUT, f));
-  for (const s of [SIM_OLD]) {
-    const n = b.indexOf(s, 0, 'latin1') + b.indexOf(u16(s), 0, 'latin1');
-    if (n > -2) { console.log('LEFTOVER ' + s + ' in ' + f); bad = true; }
+  const t = fs.readFileSync(path.join(MACH_OUT, f)).toString('latin1');
+  for (const s of [SIM_OLD, 'BP_Container\0', 'BP_Container_2']) {
+    if (t.indexOf(s) !== -1) { console.log('LEFTOVER ' + JSON.stringify(s) + ' in ' + f); bad = true; }
   }
 }
 console.log('machine leftover scan done');
