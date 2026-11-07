@@ -1,6 +1,6 @@
 -- BlueprintUnitUI: Blueprint Unit window (WBP_BlueprintUnit via bpu_window.lua). F / ESC = close (ESC closes the import modal first), F9 = dev cost test.
 -- Opened by post-hooks on WidgetSubsystem:ToggleWindow, WidgetSubsystem:ShowWindow and DMSPlayerController:ToggleWidget
--- (block arg BPO_BlueprintUnit_C). Every game call goes through pcall. Every log line gets TAG.
+-- (ONLY when an arg is the block, class BPO_BlueprintUnit_C). Every game call goes through pcall. Every log line gets TAG.
 
 local TAG = "[BPUnitUI] "
 local SRC = debug.getinfo(1, "S").source:match("^@(.*[/\\])")  -- this script's dir (Mods/BlueprintUnitUI/Scripts/)
@@ -20,6 +20,7 @@ local HOOK = "/Script/UMG.Widget:ForceLayoutPrepass"
 -- timer, and the timer hands the UnregisterHook call to the game-thread queue. A reopen before it fires cancels it.
 local hookIds, hookOff, hookOpens = nil, nil, 0
 local function onPrepass(self)
+    if next(BTN) == nil then return end   -- window closed / no buttons: do nothing for every other widget
     local okn, key = pcall(function() return self:get():GetFullName() end)
     local fn = okn and BTN[key]
     if fn then pcall(ExecuteInGameThread, function() pcall(fn) end) end
@@ -53,8 +54,11 @@ end
 local DATA_DIR = (SRC and (SRC .. "../../MiningBenchMod/dlls/")) or "ue4ss/Mods/MiningBenchMod/dlls/"
 BPU.bind({ onClick = onClick, clear = clearClicks, data = DATA_DIR })
 
--- vanilla WBP_StationInventory: BP_BlueprintUnit's import is renamed (clone.js), so it should not open. Belt and braces:
--- close any instance that still shows. Scheduled after our open; a missing class just gives no instances.
+-- vanilla WBP_StationInventory close: OFF. It also closed the game's Command Module window (F = Open Designer).
+-- pak100 gives our block the dummy class WBP_BPUnitNoWindow00, so no vanilla window opens for it. Code kept, never run by default.
+local CLOSE_VANILLA = false
+-- true: print the arg classes of each opener once per signature (debug). Default off: other openers log nothing from us.
+local LOG_OPENERS = false
 local function closeVanilla()
   local s, list = pcall(FindAllOf, "WBP_StationInventory_C")
   if not s or type(list) ~= "table" then return end
@@ -66,71 +70,81 @@ local function closeVanilla()
   end
 end
 
--- opener: any of the three hooks; the block arg decides (a1 = class, may be nil/invalid: never used as the filter). First call per hook prints every arg class (probe P1).
+-- opener filter: ONLY a call with a BPO_BlueprintUnit_C arg (our block) is handled. Every other opener (Command Module,
+-- scanners, containers BP_BPUnitStoreObj_01_C, docks...) returns right after the class check: no hide, no close, no state, no log (unless LOG_OPENERS).
+-- The container is never ours: F on the crate opens the native WBP_Container untouched. Arg a1 may be nil/invalid: never the filter.
 local seen = {}
 local function onOpen(src, self, a1, a2, a3, a4, a5)
   pcall(function()
     local args = { unw(a1), unw(a2), unw(a3), unw(a4), unw(a5) }
-    if not seen[src] then
-      seen[src] = true
-      local parts = {}
-      for i = 1, 5 do local x = args[i]; parts[#parts + 1] = "a" .. i .. "=" .. (ok(x) and cn(x) or type(x)) end
-      print(TAG .. "opener args (" .. src .. "): " .. table.concat(parts, " ") .. "\n")
-    end
-    local block, cont, player, widget
+    local block, sig = nil, {}
     for i = 1, 5 do
       local x = args[i]
       if ok(x) then
         local c = cn(x)
+        if LOG_OPENERS then sig[#sig + 1] = c end
         if not block and c == "BPO_BlueprintUnit_C" then block = x end
-        if not cont and c == "BP_BPUnitStoreObj_01_C" then cont = x end
+      end
+    end
+    if LOG_OPENERS then
+      local key = src .. " (" .. table.concat(sig, ", ") .. ")"
+      if not seen[key] then seen[key] = true; print(TAG .. "opener " .. key .. "\n") end
+    end
+    if not ok(block) then return end
+    local player, widget
+    for i = 1, 5 do
+      local x = args[i]
+      if ok(x) then
+        local c = cn(x)
         if not player and c == "DMSPlayerObject" then player = x end
         if not widget and c:sub(-2) == "_C" and c ~= "WidgetBlueprintGeneratedClass" and nm(x):find("^WBP_") then widget = x end
       end
     end
-    local b = block or cont
-    if not ok(b) then return end
     local ctl = (src == "DMSPlayerController:ToggleWidget") and unw(self) or nil
-    local wGame = widget
-    print(TAG .. "open request via " .. src .. " block=" .. cn(b) .. "\n")
+    print(TAG .. "open request via " .. src .. " block=" .. cn(block) .. "\n")
     ExecuteInGameThread(function()
-      -- game's own widget for the block (ToggleWidget only): hide it, as the Mining Unit does
-      if ok(wGame) and ok(ctl) then pcall(function() ctl:HideWidget(wGame, false) end) end
-      BPU.open(b, ok(player) and player or nil, ctl)
-      pcall(ExecuteWithDelay, 100, function() pcall(ExecuteInGameThread, closeVanilla) end)
+      pcall(function()
+        -- game's own widget for the block (ToggleWidget only): hide it, as the Mining Unit does
+        if ok(widget) and ok(ctl) then ctl:HideWidget(widget, false) end
+        BPU.open(block, ok(player) and player or nil, ctl)
+      end)
+      if CLOSE_VANILLA then pcall(ExecuteWithDelay, 100, function() pcall(ExecuteInGameThread, closeVanilla) end) end
     end)
   end)
 end
 
 local function hookOne(path, src)
-  local s, pre, post = pcall(RegisterHook, path, function() end, function(self, a1, a2, a3, a4, a5) onOpen(src, self, a1, a2, a3, a4, a5) end)
+  local s, pre, post = pcall(RegisterHook, path, function() end, function(self, a1, a2, a3, a4, a5) pcall(onOpen, src, self, a1, a2, a3, a4, a5) end)
   print(TAG .. "hook " .. src .. " " .. (s and ("registered ids=" .. tostring(pre) .. "," .. tostring(post)) or "FAILED") .. "\n")
 end
 hookOne("/Script/MainSequence.WidgetSubsystem:ToggleWindow", "WidgetSubsystem:ToggleWindow")
 hookOne("/Script/MainSequence.WidgetSubsystem:ShowWindow", "WidgetSubsystem:ShowWindow")
 hookOne("/Script/MainSequence.DMSPlayerController:ToggleWidget", "DMSPlayerController:ToggleWidget")
 
+-- keys: all do nothing while our window is closed
 pcall(function()
   RegisterKeyBind(Key.ESCAPE, function()
-    if BPU.impOpen() then pcall(ExecuteInGameThread, BPU.impClose)
-    elseif BPU.isOpen() then pcall(ExecuteInGameThread, BPU.close) end
+    pcall(function()
+      if BPU.impOpen() then pcall(ExecuteInGameThread, BPU.impClose)
+      elseif BPU.isOpen() then pcall(ExecuteInGameThread, BPU.close) end
+    end)
   end)
 end)
 pcall(function()
   RegisterKeyBind(Key.F, function()
-    if BPU.isOpen() then pcall(ExecuteInGameThread, BPU.fKey) end
+    pcall(function() if BPU.isOpen() then pcall(ExecuteInGameThread, BPU.fKey) end end)
   end)
 end)
 -- DEV only: fills the cost rows with 3 fake items (setCost test)
 pcall(function()
   RegisterKeyBind(Key.F9, function()
-    if BPU.isOpen() then pcall(ExecuteInGameThread, BPU.devCost) end
+    pcall(function() if BPU.isOpen() then pcall(ExecuteInGameThread, BPU.devCost) end end)
   end)
 end)
 -- DEV only: F10 cycles window Z (1, 0, 49) live, for drag tests
 pcall(function()
   RegisterKeyBind(Key.F10, function()
-    if BPU.isOpen() then pcall(ExecuteInGameThread, BPU.zCycle) end
+    pcall(function() if BPU.isOpen() then pcall(ExecuteInGameThread, BPU.zCycle) end end)
   end)
 end)
 

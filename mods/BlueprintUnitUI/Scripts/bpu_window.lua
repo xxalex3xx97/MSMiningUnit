@@ -593,7 +593,7 @@ function M.zCycle()
   L("zorder " .. tostring(n))
 end
 
--- block = BPO_BlueprintUnit_C (or the BP_BPUnitStoreObj_01_C container itself). player = DMSPlayerObject. ctl = controller or nil.
+-- block = BPO_BlueprintUnit_C only (main.lua opener filter; the container is used for lookups below, never as opener). player = DMSPlayerObject. ctl = controller or nil.
 function M.open(block, player, ctl)
   ExecuteInGameThread(function()
     if M.closing and os.clock() - (M.closing_at or 0) < 3 then return end   -- previous close still tearing down
