@@ -5,8 +5,9 @@
 //       nothing: every block must be on the station grid, machines inside one block floor, parity X~w Y~h, no overlaps. replace = SYNC (see
 //       SYNC below): removes conflicting machines and stale ones (DisassembleInput, never Dock/SolarPanel/Console) and places after the removal. Result line in
 //       dlls\PasteStatus.txt. bp_paste_selftest (read only: parser + footprint/floor/overlap checks, PASS/FAIL in BPProbe.txt).
-//       bp_import <path> [station <id>] (dry run: plans like bp_paste replace, prices it; WRITES only dlls\BlueprintImport.cost + .status; places, removes, sends nothing).
-//       bp_build [unit <storeSimId>] (M5, WRITES: builds the imported plan from the Blueprint Unit + player items: refund room check, removals, InventoryInput
+//       bp_import <path> [station <id>] [blocks 0|1] (dry run: plans like bp_paste replace, prices it; WRITES only dlls\BlueprintImport.cost + .status; places, removes, sends nothing;
+//       blocks 1 = station blocks placeholder, stored and ignored: status 'station blocks: not implemented yet', key blocks=ignored; locked=Teleporter:N = planned Teleporters, not unlock-checked).
+//       bp_build [unit <storeSimId>] [blocks 0|1] (M5, same blocks placeholder; locked=Teleporter:N = Teleporters missing at verify, text 'not placed (probably not unlocked)'), WRITES: builds the imported plan from the Blueprint Unit + player items: refund room check, removals, InventoryInput
 //       quick moves, chunked BuildInput, +3 s verify; status dlls\BlueprintBuild.status). bp_build_cancel. bp_invmove <primId> <secId> <slot> [action] [receiver]
 //       (probe, WRITES one InventoryInput; logs both inventories now and at +2 s).
 //       bp_setpath accepts hex text for ArrayProperty<byte> (machineconfigdata=<hex>): copied into a new TArray with FMemory::Malloc.
@@ -44,6 +45,8 @@
 //       Selftest: 'sync:' asserts in bp_paste_selftest.
 //       bp_recipes (read only): every live Recipe asset -> dlls\RecipeNames.json {"REC_x":{"name","crafter"?,"output"?}}, 'RECIPES n written'.
 //       bp_obj <machineId> (read only: full property dump of that live object into BPProbe.txt under "=== bp_obj <id>").
+//       bp_ports <machineId> (read only: PORTS lines in BPProbe.txt: class, grid, footprint, Inputs/Outputs, neighbour ids, SerializedMachineConfig hex + port bytes).
+//       bp_portset <machineId> <portIndex> (WRITES one MachinePortInput to the machine; PORTS dump before, and again 2 s later).
 //       bp_run <absolute script path> | bp_run stop (WRITES: a text script read at call time, run one op per bp_tick without blocking.
 //       Lines: station <id> | place <DAT_name> <x> <y> <h> <rot> [cfg=<hex>] | snap | kill_new | wait <ms> | report <label> | repeat <n> ... endrepeat
 //       (nesting up to 2). Bad file = refused whole at load. Every op logged to BPProbe.txt as RUN <line> ...; end: RUN DONE ops= refused=)
@@ -2467,7 +2470,8 @@ namespace
     //       fp = pp_fingerprint(existing), need/refund = per item cost (bp_import), skippedUg = underground positions dropped (no Length).
     struct PPlan { long long station = 0; std::string name; std::vector<PMach> place, cells, kept; std::vector<PCfgChg> chg; int recChanged = 0, portChanged = 0;
                    std::vector<PMach> removed; std::vector<int> staleIds; PBuildables bld; std::vector<PMach> existing;
-                   std::map<std::string, int64_t> need, refund; uint64_t fp = 0; bool valid = false; std::string skippedUg; };
+                   std::map<std::string, int64_t> need, refund; uint64_t fp = 0; bool valid = false; std::string skippedUg;
+                   bool blocks = false; };   // "blocks 1" requested: stored, ignored (station blocks not implemented)
     PPlan g_bpplan;
 
     // ===== bp_build (M5): builds g_bpplan from the items in a Blueprint Unit + the player inventory (InventoryInput moves, staged chunks) =====
@@ -2484,7 +2488,8 @@ namespace
                         std::vector<RefundItem> rneed; std::vector<int> removeIds; std::vector<BMap> costs;
                         size_t chunkFrom = 0, chunkTo = 0, countedFrom = static_cast<size_t>(-1); int chunks = 0, chunksDone = 0;
                         BMap chunkNeed; std::vector<BSlot> snap; std::vector<int> issued;
-                        int placed = 0, removed = 0, movedOut = 0, movedIn = 0, verifyP = -1, verifyN = 0; };
+                        int placed = 0, removed = 0, movedOut = 0, movedIn = 0, verifyP = -1, verifyN = 0;
+                        bool blocks = false; int teleMiss = 0; };   // blocks: "blocks 1" (ignored); teleMiss: Teleporters missing at verify
     BpBuildRun g_bpbuild;
     // WHAT: bp_invmove probe: the two inventories are logged again 2 s after the send (bp_build_tick).
     struct BbProbe { bool on = false; ULONGLONG t = 0; int prim = 0, sec = 0; };
@@ -3591,7 +3596,11 @@ namespace
     }
 
     // WHAT: pp_verify result: present = placed + kept machines found (-1 = station not read), total = how many were checked, missing = first 10 ("Cls@(x,y)").
-    struct PVerify { int present = -1, total = 0; std::string missing; };
+    struct PVerify { int present = -1, total = 0; std::string missing; int tele = 0; };
+    // WHAT: Teleporter wording: "not placed (probably not unlocked): Teleporter xN" for n > 0, "" otherwise. No research read: the lock is only guessed.
+    std::string pp_tele_note(int n) { return n > 0 ? "not placed (probably not unlocked): Teleporter x" + std::to_string(n) : std::string(); }
+    // WHAT: Teleporter count of a machine list (by class name).
+    int pp_count_tele(const std::vector<PMach>& v) { int n = 0; for (const PMach& m : v) if (m.bcls.find("Teleporter") != std::string::npos) ++n; return n; }
     // WHAT: +3 s check: every placed machine must be on the station with the same class and GridLocation. Logs VERIFY and updates the status line.
     PVerify pp_verify()
     {
@@ -3599,7 +3608,7 @@ namespace
         c.station = g_bpaste.station;
         if (!seh_run(pp_scan_fn, &c)) { bp_out(L"PASTE VERIFY FAULT " + seh_describe(g_seh)); return PVerify{}; }
         std::vector<bool> used(c.existing.size(), false);
-        int present = 0, miss = 0;
+        int present = 0, miss = 0, tele = 0;
         std::string missing;
         std::vector<PMach> chk = g_bpaste.ms;   // placed + kept (kept = identical machine already there, counts as present)
         chk.insert(chk.end(), g_bpaste.kept.begin(), g_bpaste.kept.end());
@@ -3610,6 +3619,7 @@ namespace
                 if (!used[k] && c.existing[k].bcls == m.bcls && c.existing[k].x == m.x && c.existing[k].y == m.y) { used[k] = true; found = true; }
             if (found) { ++present; continue; }
             bp_out(widen("PASTE VERIFY MISSING " + m.bcls + " " + pp_where(m)));
+            if (m.bcls.find("Teleporter") != std::string::npos) ++tele;
             if (miss++ < 10) missing += (missing.empty() ? "" : ", ") + m.bcls + "@(" + std::to_string(m.x) + "," + std::to_string(m.y) + ")";
         }
         const int n = static_cast<int>(chk.size());
@@ -3644,8 +3654,9 @@ namespace
                 bp_out(widen(line));
             }
         }
-        pp_status(pp_head(g_bpaste.placed, static_cast<int>(g_bpaste.ms.size()) - g_bpaste.placed) + "; verify " + std::to_string(present) + " of " + std::to_string(n) + " (missing: " + (missing.empty() ? std::string("none") : missing) + ")");
-        return PVerify{ present, n, missing };
+        pp_status(pp_head(g_bpaste.placed, static_cast<int>(g_bpaste.ms.size()) - g_bpaste.placed) + "; verify " + std::to_string(present) + " of " + std::to_string(n) + " (missing: " + (missing.empty() ? std::string("none") : missing) + ")" +
+                  (tele > 0 ? "; " + pp_tele_note(tele) : std::string()));
+        return PVerify{ present, n, missing, tele };
     }
 
     // ----- recipe names (live, under seh_run): the config string is the Recipe asset's Name property, verbatim -----
@@ -4383,8 +4394,15 @@ namespace
         std::vector<std::string> tk;
         { std::istringstream is(cmd.substr(10)); std::string t; while (is >> t) tk.push_back(t); }
         long long station = 0;
-        while (tk.size() >= 2 && tk[tk.size() - 2] == "station" && !tk.back().empty() && std::all_of(tk.back().begin(), tk.back().end(), [](char ch) { return ch >= '0' && ch <= '9'; }))
-        { station = std::strtoll(tk.back().c_str(), nullptr, 10); tk.resize(tk.size() - 2); }
+        bool blocks = false;   // trailing "blocks 1" (or "blocks 0"): stored, ignored
+        for (;;)
+        {
+            if (tk.size() >= 2 && tk[tk.size() - 2] == "station" && !tk.back().empty() && std::all_of(tk.back().begin(), tk.back().end(), [](char ch) { return ch >= '0' && ch <= '9'; }))
+            { station = std::strtoll(tk.back().c_str(), nullptr, 10); tk.resize(tk.size() - 2); }
+            else if (tk.size() >= 2 && tk[tk.size() - 2] == "blocks" && (tk.back() == "0" || tk.back() == "1"))
+            { blocks = tk.back() == "1"; tk.resize(tk.size() - 2); }
+            else break;
+        }
         std::string src;
         for (size_t i = 0; i < tk.size(); ++i) src += (i ? " " : "") + tk[i];
         if (src.size() >= 2 && src.front() == '"' && src.back() == '"') src = src.substr(1, src.size() - 2);
@@ -4441,12 +4459,17 @@ namespace
         P.refund = ic.refund;
         P.fp = pp_fingerprint(P.existing);
         P.valid = true;
+        P.blocks = blocks;
         g_bpplan = P;
-        const std::string txt = pp_import_text(static_cast<int>(P.place.size()), static_cast<int>(P.kept.size()), static_cast<int>(P.removed.size()), ic.refund, P.recChanged);
+        const int teleN = pp_count_tele(P.place);   // planned Teleporters: may stay unplaced if not unlocked (not read here)
+        std::string txt = pp_import_text(static_cast<int>(P.place.size()), static_cast<int>(P.kept.size()), static_cast<int>(P.removed.size()), ic.refund, P.recChanged);
+        if (teleN > 0) txt += " | not unlocked: Teleporter x" + std::to_string(teleN);
+        if (blocks) txt += " | station blocks: not implemented yet";
         std::string st = "done|" + txt + "\n";
         st += "seq=" + std::to_string(seq) + "\nblueprint=" + P.name + "\nstation=" + std::to_string(P.station) + "\nplace=" + std::to_string(P.place.size()) +
               "\nkeep=" + std::to_string(P.kept.size()) + "\nremove=" + std::to_string(P.removed.size()) + "\nrecipe=" + std::to_string(P.recChanged) +
-              "\nport=" + std::to_string(P.portChanged) + "\nskipped=" + P.skippedUg + "\ncreative=" + creative + "\n";
+              "\nport=" + std::to_string(P.portChanged) + "\nskipped=" + P.skippedUg + "\ncreative=" + creative + "\nlocked=Teleporter:" + std::to_string(teleN) + "\n";
+        if (blocks) st += "blocks=ignored\n";
         if (!P.removed.empty()) st += "removes=" + pp_import_removes(P.removed) + "\n";
         pp_imp_write("BlueprintImport.cost", pp_import_cost_text(ic));
         pp_imp_write("BlueprintImport.status", st);
@@ -4461,12 +4484,13 @@ namespace
     {
         const BpBuildRun& r = g_bpbuild;
         const bool v = g_bpplan.valid;
-        std::string s = state + "|" + text + "\n";
+        std::string s = state + "|" + text + (r.blocks ? " | station blocks: not implemented yet" : std::string()) + "\n";
         s += "seq=" + std::to_string(r.seq) + "\nstage=" + std::to_string(r.stage) + "\nplaced=" + std::to_string(r.placed) +
              "\nkept=" + std::to_string(v ? g_bpplan.kept.size() : 0) + "\nremoved=" + std::to_string(r.removed) +
              "\nrecipe=" + std::to_string(v ? g_bpplan.recChanged : 0) + "\nmoved_out=" + std::to_string(r.movedOut) + "\nmoved_in=" + std::to_string(r.movedIn) +
              "\nchunk=" + std::to_string(r.chunksDone) + "/" + std::to_string(r.chunks) +
-             "\nverify=" + (r.verifyP < 0 ? std::string("-") : std::to_string(r.verifyP)) + "/" + std::to_string(r.verifyN) + "\n";
+             "\nverify=" + (r.verifyP < 0 ? std::string("-") : std::to_string(r.verifyP)) + "/" + std::to_string(r.verifyN) +
+             "\nlocked=Teleporter:" + std::to_string(r.teleMiss) + (r.blocks ? "\nblocks=ignored" : std::string()) + "\n";
         pp_imp_write("BlueprintBuild.status", s);
         bp_out(widen("BUILD " + state + " " + text));
     }
@@ -4691,13 +4715,15 @@ namespace
         const PVerify v = pp_verify();
         r.verifyP = v.present;
         r.verifyN = v.total;
+        r.teleMiss = v.tele;
         r.active = false;
         r.stage = 0;
         const std::string counts = "placed " + std::to_string(r.placed) + ", kept " + std::to_string(g_bpplan.kept.size()) + ", removed " + std::to_string(r.removed) +
                                    ", recipe " + std::to_string(g_bpplan.recChanged) + ", moved_out " + std::to_string(r.movedOut) + ", moved_in " + std::to_string(r.movedIn);
         const std::string vt = " (verify " + std::to_string(v.present) + "/" + std::to_string(v.total) + ")";
+        const std::string tn = v.tele > 0 ? " | " + pp_tele_note(v.tele) : std::string();
         if (v.present < 0) bb_status("error", "verify could not read the station; " + counts);
-        else if (v.total > v.present) bb_status("error", "verify missing " + v.missing + "; " + counts + vt);
+        else if (v.total > v.present) bb_status("error", "verify missing " + v.missing + "; " + counts + vt + tn);
         else bb_status("done", counts + vt);
         bp_flush();
     }
@@ -4753,12 +4779,15 @@ namespace
     {
         std::vector<std::string> tk;
         { std::istringstream is(cmd.substr(8)); std::string t; while (is >> t) tk.push_back(t); }
-        if (!tk.empty() && !(tk.size() == 2 && tk[0] == "unit" && std::atoi(tk[1].c_str()) > 0)) return STR("error: usage bp_build [unit <storeSimId>]");
+        bool blocks = false;   // trailing "blocks 1" / "blocks 0": stored, ignored
+        if (tk.size() >= 2 && tk[tk.size() - 2] == "blocks" && (tk.back() == "0" || tk.back() == "1")) { blocks = tk.back() == "1"; tk.resize(tk.size() - 2); }
+        if (!tk.empty() && !(tk.size() == 2 && tk[0] == "unit" && std::atoi(tk[1].c_str()) > 0)) return STR("error: usage bp_build [unit <storeSimId>] [blocks 0|1]");
         const int unitSim = tk.empty() ? 0 : std::atoi(tk[1].c_str());
         if (g_bpbuild.active || g_bpaste.active || g_bpp.pending) return STR("error: busy: another build or paste is running");
         g_bpbuild = BpBuildRun{};
         g_bpbuild.seq = g_cmd.seq;
         g_bpbuild.unitSimId = unitSim;
+        g_bpbuild.blocks = blocks;
         bp_file_init();
         bp_out(L"=== bp_build " + widen(cmd));
         if (!g_bpplan.valid) return bb_refuse("import first");
@@ -5200,6 +5229,199 @@ namespace
         return c.found ? widen("ok bp_obj " + arg + " written to BPProbe.txt") : widen("error: no live object with id " + arg);
     }
 
+    // ===== bp_ports <machineId> (read only) and bp_portset <machineId> <portIndex> (one MachinePortInput send): port mapping probe =====
+    // WHAT: one live machine's port data as text lines (each written to BPProbe.txt as "PORTS ..."): class, grid, footprint, Inputs/Outputs,
+    //       neighbour ids, SerializedMachineConfig (live object, then its Blueprint.Machines entry) with the recipe layout decoded.
+    struct PtCtx { int id = 0; bool found = false; std::vector<std::string> lines; };
+    // WHAT: one line -> BPProbe.txt as "PORTS " + text, split into parts of at most 380 chars (every written line < 400).
+    void pt_emit(const std::string& s)
+    {
+        for (size_t i = 0; i == 0 || i < s.size(); i += 380) bp_out(widen("PORTS " + s.substr(i, 380)));
+    }
+    // WHAT: array property -> "name n=<count>: items" (int items as numbers, struct items as (X,Y), object items as names, max 64). "name n/a" when missing.
+    std::string pt_arr(UStruct* st, const uint8_t* base, const wchar_t* name)
+    {
+        const std::string nm = to_utf8(std::wstring(name));
+        FProperty* f = pp_field(st, name);
+        auto* ap = f ? CastField<FArrayProperty>(f) : nullptr;
+        if (!ap) return nm + " n/a";
+        const auto* ta = reinterpret_cast<const TArray<uint8_t>*>(base + f->GetOffset_Internal());
+        FProperty* in = ap->GetInner();
+        const size_t es = static_cast<size_t>(in->GetElementSize());
+        std::string s = nm + " n=" + std::to_string(ta->Num()) + ":";
+        for (int i = 0; ta->GetData() && i < ta->Num() && i < 64; ++i)
+        {
+            const uint8_t* e = ta->GetData() + static_cast<size_t>(i) * es;
+            if (CastField<FIntProperty>(in)) s += " " + std::to_string(*reinterpret_cast<const int32_t*>(e));
+            else if (auto* sp = CastField<FStructProperty>(in))
+            {
+                int x = 0, y = 0;
+                pp_int(sp->GetStruct(), e, L"X", x);
+                pp_int(sp->GetStruct(), e, L"Y", y);
+                s += " (" + std::to_string(x) + "," + std::to_string(y) + ")";
+            }
+            else if (CastField<FObjectProperty>(in))
+            {
+                UObject* o = *reinterpret_cast<UObject* const*>(e);
+                s += " " + (o ? pp_short(to_utf8(o->GetName())) : std::string("null"));
+            }
+            else s += " ?";
+        }
+        return s;
+    }
+    // WHAT: byte array property (SerializedMachineConfig) -> out. false when missing or not a byte array.
+    bool pt_bytes(UStruct* st, const uint8_t* base, const wchar_t* name, std::vector<uint8_t>& out)
+    {
+        FProperty* f = pp_field(st, name);
+        auto* ap = f ? CastField<FArrayProperty>(f) : nullptr;
+        if (!ap || !CastField<FByteProperty>(ap->GetInner())) return false;
+        const auto* ta = reinterpret_cast<const TArray<uint8_t>*>(base + f->GetOffset_Internal());
+        out.clear();
+        if (ta->GetData()) out.assign(ta->GetData(), ta->GetData() + ta->Num());
+        return true;
+    }
+    // WHAT: config bytes -> lines: hex, then the recipe layout (u16 1, FString recipe, i32 n, n x u8) decoded as "index=byte".
+    void pt_cfg_lines(const std::string& tag, const std::vector<uint8_t>& b, std::vector<std::string>& out)
+    {
+        out.push_back(tag + " cfg bytes=" + std::to_string(b.size()) + " hex=" + (b.empty() ? std::string("-") : pp_hex(b)));
+        std::string rec;
+        std::vector<uint8_t> pb;
+        if (!pp_cfg_parse(b, rec, pb)) { out.push_back(tag + " cfg: not the recipe layout (or empty)"); return; }
+        std::string s = tag + " cfg recipe=" + rec + " ports n=" + std::to_string(pb.size()) + ":";
+        for (size_t i = 0; i < pb.size(); ++i) s += " " + std::to_string(i) + "=" + std::to_string(pb[i]);
+        out.push_back(s);
+    }
+    // WHAT: footprint text from kPasteMach (DAT_<class>, or DAT_ + class without BP_ and Object). "unknown" when no entry.
+    std::string pt_foot(const std::string& cls)
+    {
+        std::string base = cls.rfind("BP_", 0) == 0 ? cls.substr(3) : cls;
+        if (base.size() > 6 && base.compare(base.size() - 6, 6, "Object") == 0) base.resize(base.size() - 6);
+        for (const std::string& k : { cls, base })
+            if (const PTabM* t = pp_mach_tab("DAT_" + k)) return std::to_string(t->w) + "x" + std::to_string(t->h) + " (kPasteMach DAT_" + k + ")";
+        return "unknown (no kPasteMach DAT_" + base + ")";
+    }
+    // WHAT: the station (StationObject) whose MachineIDs list holds this machine id, or null.
+    UObject* pt_station_of(int id)
+    {
+        std::vector<UObject*> sts;
+        UObjectGlobals::FindAllOf(STR("StationObject"), sts);
+        for (UObject* s : sts)
+        {
+            if (!alive(s) || s->GetName().rfind(STR("Default__"), 0) == 0) continue;
+            for (int mid : station_ids(s, STR("MachineIDs"))) if (mid == id) return s;
+        }
+        return nullptr;
+    }
+    // WHAT: under seh_run: finds the live SaveableObject with the id and fills c->lines. Read only.
+    void pt_read_fn(void* p)
+    {
+        auto* c = static_cast<PtCtx*>(p);
+        std::vector<UObject*> sv;
+        UObjectGlobals::FindAllOf(STR("SaveableObject"), sv);
+        UObject* m = nullptr;
+        for (UObject* o : sv)
+            if (alive(o) && o->GetName().rfind(STR("Default__"), 0) != 0 && obj_id(o) == c->id) { m = o; break; }
+        if (!m) return;
+        c->found = true;
+        UStruct* cs = m->GetClassPrivate();
+        const std::string cls = pp_short(to_utf8(cs->GetName()));
+        const uint8_t* mb = reinterpret_cast<const uint8_t*>(m);
+        int x = 0, y = 0, h = 0, rot = 0;
+        UStruct* gst = nullptr;
+        if (const uint8_t* gt = pp_struct(cs, mb, L"GridTransform", gst)) pp_transform(gst, gt, x, y, h, rot);
+        c->lines.push_back("id=" + std::to_string(c->id) + " class=" + cls + " name=" + to_utf8(m->GetName()));
+        c->lines.push_back("grid x=" + std::to_string(x) + " y=" + std::to_string(y) + " h=" + std::to_string(h) + " rot=" + std::to_string(rot));
+        c->lines.push_back("footprint " + pt_foot(cls));
+        c->lines.push_back(pt_arr(cs, mb, L"Inputs"));
+        c->lines.push_back(pt_arr(cs, mb, L"Outputs"));
+        c->lines.push_back(pt_arr(cs, mb, L"InputMachineIDs"));
+        c->lines.push_back(pt_arr(cs, mb, L"OutputMachineIDs"));
+        std::vector<uint8_t> lb;
+        if (pt_bytes(cs, mb, L"SerializedMachineConfig", lb)) pt_cfg_lines("live", lb, c->lines);
+        else c->lines.push_back("live: no SerializedMachineConfig property on the object");
+        // WHY: the Blueprint.Machines entry of the holding station is the paste code's cfg read (match by x,y as bp_paste verify does)
+        if (UObject* st = pt_station_of(c->id))
+        {
+            std::vector<PBpMach> bp;
+            pp_read_bp_machines(st, bp);
+            int hit = -1;
+            for (size_t k = 0; k < bp.size() && hit < 0; ++k) if (bp[k].m.x == x && bp[k].m.y == y) hit = static_cast<int>(k);
+            if (hit < 0) c->lines.push_back("blueprint entry: none at x=" + std::to_string(x) + " y=" + std::to_string(y) + " (station " + std::to_string(obj_id(st)) + ")");
+            else
+            {
+                c->lines.push_back("blueprint entry #" + std::to_string(hit) + " of " + std::to_string(bp.size()) + " class=" + bp[hit].m.bcls + " (station " + std::to_string(obj_id(st)) + ")");
+                pt_cfg_lines("bp", bp[hit].cfg, c->lines);
+            }
+        }
+        else c->lines.push_back("station: no StationObject lists this machine id");
+    }
+    // WHAT: reads the machine (under seh_run) and writes its PORTS lines to BPProbe.txt under a header. found/fault reported.
+    bool pt_log(int id, const std::string& head, bool& found)
+    {
+        PtCtx c;
+        c.id = id;
+        bp_out(widen("=== " + head));
+        const bool ok = seh_run(pt_read_fn, &c);
+        found = c.found;
+        if (!ok) { bp_out(L"FAULT " + seh_describe(g_seh)); return false; }
+        if (!c.found) { bp_out(L"PORTS no live object with id " + std::to_wstring(id)); return true; }
+        for (const std::string& l : c.lines) pt_emit(l);
+        return true;
+    }
+    // WHAT: "bp_ports <machineId>": PORTS dump of one live machine into BPProbe.txt. Read only.
+    std::wstring bp_ports_cmd(const std::string& cmd)
+    {
+        const std::string arg = cmd.size() > 9 ? cmd.substr(9) : std::string();
+        if (arg.empty() || !std::all_of(arg.begin(), arg.end(), [](char ch) { return ch >= '0' && ch <= '9'; })) return STR("error: usage bp_ports <machineId>");
+        bp_file_init();
+        bool found = false;
+        const bool ok = pt_log(std::atoi(arg.c_str()), "bp_ports " + arg, found);
+        bp_flush();
+        if (!ok) return STR("error: bp_ports fault (see BPProbe.txt)");
+        return found ? widen("ok bp_ports " + arg + " written to BPProbe.txt") : widen("error: no live object with id " + arg);
+    }
+    // WHAT: bp_portset probe: the machine is re-read 2 s after the send (pt_probe_tick).
+    struct PtProbe { bool on = false; ULONGLONG t = 0; int id = 0, idx = 0; };
+    PtProbe g_ptprobe;
+    // WHAT: 2 s re-read after a bp_portset send (from bp_tick).
+    void pt_probe_tick()
+    {
+        if (!g_ptprobe.on || GetTickCount64() < g_ptprobe.t) return;
+        g_ptprobe.on = false;
+        bool found = false;
+        pt_log(g_ptprobe.id, "bp_portset after index " + std::to_string(g_ptprobe.idx) + " (2 s)", found);
+        bp_flush();
+    }
+    // WHAT: "bp_portset <machineId> <portIndex>": refuses when the id is not live; else one MachinePortInput (PortIndex) to the machine,
+    //       PORTS before-dump now and after-dump 2 s later. Writes one command (only on user command).
+    std::wstring bp_portset_cmd(const std::string& cmd)
+    {
+        std::istringstream is(cmd.substr(11));
+        std::string a, b, extra;
+        is >> a >> b;
+        auto dig = [](const std::string& s) { return !s.empty() && std::all_of(s.begin(), s.end(), [](char ch) { return ch >= '0' && ch <= '9'; }); };
+        if (!dig(a) || !dig(b) || (is >> extra)) return STR("error: usage bp_portset <machineId> <portIndex>");
+        if (g_bpp.pending) return STR("error: previous bp_place/bp_send still being checked, wait 5 s");
+        if (g_ptprobe.on) return STR("error: previous bp_portset still re-reading (2 s)");
+        bp_file_init();
+        bp_out(L"=== bp_portset " + widen(cmd));
+        bool found = false;
+        if (!pt_log(std::atoi(a.c_str()), "bp_portset before index " + b, found) || !found)
+        {
+            bp_out(L"REFUSE bp_portset: no live object with id " + widen(a) + L", nothing sent");
+            bp_flush();
+            return widen("error: no live object with id " + a);
+        }
+        BpSend s;
+        s.tok = { "bp_send", "MachinePortInput", a, "portindex=" + b };
+        const bool ok = seh_run(bp_send_fn, &s);
+        bp_out(s.out);
+        if (!ok) bp_out(L"FAULT bp_portset " + seh_describe(g_seh));
+        g_ptprobe = PtProbe{ ok && s.called, GetTickCount64() + 2000, std::atoi(a.c_str()), std::atoi(b.c_str()) };
+        bp_flush();
+        return (ok && s.called) ? widen("ok bp_portset " + a + " " + b + " sent, PORTS re-read 2 s later (BPProbe.txt)") : STR("error: bp_portset refused (see BPProbe.txt)");
+    }
+
     // ===== bp_recipes (read only, writes dlls\RecipeNames.json): every live Recipe asset =====
     // WHY: the Recipe asset Name is the config string (see pp_recipe_fn); crafter / output are optional, written only when readable.
     struct PRecOut { std::string name, crafter, output; bool hasCrafter = false, hasOutput = false; };
@@ -5302,6 +5524,7 @@ namespace
         bp_run_tick();
         bp_paste_tick();
         bp_build_tick();
+        pt_probe_tick();
         {
             std::lock_guard<std::mutex> lk(g_bp.mu);   // Probe 7: HITLOG lines from the hook
             for (const std::wstring& l : g_bp.hitq) bp_out(l);
@@ -5422,6 +5645,8 @@ namespace
         if (cmd == "bp_build_cancel") return bp_build_cancel_cmd();
         if (cmd.rfind("bp_invmove ", 0) == 0) return bp_invmove_cmd(cmd);
         if (cmd.rfind("bp_obj ", 0) == 0) return bp_obj_cmd(cmd);
+        if (cmd.rfind("bp_ports ", 0) == 0) return bp_ports_cmd(cmd);
+        if (cmd.rfind("bp_portset ", 0) == 0) return bp_portset_cmd(cmd);
         if (cmd == "bp_recipes") return bp_recipes_cmd();
         if (cmd == "bp_paste_station") return pp_fail("import station (blocks) is not implemented yet; use Import factory");
         if (cmd == "bp_disarm")
