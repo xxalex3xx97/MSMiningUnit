@@ -40,7 +40,7 @@ local CONTRACT = { "Panel", "Txt_Title", "Btn_Close", "Txt_Close", "Txt_Status",
 -- S.w = WBP instance = viewport widget (names resolve here). S.p = controller. S.uw/S.pw = grids. S.tc = last text per name.
 -- S.imp = import modal shown. S.poll = { seq, t0, last } while waiting for our import. S.itemMap = name -> Item DA (per open).
 local S = { root = nil, w = nil, p = nil, cls = nil, frame = nil, uw = nil, pw = nil, unitInv = nil, playerInv = nil,
-  cost = nil, tc = nil, imp = false, poll = nil, itemMap = nil }
+  cost = nil, tc = nil, imp = false, poll = nil, itemMap = nil, unitSim = nil }
 local BIND -- {onClick, clear, data} from main.lua
 local DATA = "ue4ss/Mods/MiningBenchMod/dlls/"   -- MiningBenchMod/dlls/ (main.lua passes the absolute-ish dir)
 local lastSeq = 0                                -- last MiningCmd seq we wrote (module lifetime)
@@ -857,25 +857,6 @@ local function setEnabled(name, b) local o = w(name); if ok(o) then pcall(functi
 local function setBuildBtns(on) setEnabled("Btn_Build", on); setEnabled("Btn_Import", on) end
 local function scheduleBuild() pcall(ExecuteWithDelay, POLL_MS, function() pcall(ExecuteInGameThread, buildTick) end) end
 
--- unit container sim (BP_BPUnitStoreObj_01_C) with ParentID == opened block ID or its frame ID. Exactly one -> its ID, else nil
-local function unitSimId()
-  local block = S.block
-  if not ok(block) then L("build: no unit block, no unit arg"); return nil end
-  local bid = rd(block, "ID")
-  local fid
-  local sf, fr = pcall(function() return block:GetFrame() end)
-  if sf and ok(fr) then fid = rd(fr, "ID") end
-  local s, sims = pcall(FindAllOf, CRATE_SIM)
-  local found, n = nil, 0
-  for _, sim in ipairs((s and type(sims) == "table") and sims or {}) do
-    local pid = ok(sim) and rd(sim, "ParentID") or nil
-    if pid ~= nil and ((bid ~= nil and pid == bid) or (fid ~= nil and pid == fid)) then n = n + 1; found = rd(sim, "ID") end
-  end
-  if n == 1 and found ~= nil then return found end
-  L("build: unit container " .. (n == 0 and "not found" or ("ambiguous x" .. n)) .. ", no unit arg")
-  return nil
-end
-
 -- re-run the import of BlueprintImport.json (same path as Btn_Import) so the cost list refreshes
 local function sendImport()
   local seq = nextSeq()
@@ -924,7 +905,7 @@ local function buildClick()
   if S.poll or S.build then return end
   if not imported then txt("Txt_Status", "import first"); return end
   local seq = nextSeq()
-  local uid = unitSimId()
+  local uid = S.unitSim   -- container sim ID bound at open; nil = frame fallback (U1), no unit arg
   if not sendCmd(seq .. "|0|bp_build" .. (uid and (" unit " .. uid) or ""), "build ") then
     txt("Txt_Status", "error: command write failed"); return
   end
@@ -1002,6 +983,7 @@ function M.open(block, player, ctl)
     -- probe P2
     local slots
     pcall(function() slots = unitInv:GetItemSlots() end)
+    S.unitSim = cont and rd(cont, "ID") or nil
     L(string.format("P2 container ID=%s ParentID=%s inventory ID=%s slots=%s StackMultiplier=%s src=%s rule=%s",
       tostring(cont and rd(cont, "ID") or "-"), tostring(cont and rd(cont, "ParentID") or "-"), tostring(rd(unitInv, "ID")),
       tostring(countOf(slots)), tostring(rd(unitInv, "StackMultiplier")), tostring(srcName), tostring(rule or "-")))
