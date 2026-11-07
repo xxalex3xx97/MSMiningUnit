@@ -17,7 +17,10 @@ MESHES = {
         "Screen1": "/Game/Art/MaterialLibrary/MI_Screens_01", "Ring1": "/Game/Materials/M_Hologram",
         "Holotable": "/Game/Materials/M_Holotable"}),
     "SM_BPUnitBlueprintHolo_01": ("/Game/Meshes/Effects", {"Holo1": "/Game/Materials/M_Hologram"}),
+    # same-length (18) replacement for SM2_LargeContainer in the cloned actor: tiny, 6 slots, no collision
+    "SM2_BPUnitHidden00": ("/Game/Meshes/Machines", {"Hid%d" % i: "/Game/Materials/Instances/MI_PaintedMetal_Black" for i in range(6)}),
 }
+assert len("SM2_BPUnitHidden00") == len("SM2_LargeContainer") == 18
 L = []
 def log(m):
     L.append(str(m)); unreal.log("[bpunit] " + str(m))
@@ -53,7 +56,7 @@ def main():
             sp(o, "import_as_skeletal", False)
             d = o.static_mesh_import_data
             sp(d, "build_nanite", False); sp(d, "combine_meshes", True); sp(d, "convert_scene_unit", True)
-            sp(d, "generate_lightmap_u_vs", False); sp(d, "auto_generate_collision", name != "SM2_BPUnitTbl")  # table ships UCX_ hulls
+            sp(d, "generate_lightmap_u_vs", False); sp(d, "auto_generate_collision", name == "SM_BPUnitBlueprintHolo_01")  # table ships UCX_ hulls, hidden none
             sp(t, "options", o)
             at.import_asset_tasks([t])
             log("imported %s (crash expected next; rerun to continue)" % p)
@@ -66,10 +69,15 @@ def main():
             sn = str(st.material_slot_name)
             if sn in slotmap: sm.set_material(i, eal.load_asset(slotmap[sn]))
             else: log("  UNMAPPED slot " + sn)
+        if name == "SM2_BPUnitHidden00":
+            unreal.EditorStaticMeshLibrary.remove_collisions(sm)
+            sp(sm.get_editor_property("body_setup"), "collision_trace_flag", unreal.CollisionTraceFlag.CTF_USE_SIMPLE_AS_COMPLEX)
         eal.save_loaded_asset(sm)
         e = sm.get_bounds().box_extent; org = sm.get_bounds().origin
         log("%s slots=%s origin=(%s,%s,%s) extent=(%s,%s,%s)" % (p, [str(s.material_slot_name) for s in sm.static_materials], org.x, org.y, org.z, e.x, e.y, e.z))
         try:
+            b = sm.get_editor_property("body_setup"); g0 = b.get_editor_property("agg_geom")
+            log("  SIMPLECOLL total=%d" % sum(len(g0.get_editor_property(k)) for k in ("convex_elems", "box_elems", "sphere_elems", "sphyl_elems", "tapered_capsule_elems")))
             g = sm.get_editor_property("body_setup").get_editor_property("agg_geom")
             cv = g.get_editor_property("convex_elems")
             log("  collision: %d convex elems, box=%d, trace_flag=%s, EditorStaticMeshLibrary convex count=%s" % (len(cv), len(g.get_editor_property("box_elems")), sm.get_editor_property("body_setup").get_editor_property("collision_trace_flag"), unreal.EditorStaticMeshLibrary.get_convex_collision_count(sm)))
