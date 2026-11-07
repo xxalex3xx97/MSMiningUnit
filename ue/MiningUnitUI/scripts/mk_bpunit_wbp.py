@@ -122,7 +122,7 @@ def big_btn(name, tname, label, parent, pad):
     b = add(wbp, U.Button, name, parent)
     slot(b, fill=1.0, h='Fill', pad=pad)
     b.set_editor_property('widget_style', button_style(round_brush(BTN), round_brush(lin('5C5C5C')), round_brush(lin('333333'))))
-    t = txt(tname, name, label, 22, WHITE, h='Center', v='Center', pad=(0, 18, 0, 18))
+    t = txt(tname, name, label, 22, WHITE, h='Center', v='Center', pad=(0, 16, 0, 16))
     t.set_editor_property('justification', U.TextJustify.CENTER)
 
 
@@ -168,10 +168,18 @@ box(U.HorizontalBox, 'Row_Buttons', 'Row_Stack', h='Fill', pad=(0, 0, 0, 14))
 big_btn('Btn_Import', 'Txt_Import', 'Import', 'Row_Buttons', (0, 0, 6, 0))
 big_btn('Btn_Build', 'Txt_Build', 'Build', 'Row_Buttons', (6, 0, 0, 0))
 txt('Txt_UnitInvTitle', 'Row_Stack', 'Block inventory', 17, GOLD, pad=(0, 0, 0, 6))
-border('Row_UnitInvFrame', 'Row_Stack', OUTLINE, (2, 2, 2, 2), fill=1.0, h='Fill', v='Fill', pad=(0, 0, 0, 12))
-box(U.ScrollBox, 'Scr_UnitInv', 'Row_UnitInvFrame', h='Fill', v='Fill')
+# inventory hosts: auto-size (Fill=0) Left/Top wrappers so WBP_Inventory_C's UniformGridPanel gets its natural width (no cell stretch);
+# vertical Fill weights (unit 0.5 / player 0.35) wrap them. ScrollBox desired width = content width, so Scr_UnitInv hugs the 8 columns.
+box(U.HorizontalBox, 'Row_UnitInvWrap', 'Row_Stack', fill=0.5, h='Fill', v='Fill', pad=(0, 0, 0, 12))
+border('Row_UnitInvFrame', 'Row_UnitInvWrap', OUTLINE, (2, 2, 14, 2), h='Left', v='Fill')
+box(U.ScrollBox, 'Scr_UnitInv', 'Row_UnitInvFrame')
 txt('Txt_PlayerInvTitle', 'Row_Stack', 'Player Inventory', 17, GOLD, pad=(0, 0, 0, 6))
-border('Host_PlayerInv', 'Row_Stack', lin('242424'), (4, 4, 4, 4), fill=1.0, h='Fill', v='Fill')
+box(U.HorizontalBox, 'Row_PlayerWrap', 'Row_Stack', fill=0.35, h='Fill', v='Fill')
+border('Host_PlayerInv', 'Row_PlayerWrap', lin('242424'), (4, 4, 4, 4), h='Left', v='Top')
+for n in ('Row_UnitInvFrame', 'Host_PlayerInv'):
+    w = ELib.find_source_widget_by_name(wbp, n)
+    w.set_editor_property('horizontal_alignment', U.HorizontalAlignment.H_ALIGN_LEFT)
+    w.set_editor_property('vertical_alignment', U.VerticalAlignment.V_ALIGN_TOP)
 
 save(wbp)
 for p in srcs:
