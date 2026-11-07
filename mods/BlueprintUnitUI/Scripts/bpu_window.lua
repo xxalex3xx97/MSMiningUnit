@@ -324,6 +324,14 @@ local function writeFile(path, data)
   return okw ~= nil, werr
 end
 
+-- MiningCmd.txt: one line, no newline. tag "build " for bp_build. false = write failed
+local function sendCmd(line, tag)
+  local cok, cerr = writeFile(dataPath("MiningCmd.txt"), line)
+  if not cok then L((tag or "") .. "MiningCmd.txt write failed " .. tostring(cerr)); return false end
+  L((tag or "") .. "cmd " .. line)
+  return true
+end
+
 -- seq: below 1e8 (DLL keeps last 8 digits), strictly above: clock (unix s), last one we wrote, and the one in MiningCmd.txt
 local function nextSeq()
   local fileSeq = 0
@@ -409,9 +417,9 @@ local function parseStatus(body)
   return st or "", text or "", kv
 end
 
--- nil if no file
-local function readStatus()
-  local fh = io.open(dataPath("BlueprintImport.status"), "rb")
+-- nil if no file. name = status file (default BlueprintImport.status)
+local function readStatus(name)
+  local fh = io.open(dataPath(name or "BlueprintImport.status"), "rb")
   if not fh then return nil end
   local body = fh:read("a") or ""
   fh:close()
@@ -429,11 +437,20 @@ local function schedulePoll()
   pcall(ExecuteWithDelay, POLL_MS, function() pcall(ExecuteInGameThread, pollTick) end)
 end
 
+local imported = false                 -- a done import happened (module lifetime): Build needs one first
+local function showSummary(text) txt("Txt_Summary", text); setVis(w("Txt_Summary"), text ~= "") end
+-- finished build line (S.lastBuild) goes above the import summary, consumed once
+local function buildSummary(extra)
+  local b = S.lastBuild; S.lastBuild = nil
+  if not b then return extra end
+  return extra ~= "" and (b .. "\n" .. extra) or b
+end
+
 local function showDone(text, kv)
+  imported = true
   local bp = kv.blueprint or ""
   txt("Txt_Status", bp ~= "" and ("Blueprint: " .. bp) or "Ready")
-  txt("Txt_Summary", text)
-  setVis(w("Txt_Summary"), text ~= "")
+  showSummary(buildSummary(text))
   local pretty = ((tonumber(kv.remove) or 0) > 0) and prettyRemoves(kv.removes or "") or ""
   txt("Txt_Removes", pretty ~= "" and ("removes: " .. pretty) or "")
   setVis(w("Txt_Removes"), pretty ~= "")
@@ -447,6 +464,7 @@ pollTick = function()
   if os.time() - p.t0 > POLL_MAX_S then
     S.poll = nil
     txt("Txt_Status", "error: timeout")
+    if S.lastBuild then showSummary(buildSummary("")) end
     L("import timeout seq=" .. p.seq)
     return
   end
@@ -464,6 +482,7 @@ pollTick = function()
     elseif st == "error" then
       S.poll = nil
       txt("Txt_Status", "error: " .. text)
+      if S.lastBuild then showSummary(buildSummary("")) end
     elseif st == "working" then
       txt("Txt_Status", text ~= "" and text or "Importing...")
     end
@@ -473,7 +492,7 @@ end
 
 -- Btn_Import: open the modal, keep previous text, focus the box
 local function impOpenModal()
-  if not ok(S.w) then return end
+  if not ok(S.w) or S.build then return end   -- no import while a build runs
   S.imp = true
   setVis(w("Pnl_ImportModal"), true)
   local box = w("Edt_ImportJson")
@@ -522,10 +541,7 @@ local function impOk()
   resetResults()
 
   local seq = nextSeq()
-  local line = seq .. "|0|bp_import " .. target
-  local cok, cerr = writeFile(dataPath("MiningCmd.txt"), line)
-  if not cok then L("MiningCmd.txt write failed " .. tostring(cerr)); txt("Txt_Status", "error: command write failed"); return end
-  L("cmd " .. line)
+  if not sendCmd(seq .. "|0|bp_import " .. target) then txt("Txt_Status", "error: command write failed"); return end
   S.poll = { seq = seq, t0 = os.time(), last = nil, misLogged = {} }
   schedulePoll()
 end
@@ -533,7 +549,7 @@ end
 function M.close()
   if BIND and BIND.clear then BIND.clear() end  -- drop button callbacks + global layout hook
   S.cost, S.tc, S.itemMap = nil, nil, nil
-  S.poll, S.imp = nil, false
+  S.poll, S.imp, S.build = nil, false, nil   -- closing stops the build poll (DLL keeps running)
   if not (S.root or S.p or S.frame) then return end
   if M.closing and os.clock() - (M.closing_at or 0) < 3 then return end   -- already closing: idempotent
   M.closes = (M.closes or 0) + 1
@@ -832,6 +848,92 @@ function M.probeCost()
   if ok(host) then P("add", pcall(function() host:AddChild(row) end)) else P("add", "skipped (window closed)") end
 end
 
+-- ---------------------------------------------------------------------------------------------
+-- Build: MiningCmd.txt "<seq>|0|bp_build [unit <sim ID>]", poll BlueprintBuild.status, then re-run the import (cost list)
+-- ---------------------------------------------------------------------------------------------
+local BUILD_MAX_S = 330
+local buildTick
+local function setEnabled(name, b) local o = w(name); if ok(o) then pcall(function() o:SetIsEnabled(b) end) end end
+local function setBuildBtns(on) setEnabled("Btn_Build", on); setEnabled("Btn_Import", on) end
+local function scheduleBuild() pcall(ExecuteWithDelay, POLL_MS, function() pcall(ExecuteInGameThread, buildTick) end) end
+
+-- unit container sim (BP_BPUnitStoreObj_01_C) with ParentID == opened block ID or its frame ID. Exactly one -> its ID, else nil
+local function unitSimId()
+  local block = S.block
+  if not ok(block) then L("build: no unit block, no unit arg"); return nil end
+  local bid = rd(block, "ID")
+  local fid
+  local sf, fr = pcall(function() return block:GetFrame() end)
+  if sf and ok(fr) then fid = rd(fr, "ID") end
+  local s, sims = pcall(FindAllOf, CRATE_SIM)
+  local found, n = nil, 0
+  for _, sim in ipairs((s and type(sims) == "table") and sims or {}) do
+    local pid = ok(sim) and rd(sim, "ParentID") or nil
+    if pid ~= nil and ((bid ~= nil and pid == bid) or (fid ~= nil and pid == fid)) then n = n + 1; found = rd(sim, "ID") end
+  end
+  if n == 1 and found ~= nil then return found end
+  L("build: unit container " .. (n == 0 and "not found" or ("ambiguous x" .. n)) .. ", no unit arg")
+  return nil
+end
+
+-- re-run the import of BlueprintImport.json (same path as Btn_Import) so the cost list refreshes
+local function sendImport()
+  local seq = nextSeq()
+  if not sendCmd(seq .. "|0|bp_import " .. dataPath("BlueprintImport.json")) then
+    txt("Txt_Status", "error: command write failed"); showSummary(buildSummary("")); return
+  end
+  S.poll = { seq = seq, t0 = os.time(), last = nil, misLogged = {} }
+  schedulePoll()
+end
+
+buildTick = function()
+  local b = S.build
+  if not b then return end
+  if os.time() - b.t0 > BUILD_MAX_S then
+    S.build = nil
+    txt("Txt_Status", "error: timeout")
+    setBuildBtns(true)
+    L("build timeout seq=" .. b.seq)
+    return
+  end
+  local st, text, kv = readStatus("BlueprintBuild.status")
+  if st and kv.seq and not seqMatch(kv.seq, b.seq) and not b.misLogged[kv.seq] then
+    b.misLogged[kv.seq] = true
+    L("build status seq " .. kv.seq .. " != build_seq " .. b.seq .. " (ignored)")
+  end
+  if st and kv.seq and seqMatch(kv.seq, b.seq) then
+    local chunk = kv.chunk and (" (chunk " .. kv.chunk .. ")") or ""
+    local line = st .. "|" .. text .. chunk
+    if line ~= b.last then b.last = line; L("build status seq=" .. b.seq .. " " .. line) end
+    if st == "done" or st == "error" then
+      S.build = nil
+      local t = (st == "error") and ("error: " .. text) or text
+      txt("Txt_Status", t)
+      setBuildBtns(true)
+      S.lastBuild = t
+      sendImport()
+      return
+    elseif st == "working" then
+      txt("Txt_Status", (text ~= "" and text or "Building...") .. chunk)
+    end
+  end
+  if S.build == b then scheduleBuild() end
+end
+
+local function buildClick()
+  if S.poll or S.build then return end
+  if not imported then txt("Txt_Status", "import first"); return end
+  local seq = nextSeq()
+  local uid = unitSimId()
+  if not sendCmd(seq .. "|0|bp_build" .. (uid and (" unit " .. uid) or ""), "build ") then
+    txt("Txt_Status", "error: command write failed"); return
+  end
+  S.build = { seq = seq, t0 = os.time(), last = nil, misLogged = {} }
+  txt("Txt_Status", "Building...")
+  setBuildBtns(false)
+  scheduleBuild()
+end
+
 -- block = BPO_BlueprintUnit_C only (main.lua opener filter; the container is used for lookups below, never as opener). player = DMSPlayerObject. ctl = controller or nil.
 function M.open(block, player, ctl)
   ExecuteInGameThread(function()
@@ -913,7 +1015,7 @@ function M.open(block, player, ctl)
     S.unitInv, S.playerInv = unitInv, playerInv
     S.t0 = os.clock()
     S.tc = {}
-    S.imp, S.poll, S.itemMap = false, nil, nil
+    S.imp, S.poll, S.build, S.itemMap, S.block = false, nil, nil, nil, block
     L("CreateWidget ok " .. nm(wbp) .. " [" .. cn(wbp) .. "]")
     try("AddToViewport", function() wbp:AddToViewport(Z) end)
     if USE_VIEWPORT_SIZING then sizeWindow(wbp, p) end
@@ -947,7 +1049,7 @@ function M.open(block, player, ctl)
       end
       bind("Btn_Close", M.close)
       bind("Btn_Import", impOpenModal)
-      bind("Btn_Build", function() L("Btn_Build clicked (placeholder, M5)"); txt("Txt_Status", "Build is not implemented yet (M5)") end)
+      bind("Btn_Build", buildClick)
       bind("Btn_ImportClose", M.impClose)
       bind("Btn_ImportCancel", impCancel)
       bind("Btn_ImportOk", impOk)
