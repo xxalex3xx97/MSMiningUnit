@@ -51,7 +51,20 @@ local function clearClicks()
 end
 BPU.bind({ onClick = onClick, clear = clearClicks })
 
--- opener: any of the three hooks; the block arg decides. First call per hook prints every arg class (probe P1).
+-- vanilla WBP_StationInventory: BP_BlueprintUnit's import is renamed (clone.js), so it should not open. Belt and braces:
+-- close any instance that still shows. Scheduled after our open; a missing class just gives no instances.
+local function closeVanilla()
+  local s, list = pcall(FindAllOf, "WBP_StationInventory_C")
+  if not s or type(list) ~= "table" then return end
+  for _, o in ipairs(list) do
+    if ok(o) then
+      local okr = pcall(function() o:RemoveFromParent() end)
+      print(TAG .. "closed vanilla station window ok=" .. tostring(okr) .. "\n")
+    end
+  end
+end
+
+-- opener: any of the three hooks; the block arg decides (a1 = class, may be nil/invalid: never used as the filter). First call per hook prints every arg class (probe P1).
 local seen = {}
 local function onOpen(src, self, a1, a2, a3, a4, a5)
   pcall(function()
@@ -82,6 +95,7 @@ local function onOpen(src, self, a1, a2, a3, a4, a5)
       -- game's own widget for the block (ToggleWidget only): hide it, as the Mining Unit does
       if ok(wGame) and ok(ctl) then pcall(function() ctl:HideWidget(wGame, false) end) end
       BPU.open(b, ok(player) and player or nil, ctl)
+      pcall(ExecuteWithDelay, 100, function() pcall(ExecuteInGameThread, closeVanilla) end)
     end)
   end)
 end

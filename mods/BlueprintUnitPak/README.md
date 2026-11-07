@@ -12,3 +12,6 @@ Tools: MS_MODS_ROOT (default F:\MSDemoMods) for legacy/ source and tools\retoc.
 - Sim uexp int32 patch: InventorySize @120 32->120, StackSizeBonusMultiplier @124 10->200 (from diff_container.py: large=32/10, normal=16 at 120, normal has no bonus value).
 - Sizes differ: normal uexp 322 B, large uexp 454 B (not same-length). Large uexp values stored as plain LE int32.
 - DefaultMachines decoded: uexp 374 count (1->2), element 378..403 (26 B), next int32 20 @404. patch_bpo_machine.py inserts element 2 (22 B) at uexp 404: class ref -35 (new import 34 BP_BPUnitStoreObj_01_C), X=Y=0 (tune in-game), Height/Rot omitted. Header: +2 names, +2 imports (package 33, class 34), +1 preload (export 1 CreateBefore block, same as connector). Run after clone.js + registry + research, before to-zen. `python -I patch_bpo_machine.py --walk <base>` prints the element walk.
+
+## Window fix (vanilla suppress)
+- clone.js Job E: BP_BlueprintUnit.uasset import WBP_StationInventory -> WBP_BPUnitNoWindow00 (same length, ascii+utf16; 3 hits: package path, WBP_StationInventory_C, Default__). Same trick as Mining Unit WBP_Workbench -> WBP_MiningUnt. Lua also closes any live WBP_StationInventory_C 100 ms after open (main.lua closeVanilla).

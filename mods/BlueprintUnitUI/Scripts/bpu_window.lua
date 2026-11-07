@@ -215,6 +215,66 @@ function M.fKey()
   if M.isOpen() and os.clock() - (S.t0 or 0) > 0.5 and not typing() then M.close() end
 end
 
+-- fixed centred panel (Station Console size). Slate units = viewport px / DPI scale, clamped to 90% of the viewport.
+-- Runs AFTER AddToViewport: anchors/alignment/position/size are slot setters (silent no-op before the slot exists).
+local LIB_LAYOUT = "/Script/UMG.Default__WidgetLayoutLibrary"
+local WIN_W, WIN_H, WIN_FRAC = 1200, 900, 0.9
+local function sizeCall(tag, f)
+  local s, e = pcall(f)
+  L("size " .. tag .. " ok=" .. tostring(s) .. (s and "" or (" err=" .. tostring(e))))
+  return s
+end
+local function sizeWindow(wbp, p)
+  local vw, vh, sc = nil, nil, 1
+  local okv, v = pcall(function() return StaticFindObject(LIB_LAYOUT):GetViewportSize(p) end)
+  if okv and type(v) == "userdata" then
+    local x, y = rd(v, "X"), rd(v, "Y")
+    if type(x) == "number" and type(y) == "number" and x > 0 and y > 0 then vw, vh = x, y end
+  end
+  local oks, sv = pcall(function() return StaticFindObject(LIB_LAYOUT):GetViewportScale(p) end)
+  if oks and type(sv) == "number" and sv > 0 then sc = sv end
+  L("size GetViewportSize ok=" .. tostring(okv) .. " type=" .. type(v) .. " GetViewportScale ok=" .. tostring(oks) .. " scale=" .. tostring(sc))
+  if not vw then vw, vh = 3440, 1440; L("size: viewport fallback 3440x1440") end
+  local sw, sh = vw / sc, vh / sc
+  local w, h = math.min(WIN_W, WIN_FRAC * sw), math.min(WIN_H, WIN_FRAC * sh)
+  L(string.format("size: viewport px %.0fx%.0f dpi=%.3f slate %.0fx%.0f -> window %.0fx%.0f", vw, vh, sc, sw, sh, w, h))
+  sizeCall("anchors", function() wbp:SetAnchorsInViewport({ Minimum = { X = 0.5, Y = 0.5 }, Maximum = { X = 0.5, Y = 0.5 } }) end)
+  sizeCall("alignment", function() wbp:SetAlignmentInViewport({ X = 0.5, Y = 0.5 }) end)
+  sizeCall("position", function() wbp:SetPositionInViewport({ X = 0, Y = 0 }, false) end)
+  sizeCall("desired", function() wbp:SetDesiredSizeInViewport({ X = w, Y = h }) end)
+  local sd, d = pcall(function() return wbp:GetDesiredSize() end)
+  L("size final desired ok=" .. tostring(sd) .. " x=" .. tostring(sd and rd(d, "X")) .. " y=" .. tostring(sd and rd(d, "Y")) .. " inVp=" .. tostring(inVp(wbp)))
+end
+
+-- P4 probe (open time only): why no container matched. ContainerObject classes, machines whose ParentID == block ID or frame ID (cap 30 lines).
+local function diagContainers(bid, fid)
+  local okL, all = pcall(FindAllOf, "ContainerObject")
+  all = (okL and type(all) == "table") and all or {}
+  local byCls, nC = {}, 0
+  for _, c in ipairs(all) do if ok(c) then nC = nC + 1; local k = cn(c); byCls[k] = (byCls[k] or 0) + 1 end end
+  local parts = {}
+  for k, n in pairs(byCls) do parts[#parts + 1] = k .. " x" .. n end
+  L("P4 ContainerObject instances=" .. nC .. " [" .. table.concat(parts, ", ") .. "]")
+  L("P4 match rule: cls == BP_BPUnitStoreObj_01_C and (ParentID == block ID " .. tostring(bid) .. " or ParentID == frame ID " .. tostring(fid) .. ") or same GetFrame")
+  local okM, ms = pcall(FindAllOf, "MachineObject")
+  ms = (okM and type(ms) == "table") and ms or {}
+  local shown, nM, nMatch = 0, 0, 0
+  for _, m in ipairs(ms) do
+    if ok(m) then
+      nM = nM + 1
+      local pid = rd(m, "ParentID")
+      if pid ~= nil and (pid == bid or (fid ~= nil and pid == fid)) then
+        nMatch = nMatch + 1
+        if shown < 30 then
+          shown = shown + 1
+          L("P4 machine cls=" .. cn(m) .. " ID=" .. tostring(rd(m, "ID")) .. " ParentID=" .. tostring(pid))
+        end
+      end
+    end
+  end
+  L("P4 MachineObject instances=" .. nM .. " matching block/frame=" .. nMatch .. " shown=" .. shown)
+end
+
 -- block = BPO_BlueprintUnit_C (or the BP_BPUnitStoreObj_01_C container itself). player = DMSPlayerObject. ctl = controller or nil.
 function M.open(block, player, ctl)
   ExecuteInGameThread(function()
@@ -239,19 +299,30 @@ function M.open(block, player, ctl)
     local cont, srcName = nil, nil
     if cn(block) == "BP_BPUnitStoreObj_01_C" then cont = block end
     local bid = rd(block, "ID")
+    -- machines link to their frame by ParentID (MachineObject.ParentID = frame ID, per rea-machine-config), so match frame ID too
+    local fid, bf = nil, nil
+    do
+      local sf, fr = pcall(function() return block:GetFrame() end)
+      if sf and ok(fr) then
+        fid = rd(fr, "ID")
+        local sn, fn = pcall(function() return fr:GetFullName() end)
+        if sn then bf = fn end
+      end
+    end
     if not cont then
-      local s0, bf = pcall(function() return block:GetFrame():GetFullName() end)
       for _, c in ipairs(FindAllOf("ContainerObject") or {}) do
         if not cont and ok(c) and cn(c) == "BP_BPUnitStoreObj_01_C" then
           local pid = rd(c, "ParentID")
+          local byId = pid ~= nil and ((bid ~= nil and pid == bid) or (fid ~= nil and pid == fid))
           local sameFrame = false
-          if not (pid ~= nil and pid == bid) and s0 then
+          if not byId and bf then
             local s1, cf = pcall(function() return c:GetFrame():GetFullName() end)
             sameFrame = s1 and cf == bf
           end
-          if (pid ~= nil and pid == bid) or sameFrame then cont = c end
+          if byId or sameFrame then cont = c end
         end
       end
+      if not cont then diagContainers(bid, fid) end
     end
     local unitInv
     if ok(cont) then
@@ -283,6 +354,7 @@ function M.open(block, player, ctl)
     S.tc = {}
     L("CreateWidget ok " .. nm(wbp) .. " [" .. cn(wbp) .. "]")
     try("AddToViewport", function() wbp:AddToViewport(Z) end)
+    sizeWindow(wbp, p)
 
     local miss = {}
     for _, n in ipairs(CONTRACT) do if not ok(w(n)) then miss[#miss + 1] = n end end

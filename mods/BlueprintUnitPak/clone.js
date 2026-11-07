@@ -89,6 +89,17 @@ const bpH = patchOut(BP_NEW + '.uasset', (b) => ({ sm: replaceAll(b, SM_OLD, SM_
 console.log('BP uasset hologram mesh rename: ascii=' + bpH.sm + ' utf16=' + bpH.smU16);
 need('BP uasset hologram mesh rename', bpH.sm + bpH.smU16);
 
+// ---- Job E: suppress vanilla station window (BP_CommandModule opens WBP_StationInventory). Same-length dummy name, like Mining Unit WBP_Workbench -> WBP_MiningUnt ----
+const WIN_OLD = 'WBP_StationInventory', WIN_NEW = 'WBP_BPUnitNoWindow00';
+if (WIN_OLD.length !== 20 || WIN_NEW.length !== WIN_OLD.length) throw new Error('length mismatch: station window');
+const bpW = patchOut(BP_NEW + '.uasset', (b) => ({ win: replaceAll(b, WIN_OLD, WIN_NEW), winU16: replaceAll(b, u16(WIN_OLD), u16(WIN_NEW)) }));
+console.log('BP uasset vanilla station window rename: ascii=' + bpW.win + ' utf16=' + bpW.winU16);
+need('BP uasset station window rename (ascii: package path, WBP_StationInventory_C, Default__)', bpW.win);
+{
+  const b = fs.readFileSync(path.join(OUT, BP_NEW + '.uasset'));
+  if (b.indexOf(WIN_OLD, 0, 'latin1') !== -1 || b.indexOf(u16(WIN_OLD), 0, 'latin1') !== -1) { console.log('LEFTOVER ' + WIN_OLD + ' in ' + BP_NEW + '.uasset'); bad = true; }
+}
+
 // ---- Job C: hologram template transform (BP uexp float64 LE). Asserts vanilla layout before writing. ----
 const bpT = patchOut(BP_NEW + '.uexp', (b) => {
   const chk = (label, off, want, tol) => {
