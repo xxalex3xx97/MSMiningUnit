@@ -24,6 +24,7 @@ local COST_RED = { R = 0.604, G = 0, B = 0.067, A = 1 }
 local COST_WHITE = { R = 1, G = 1, B = 1, A = 1 }
 local COST_GREEN = { R = 0.1, G = 0.6, B = 0.2, A = 1 }
 local POLL_MS, POLL_MAX_S = 500, 60
+local SEQ_MOD = 100000000                      -- MiningCmd seq: the DLL keeps only the last 8 digits
 local REM_NAME = { ConveyorBelt = "belt", Splitter = "splitter", Container = "container" }
 -- widget names the WBP must provide (contract). Missing ones are logged once per open.
 local CONTRACT = { "Panel", "Txt_Title", "Btn_Close", "Txt_Close", "Txt_Status", "Txt_Summary", "Txt_Removes",
@@ -256,7 +257,7 @@ local function writeFile(path, data)
   return okw ~= nil, werr
 end
 
--- seq strictly above: now (unix ms, as Mining), last one we wrote, and the one in MiningCmd.txt
+-- seq: below 1e8 (DLL keeps last 8 digits), strictly above: clock (unix s), last one we wrote, and the one in MiningCmd.txt
 local function nextSeq()
   local fileSeq = 0
   local fh = io.open(dataPath("MiningCmd.txt"), "rb")
@@ -265,8 +266,23 @@ local function nextSeq()
     fh:close()
     fileSeq = tonumber(line and line:match("^(%d+)|") or "") or 0
   end
-  lastSeq = math.max(os.time() * 1000, lastSeq + 1, fileSeq + 1)
+  local fileSeq8 = fileSeq % SEQ_MOD
+  local clock = os.time() % SEQ_MOD
+  if clock <= fileSeq8 then
+    L("[BPUnitImport] clock seq " .. clock .. " <= MiningCmd.txt seq " .. fileSeq8 .. " (DLL ignores seq <= last): bumped")
+  end
+  lastSeq = math.max(clock, lastSeq + 1, fileSeq8 + 1)
+  if lastSeq >= SEQ_MOD then L("[BPUnitImport] seq " .. lastSeq .. " >= 1e8: DLL keeps last 8 digits, may be ignored") end
   return lastSeq
+end
+
+-- "BP_ContainerObject" -> "container", "BP_ContainerObject_2" -> "large container", others as before
+local function prettyName(raw)
+  local n = raw:gsub("_C$", ""):gsub("^BP_", "")
+  local base, num = n:match("^(.-)_(%d+)$")
+  if base and tonumber(num) >= 2 and base:gsub("Object$", "") == "Container" then return "large container" end
+  n = n:gsub("Object$", "")
+  return REM_NAME[n] or n:lower()
 end
 
 local function prettyRemoves(s)
@@ -274,10 +290,7 @@ local function prettyRemoves(s)
   for part in s:gmatch("[^,]+") do
     local raw, cnt = part:match("^(.-):(%d+)$")
     if raw then
-      local n = raw:gsub("_C$", "")
-      n = n:gsub("^BP_", "")
-      n = n:gsub("Object$", "")
-      n = REM_NAME[n] or n:lower()
+      local n = prettyName(raw)
       local c = tonumber(cnt)
       out[#out + 1] = c .. " " .. (c == 1 and n or (n .. "s"))
     end
@@ -285,12 +298,8 @@ local function prettyRemoves(s)
   return table.concat(out, ", ")
 end
 
--- BlueprintImport.cost: no header, lines ITEM_Name|need|refund|net (integers). Malformed lines skipped.
-local function readCost()
-  local fh = io.open(dataPath("BlueprintImport.cost"), "rb")
-  if not fh then L("cost file missing"); M.setCost({}); return end
-  local body = fh:read("a") or ""
-  fh:close()
+-- BlueprintImport.cost body: no header, lines ITEM_Name|need|refund|net (integers). Returns list, count of malformed lines.
+local function parseCost(body)
   local list, bad = {}, 0
   for line in body:gmatch("[^\r\n]+") do
     local name, need, refund, net = line:match("^([^|]+)|(%-?%d+)|(%-?%d+)|(%-?%d+)$")
@@ -300,6 +309,15 @@ local function readCost()
       bad = bad + 1
     end
   end
+  return list, bad
+end
+
+local function readCost()
+  local fh = io.open(dataPath("BlueprintImport.cost"), "rb")
+  if not fh then L("cost file missing"); M.setCost({}); return end
+  local body = fh:read("a") or ""
+  fh:close()
+  local list, bad = parseCost(body)
   if bad > 0 then L("cost: skipped " .. bad .. " malformed lines") end
   M.setCost(list)
 end
@@ -311,12 +329,8 @@ local function resetResults()
   M.setCost({})
 end
 
--- BlueprintImport.status: line 1 "state|text", then key=value lines. Returns state, text, kv (nil if no file)
-local function readStatus()
-  local fh = io.open(dataPath("BlueprintImport.status"), "rb")
-  if not fh then return nil end
-  local body = fh:read("a") or ""
-  fh:close()
+-- BlueprintImport.status body: line 1 "state|text", then key=value lines. Returns state, text, kv
+local function parseStatus(body)
   local lines = {}
   for line in body:gmatch("[^\r\n]+") do lines[#lines + 1] = line end
   local st, text = (lines[1] or ""):match("^([^|]*)|?(.*)$")
@@ -326,6 +340,21 @@ local function readStatus()
     if k then kv[k] = v end
   end
   return st or "", text or "", kv
+end
+
+-- nil if no file
+local function readStatus()
+  local fh = io.open(dataPath("BlueprintImport.status"), "rb")
+  if not fh then return nil end
+  local body = fh:read("a") or ""
+  fh:close()
+  return parseStatus(body)
+end
+
+-- status seq vs sent seq: equal modulo 1e8 (the DLL keeps the last 8 digits)
+local function seqMatch(statusSeq, importSeq)
+  local s = tonumber(statusSeq)
+  return s ~= nil and s % SEQ_MOD == importSeq % SEQ_MOD
 end
 
 local pollTick -- forward: schedulePoll and pollTick call each other
@@ -355,7 +384,11 @@ pollTick = function()
     return
   end
   local st, text, kv = readStatus()
-  if st and kv and kv.seq and tonumber(kv.seq) == p.seq then
+  if st and kv and kv.seq and not seqMatch(kv.seq, p.seq) and not p.misLogged[kv.seq] then
+    p.misLogged[kv.seq] = true
+    L("[BPUnitImport] status seq " .. kv.seq .. " != import_seq " .. p.seq .. " (ignored)")
+  end
+  if st and kv and kv.seq and seqMatch(kv.seq, p.seq) then
     local line = st .. "|" .. text
     if line ~= p.last then p.last = line; L("import status seq=" .. p.seq .. " " .. line) end
     if st == "done" then
@@ -426,7 +459,7 @@ local function impOk()
   local cok, cerr = writeFile(dataPath("MiningCmd.txt"), line)
   if not cok then L("MiningCmd.txt write failed " .. tostring(cerr)); txt("Txt_Status", "error: command write failed"); return end
   L("cmd " .. line)
-  S.poll = { seq = seq, t0 = os.time(), last = nil }
+  S.poll = { seq = seq, t0 = os.time(), last = nil, misLogged = {} }
   schedulePoll()
 end
 
@@ -679,5 +712,8 @@ function M.open(block, player, ctl)
     L("open n=" .. M.opens .. " isOpen=" .. tostring(M.isOpen()))
   end)
 end
+
+-- pure parse helpers, exposed for tests/test_parse.lua (no game calls)
+M._parse = { status = parseStatus, cost = parseCost, removes = prettyRemoves, seqMatch = seqMatch }
 
 return M
