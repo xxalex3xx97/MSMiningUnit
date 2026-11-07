@@ -593,6 +593,49 @@ function M.zCycle()
   L("zorder " .. tostring(n))
 end
 
+-- DEV (F11): live shift probe. Repeats every 500 ms while on; stops on second F11 or when the window closes.
+-- Key form: FKey struct first, Key library constant second. First form that answers is logged.
+local SHIFT_FORM, shiftOn = nil, false
+local function keyDown(p, name)
+  local s, v = pcall(function() return p:IsInputKeyDown({ KeyName = FName(name) }) end)
+  if s and type(v) == "boolean" then if not SHIFT_FORM then SHIFT_FORM = "struct"; L("shift probe key form = struct") end return v end
+  s, v = pcall(function() return p:IsInputKeyDown(Key[name]) end)
+  if s and type(v) == "boolean" then if not SHIFT_FORM then SHIFT_FORM = "const"; L("shift probe key form = const") end return v end
+  return nil
+end
+local function shiftTick()
+  if not M.isOpen() or not ok(S.p) then L("shift probe stopped: window closed"); shiftOn = false; return end
+  local p = S.p
+  L(string.format("shift probe LeftShift=%s RightShift=%s cursor=%s", tostring(keyDown(p, "LeftShift")),
+    tostring(keyDown(p, "RightShift")), tostring(rd(p, "bShowMouseCursor"))))
+end
+function M.shiftToggle()
+  shiftOn = not shiftOn
+  L("shift probe " .. (shiftOn and "on" or "off"))
+  if not shiftOn then return end
+  pcall(LoopAsync, 500, function()
+    if not shiftOn then return true end   -- true = stop the loop
+    pcall(ExecuteInGameThread, function() pcall(shiftTick) end)
+    return false
+  end)
+end
+
+-- DEV (F12): cycle input-mode variants on the live window. Each press logs the variant name. No teardown.
+local VARIANTS = {
+  { "1 UIOnlyEx(p,wbp,0,false)", function(ui, p, w) ui:SetInputMode_UIOnlyEx(p, w, 0, false) end },
+  { "2 GameAndUIEx(p,wbp,0,true,false)", function(ui, p, w) ui:SetInputMode_GameAndUIEx(p, w, 0, true, false) end },
+  { "3 GameAndUIEx(p,wbp,0,false,false)", function(ui, p, w) ui:SetInputMode_GameAndUIEx(p, w, 0, false, false) end },
+  { "4 GameAndUIEx(p,nil,0,true,false)", function(ui, p, w) ui:SetInputMode_GameAndUIEx(p, nil, 0, true, false) end },
+}
+local varIdx = 0
+function M.inputCycle()
+  if not M.isOpen() or not ok(S.root) then return end
+  varIdx = varIdx % #VARIANTS + 1
+  local v = VARIANTS[varIdx]
+  local s, e = pcall(v[2], StaticFindObject(LIB), S.p, S.root)
+  L("input variant " .. v[1] .. " ok=" .. tostring(s) .. (s and "" or (" err=" .. tostring(e))))
+end
+
 -- block = BPO_BlueprintUnit_C only (main.lua opener filter; the container is used for lookups below, never as opener). player = DMSPlayerObject. ctl = controller or nil.
 function M.open(block, player, ctl)
   ExecuteInGameThread(function()
@@ -692,6 +735,8 @@ function M.open(block, player, ctl)
     else
       L("P3: WBP_Inventory class not found, grids skipped")
     end
+    L(string.format("grids unit=%s player=%s secondary valid=%s/%s", tostring(rd(unitInv, "ID")), tostring(rd(playerInv, "ID")),
+      tostring(ok(playerInv)), tostring(ok(unitInv))))
 
     -- buttons
     if BIND and BIND.onClick then
@@ -710,12 +755,12 @@ function M.open(block, player, ctl)
     setVis(w("Pnl_ImportModal"), false)
     resetResults()
 
-    -- input focus: UI-only so drags do not reach the game camera. Fallbacks as in MiningUnitUI.
+    -- input focus: GameAndUI like the vanilla windows. UIOnly makes PC:IsInputKeyDown(Shift) false, which breaks shift-click quick move.
+    -- Drags stay stable through the ignore look/move calls below.
     local ui = StaticFindObject(LIB)
-    local okIn = try("input UIOnlyEx4", function() ui:SetInputMode_UIOnlyEx(p, wbp, 0, false) end)
-      or try("input UIOnlyEx2", function() ui:SetInputMode_UIOnlyEx(p, wbp) end)
-      or try("input GameAndUIEx5", function() ui:SetInputMode_GameAndUIEx(p, wbp, 0, false, false) end)
-      or try("input GameAndUIEx4", function() ui:SetInputMode_GameAndUIEx(p, wbp, 0, false) end)
+    local okIn = try("input GameAndUIEx5", function() ui:SetInputMode_GameAndUIEx(p, wbp, 0, true, false) end)
+      or try("input GameAndUIEx4", function() ui:SetInputMode_GameAndUIEx(p, wbp, 0, true) end)
+      or try("input UIOnlyEx4", function() ui:SetInputMode_UIOnlyEx(p, wbp, 0, false) end)
     L("input mode ok=" .. tostring(okIn))
     try("mouse on", function() p.bShowMouseCursor = true end)
     try("focusable", function() wbp.bIsFocusable = true end)
