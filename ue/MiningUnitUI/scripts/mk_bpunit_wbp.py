@@ -1,4 +1,4 @@
-"""Author /Game/MiningUnitUI/WBP_BlueprintUnit headlessly (Station-Console look, Mining Unit palette).
+"""Author /Game/BlueprintUnitUI/WBP_BlueprintUnit headlessly (own pak pakchunk102-BPUnitUI_P; was /Game/MiningUnitUI) (Station-Console look, Mining Unit palette).
 Run: UnrealEditor-Cmd.exe <uproject> -ExecutePythonScript=<this> -unattended -nullrhi   (expects SAVED)
 Names are the Lua contract (see mods\\BlueprintUnitUI). Every widget is a variable. Not run by the build."""
 import sys, os
@@ -6,11 +6,25 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from uew import *
 
 FONTS = {}
+BPU_DIR = '/Game/BlueprintUnitUI'   # output folder of the window (own pak); donors below stay in ASSETS (/Game/MiningUnitUI)
 TRANSIENT = U.find_object(None, '/Engine/Transient')
 assert TRANSIENT, 'no transient package'
 GOLD = U.LinearColor(1.0, 0.443, 0.0, 1.0)   # game gold, linear (as gen_paste GOLD_RAW)
 BODY = lin('3A3A3A', 0.97); INSET = lin('2B2B2B'); OUTLINE = lin('1C1C1C'); BTN = lin('4A4A4A')
 DARK = lin('1A1A1A'); WHITE = lin('FFFFFF'); DIM = lin('B0B0B0'); GREEN = lin('5BD35B')
+
+
+def copy_art():
+    # own copies of the header textures: the window must not reference /Game/MiningUnitUI (pak98) at runtime
+    for n in ('Header_Bar', 'Header_L', 'Header_R'):
+        dst = '%s/Art/T_UI_%s' % (BPU_DIR, n)
+        if U.EditorAssetLibrary.does_asset_exist(dst):
+            U.EditorAssetLibrary.delete_asset(dst)
+        U.EditorAssetLibrary.duplicate_asset('%s/Art/T_UI_%s' % (ASSETS, n), dst)
+        U.EditorAssetLibrary.save_asset(dst, only_if_is_dirty=False)
+
+
+copy_art()
 
 
 def tex_brush(n, m):
@@ -20,7 +34,7 @@ def tex_brush(n, m):
     b.set_editor_property('image_size', v)
     b.set_editor_property('margin', U.Margin(*m))
     b.set_editor_property('tint_color', slate_color(U.LinearColor(1, 1, 1, 1)))
-    b.set_editor_property('resource_object', U.load_asset('/Game/MiningUnitUI/Art/T_UI_%s.T_UI_%s' % (n, n)))
+    b.set_editor_property('resource_object', U.load_asset('%s/Art/T_UI_%s.T_UI_%s' % (BPU_DIR, n, n)))
     return b
 
 
@@ -143,7 +157,7 @@ def big_btn(name, tname, label, parent, pad):
     t.set_editor_property('justification', U.TextJustify.CENTER)
 
 
-wbp = new_wbp('WBP_BlueprintUnit')
+wbp = new_wbp('WBP_BlueprintUnit', BPU_DIR)
 root = add(wbp, U.Overlay, 'Root', '', var=False)   # Overlay default non-variable; Panel below is the contract root
 tree = root.get_outer()
 # frame: outline > body (Mining Unit window convention)

@@ -48,13 +48,13 @@ def button_style(normal, hover, pressed):
     return s
 
 
-def new_wbp(name):
-    path = '%s/%s' % (ASSETS, name)
+def new_wbp(name, folder=ASSETS):
+    path = '%s/%s' % (folder, name)
     if U.EditorAssetLibrary.does_asset_exist(path):
         U.EditorAssetLibrary.delete_asset(path)
     f = U.WidgetBlueprintFactory()
     f.set_editor_property('parent_class', U.UserWidget)
-    return U.AssetToolsHelpers.get_asset_tools().create_asset(name, ASSETS, U.WidgetBlueprint, f)
+    return U.AssetToolsHelpers.get_asset_tools().create_asset(name, folder, U.WidgetBlueprint, f)
 
 
 def add(wbp, cls, name, parent='', var=True):

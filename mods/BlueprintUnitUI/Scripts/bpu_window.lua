@@ -15,7 +15,7 @@ local function try(tag, f, ...) local s, r = pcall(f, ...) if not s then L("FAIL
 local function inVp(o) local s, v = pcall(function() return o:IsInViewport() end) return s and v == true end
 
 local LIB = "/Script/UMG.Default__WidgetBlueprintLibrary"
-local WBP_CLS = "/Game/MiningUnitUI/WBP_BlueprintUnit.WBP_BlueprintUnit_C"
+local WBP_CLS = "/Game/BlueprintUnitUI/WBP_BlueprintUnit.WBP_BlueprintUnit_C"
 local INV_PKG = "/Game/Blueprints/Widgets/Display/Inventory/WBP_Inventory"
 local INV_CLS = "/Game/Blueprints/Widgets/Display/Inventory/WBP_Inventory.WBP_Inventory_C"
 local Z = 1                                    -- low: the game's cursor item stack (WBP_CursorItemStack, AddToViewport 2) draws over us during drag. F10 dev cycles Z live
@@ -950,7 +950,7 @@ function M.open(block, player, ctl)
     if not ok(S.cls) then S.cls = nil end
     if not S.cls then
       local c = StaticFindObject(WBP_CLS)
-      if not ok(c) then c = getAsset("/Game/MiningUnitUI/WBP_BlueprintUnit", "WBP_BlueprintUnit_C") or StaticFindObject(WBP_CLS) end
+      if not ok(c) then c = getAsset("/Game/BlueprintUnitUI/WBP_BlueprintUnit", "WBP_BlueprintUnit_C") or StaticFindObject(WBP_CLS) end
       if not ok(c) then L("WBP class NOT FOUND " .. WBP_CLS); return end
       S.cls = c
     end
