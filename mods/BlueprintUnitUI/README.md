@@ -1,5 +1,8 @@
 # BlueprintUnitUI (Lua)
 Opens WBP_BlueprintUnit on block use (post-hooks: WidgetSubsystem ToggleWindow/ShowWindow, DMSPlayerController ToggleWidget; block BPO_BlueprintUnit_C). Unit + player WBP_Inventory grids (read-only), cost rows, Import modal, Build placeholder. Lua never writes inventory. F closes the window (not while the import modal is open), ESC closes the import modal first, then the window. F9 dev cost test (3 fake rows). Log prefix [BPUnitUI].
+- Cost rows use the game's own `WBP_ItemAmount` (in `Scr_Cost`, ScrollBox cleared each import). Need rows first, then refund rows (green `+N refund`). Own `Row_Cost_*` only as fallback if the game row fails. Header `Txt_CostHdr` is set by the designer (Lua logs a mismatch only).
+- Crate hide: our container = sim `BP_BPUnitStoreObj_01_C` (ParentID = unit block/frame ID). Its actor = `BP_Container_2_C` whose `BPC_MachineInteraction.MachineObject` has the same ID. On open and every 3 s world scan: actor hidden, no collision, interaction off/hidden. Ambiguous link -> `crate link unknown`, nothing hidden.
+- Dev keys: F7 `probeCost` (one WBP_ItemAmount row, step log), F8 crate/link dump (`F8 sim/actor/unit`).
 Install: copy this folder to the game's Mods\BlueprintUnitUI (enabled.txt + Scripts\), game closed; needs WBP_BlueprintUnit from the BlueprintUnitPak build.
 
 ## Import protocol (MiningBenchMod\dlls\, same dir as MiningCmd.txt)

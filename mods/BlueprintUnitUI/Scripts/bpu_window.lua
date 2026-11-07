@@ -20,9 +20,12 @@ local INV_PKG = "/Game/Blueprints/Widgets/Display/Inventory/WBP_Inventory"
 local INV_CLS = "/Game/Blueprints/Widgets/Display/Inventory/WBP_Inventory.WBP_Inventory_C"
 local Z = 1                                    -- low: the game's cursor item stack (WBP_CursorItemStack, AddToViewport 2) draws over us during drag. F10 dev cycles Z live
 local COST_N = 40
-local COST_RED = { R = 0.604, G = 0, B = 0.067, A = 1 }
+local COST_RED = { R = 0.705208, G = 0.031587, B = 0.031587, A = 1 }   -- game's own
 local COST_WHITE = { R = 1, G = 1, B = 1, A = 1 }
 local COST_GREEN = { R = 0.1, G = 0.6, B = 0.2, A = 1 }
+local AMT_PKG = "/Game/Blueprints/Widgets/Display/Inventory/WBP_ItemAmount"   -- game's cost row widget (WBP_ItemTotals rows)
+local AMT_CLS = AMT_PKG .. ".WBP_ItemAmount_C"
+local HDR_TXT = "▼ Modification Cost"                                         -- designer sets it; Lua only logs a mismatch
 local POLL_MS, POLL_MAX_S = 500, 60
 local SEQ_MOD = 100000000                      -- MiningCmd seq: the DLL keeps only the last 8 digits
 local REM_NAME = { ConveyorBelt = "belt", Splitter = "splitter", Container = "container" }
@@ -32,13 +35,7 @@ local CONTRACT = { "Panel", "Txt_Title", "Btn_Close", "Txt_Close", "Txt_Status",
   "Txt_CostHdr", "Scr_Cost", "Txt_CostEmpty", "Txt_UnitInvTitle", "Scr_UnitInv", "Txt_PlayerInvTitle", "Host_PlayerInv",
   "Pnl_ImportModal", "Txt_ImportTitle", "Btn_ImportClose", "Txt_ImportClose", "Edt_ImportJson", "Txt_ImportHint",
   "Btn_ImportOk", "Txt_ImportOk", "Btn_ImportCancel", "Txt_ImportCancel" }
-for i = 1, COST_N do
-  CONTRACT[#CONTRACT + 1] = "Row_Cost_" .. i
-  CONTRACT[#CONTRACT + 1] = "Img_Cost_" .. i
-  CONTRACT[#CONTRACT + 1] = "Txt_CostHave_" .. i
-  CONTRACT[#CONTRACT + 1] = "Txt_CostName_" .. i
-  CONTRACT[#CONTRACT + 1] = "Txt_CostRefund_" .. i
-end
+-- optional, never logged if missing: Btn_CostPin, Txt_CostPin. Row_Cost_* are fallback only (checked in setCost).
 
 -- S.w = WBP instance = viewport widget (names resolve here). S.p = controller. S.uw/S.pw = grids. S.tc = last text per name.
 -- S.imp = import modal shown. S.poll = { seq, t0, last } while waiting for our import. S.itemMap = name -> Item DA (per open).
@@ -130,19 +127,89 @@ local function haveOf(item)
 end
 
 -- cost rows: list = array of { name = "ITEM_x", need, refund, net } (net = need - refund). Read-only.
--- net == 0 -> row hidden. net > 0 -> "have/netx" (red when short). net < 0 -> "needed 0" + green "+N refund".
--- Rows sorted by name, capped at COST_N. Txt_CostEmpty when no row shows.
+-- net == 0 -> no row. net > 0 -> need row "have/netx" (red when short). net < 0 -> refund row "+N refund" (green).
+-- Game's own WBP_ItemAmount rows in Scr_Cost (need rows sorted by name, then refund rows). Own Row_Cost_* = fallback only.
 local iconLogged, missLogged = false, {}
-function M.setCost(list)
-  local rows = {}
-  for _, e in ipairs(list or {}) do
-    if type(e) == "table" and type(e.name) == "string" and (e.net or 0) ~= 0 then rows[#rows + 1] = e end
+local amtFailed, amtCls = {}, nil
+local function fmt(n)   -- 1595 -> "1,595"
+  local out = tostring(math.floor(n)):reverse():gsub("(%d%d%d)", "%1,"):reverse()
+  return (out:gsub("^,", ""))
+end
+local function amtStep(step, f)   -- non-fatal step, logged once per step name
+  local s, e = pcall(f)
+  if not s and not amtFailed[step] then amtFailed[step] = true; L("cost row step " .. step .. " failed: " .. tostring(e)) end
+  return s
+end
+local function amtClass()
+  if not ok(amtCls) then amtCls = StaticFindObject(AMT_CLS) end
+  if not ok(amtCls) then amtCls = getAsset(AMT_PKG, "WBP_ItemAmount_C") end
+  return ok(amtCls) and amtCls or nil
+end
+-- one WBP_ItemAmount row: SetItemStack, then our amount text + colour. Returns false only if the row could not be added.
+local function amtRow(host, cls, p, item, amount, text, col)
+  local row
+  if not amtStep("create", function() row = StaticFindObject(LIB):Create(p, cls, p) end) or not ok(row) then return false end
+  amtStep("set", function() row:SetItemStack({ Item = item, Amount = amount }, nil) end)
+  amtStep("text", function() row.AmountText:SetText(FText(text)) end)
+  amtStep("colour", function() row.AmountText:SetColour({ SpecifiedColor = col, ColorUseRule = 0 }) end)
+  pcall(function() row.WBP_Item:SetIconSize(40) end)
+  return amtStep("add", function() host:AddChild(row) end)
+end
+-- fills Scr_Cost with game rows. false = a row could not be added (caller falls back)
+local function fillGame(host, cls, p, need, refund)
+  if not pcall(function() host:ClearChildren() end) then L("cost: ClearChildren failed"); return false, 0 end   -- also drops leftover designer rows
+  local shown = 0
+  for pass = 1, 2 do
+    for _, e in ipairs(pass == 1 and need or refund) do
+      local item = itemFor(e.name)
+      if not item then
+        if not missLogged[e.name] then missLogged[e.name] = true; L("cost item not found: " .. e.name) end
+      elseif shown < COST_N then
+        local okr
+        if pass == 1 then
+          local have = math.floor(haveOf(item))
+          okr = amtRow(host, cls, p, item, e.net, fmt(have) .. "/" .. fmt(e.net) .. "x", have < e.net and COST_RED or COST_WHITE)
+        else
+          okr = amtRow(host, cls, p, item, -e.net, "+" .. fmt(-e.net) .. " refund", COST_GREEN)
+        end
+        if not okr then return false, shown end
+        shown = shown + 1
+      end
+    end
   end
-  table.sort(rows, function(a, b) return a.name:lower() < b.name:lower() end)
+  return true, shown
+end
+
+local setCostLegacy -- defined below
+function M.setCost(list)
+  local need, refund = {}, {}
+  for _, e in ipairs(list or {}) do
+    if type(e) == "table" and type(e.name) == "string" and (e.net or 0) ~= 0 then
+      if e.net > 0 then need[#need + 1] = e else refund[#refund + 1] = e end
+    end
+  end
+  local byName = function(a, b) return a.name:lower() < b.name:lower() end
+  table.sort(need, byName); table.sort(refund, byName)
+  local rows = {}
+  for _, e in ipairs(need) do rows[#rows + 1] = e end
+  for _, e in ipairs(refund) do rows[#rows + 1] = e end
   if #rows > COST_N then L("cost rows truncated " .. (#rows - COST_N)) end
-  local shown = math.min(#rows, COST_N)
   S.cost = rows
+  local host, cls = w("Scr_Cost"), amtClass()
+  local legacy = ok(w("Row_Cost_1"))
+  local done, shown = false, 0
+  if ok(host) and cls and ok(S.p) then done, shown = fillGame(host, cls, S.p, need, refund) end
+  if not done then
+    if legacy then shown = setCostLegacy(rows)
+    else L("cost rows: WBP_ItemAmount row failed (see step log above), no Row_Cost fallback: nothing shown"); shown = 0 end
+  end
   setVis(w("Txt_CostEmpty"), shown == 0)
+  L("cost rows " .. shown)
+end
+
+-- fallback: the old own rows (Row_Cost_* in the WBP). Only used when the game row cannot be built.
+setCostLegacy = function(rows)
+  local shown = math.min(#rows, COST_N)
   for i = 1, COST_N do
     local row = w("Row_Cost_" .. i)
     local e = (i <= shown) and rows[i] or nil
@@ -178,7 +245,7 @@ function M.setCost(list)
       setVis(row, false)
     end
   end
-  L("cost rows " .. shown)
+  return shown
 end
 
 -- DEV: 3 fake cost entries from the first Item DAs (need 5 / 50 / 10, refund 0 / 0 / 12 -> last one shows refund)
@@ -636,12 +703,142 @@ function M.inputCycle()
   L("input variant " .. v[1] .. " ok=" .. tostring(s) .. (s and "" or (" err=" .. tostring(e))))
 end
 
+-- ---------------------------------------------------------------------------------------------
+-- Crate hide. Our container = sim BP_BPUnitStoreObj_01_C, ParentID = unit block ID or frame ID.
+-- Its actor = BP_Container_2_C with BPC_MachineInteraction.MachineObject == that sim (match by ID, class checked).
+-- Exactly one link -> hide actor + its interaction (no collision, hidden). Anything else: log once, hide nothing.
+-- ---------------------------------------------------------------------------------------------
+local CRATE_SIM, CRATE_ACT = "BP_BPUnitStoreObj_01_C", "BP_Container_2_C"
+local crateDone, crateLogged = {}, {}   -- crateDone[simID|actor name] = true once hidden
+local function vstr(a)
+  local s, v = pcall(function() return a:K2_GetActorLocation() end)
+  if not s or type(v) ~= "userdata" then return "?" end
+  return tostring(rd(v, "X")) .. "," .. tostring(rd(v, "Y")) .. "," .. tostring(rd(v, "Z"))
+end
+-- sim IDs of unit blocks and their frames (block arg optional; every BPO_BlueprintUnit_C in the world is added)
+local function unitIds(block)
+  local set = {}
+  local function add(b)
+    if not ok(b) then return end
+    local id = rd(b, "ID"); if id ~= nil then set[id] = true end
+    local s, fr = pcall(function() return b:GetFrame() end)
+    if s and ok(fr) and rd(fr, "ID") ~= nil then set[rd(fr, "ID")] = true end
+  end
+  add(block)
+  local s, list = pcall(FindAllOf, "BPO_BlueprintUnit_C")
+  if s and type(list) == "table" then for _, b in ipairs(list) do add(b) end end
+  return set
+end
+-- BP_Container_2_C actors whose MachineObject is this sim (ID equal, class BP_BPUnitStoreObj_01_C)
+local function linkedActors(sid)
+  local hits = {}
+  local s, list = pcall(FindAllOf, CRATE_ACT)
+  for _, a in ipairs((s and type(list) == "table") and list or {}) do
+    if ok(a) then
+      local comp = rd(a, "BPC_MachineInteraction")
+      local mo = ok(comp) and rd(comp, "MachineObject") or nil
+      if ok(mo) and rd(mo, "ID") == sid and cn(mo) == CRATE_SIM then hits[#hits + 1] = a end
+    end
+  end
+  return hits
+end
+local function hideCrate(a, sid)
+  try("crate hide", function() a:SetActorHiddenInGame(true) end)
+  try("crate no collision", function() a:SetActorEnableCollision(false) end)
+  local comp = rd(a, "BPC_MachineInteraction")   -- the interaction component: 'Press F to Access Container' prompt
+  if ok(comp) then
+    try("crate interact off", function() comp:SetCollisionEnabled(0) end)   -- ECollisionEnabled::NoCollision
+    try("crate interact hidden", function() comp:SetVisibility(false, true) end)
+  end
+  L("crate hidden ID=" .. tostring(sid) .. " actor=" .. nm(a))
+end
+-- block may be nil (world scan). Cheap when no crate sim exists.
+function M.hideCrates(block)
+  local s, sims = pcall(FindAllOf, CRATE_SIM)
+  if not s or type(sims) ~= "table" or #sims == 0 then return end
+  local ids = unitIds(block)
+  for _, sim in ipairs(sims) do
+    if ok(sim) then
+      local sid, pid = rd(sim, "ID"), rd(sim, "ParentID")
+      if sid ~= nil and pid ~= nil and ids[pid] then
+        local hits = linkedActors(sid)
+        if #hits == 1 then
+          local key = tostring(sid) .. "|" .. nm(hits[1])
+          if not crateDone[key] then crateDone[key] = true; hideCrate(hits[1], sid) end
+        elseif not crateLogged[sid] then
+          crateLogged[sid] = true
+          L("crate link unknown ID=" .. tostring(sid) .. " parent=" .. tostring(pid) .. " actors=" .. #hits .. " (nothing hidden)")
+        end
+      end
+    end
+  end
+end
+
+-- DEV (F8): log every crate sim, its link actor, every BP_Container_2_C actor and unit block. Nothing changed.
+function M.crateDebug()
+  local s, sims = pcall(FindAllOf, CRATE_SIM)
+  sims = (s and type(sims) == "table") and sims or {}
+  local ids = unitIds(nil)
+  L("F8 crate sims=" .. #sims)
+  for _, sim in ipairs(sims) do
+    if ok(sim) then
+      local sid, pid = rd(sim, "ID"), rd(sim, "ParentID")
+      local names = {}
+      for _, a in ipairs(linkedActors(sid)) do names[#names + 1] = nm(a) .. " @" .. vstr(a) end
+      L("F8 sim cls=" .. cn(sim) .. " ID=" .. tostring(sid) .. " ParentID=" .. tostring(pid) .. " ours=" .. tostring(ids[pid] == true)
+        .. " actors=" .. (#names > 0 and table.concat(names, "; ") or "none"))
+    end
+  end
+  local okA, acts = pcall(FindAllOf, CRATE_ACT)
+  for _, a in ipairs((okA and type(acts) == "table") and acts or {}) do
+    if ok(a) then
+      local comp = rd(a, "BPC_MachineInteraction")
+      local mo = ok(comp) and rd(comp, "MachineObject") or nil
+      L("F8 actor " .. nm(a) .. " @" .. vstr(a) .. " machine=" .. (ok(mo) and (cn(mo) .. " ID=" .. tostring(rd(mo, "ID")) .. " ParentID=" .. tostring(rd(mo, "ParentID"))) or "none"))
+    end
+  end
+  local okU, units = pcall(FindAllOf, "BPO_BlueprintUnit_C")
+  for _, b in ipairs((okU and type(units) == "table") and units or {}) do
+    if ok(b) then
+      local fr = nil
+      pcall(function() fr = b:GetFrame() end)
+      L("F8 unit ID=" .. tostring(rd(b, "ID")) .. " frameID=" .. tostring(ok(fr) and rd(fr, "ID") or "?"))
+    end
+  end
+end
+
+-- DEV (F7): one game WBP_ItemAmount row with the first item, each step logged. Add to Scr_Cost only if the window is open.
+function M.probeCost()
+  local function P(step, v) L("probeCost " .. step .. " " .. tostring(v)) end
+  local cls = amtClass()
+  P("class found", ok(cls))
+  if not cls then return end
+  local item
+  local s, list = pcall(FindAllOf, "Item")
+  for _, it in ipairs((s and type(list) == "table") and list or {}) do
+    if not item and ok(it) and nm(it) ~= "?" and not nm(it):find("Default__", 1, true) then item = it end
+  end
+  P("item found", ok(item) and nm(item) or false)
+  if not item then return end
+  local p = ok(S.p) and S.p or localCtl()
+  local row
+  local okC = pcall(function() row = StaticFindObject(LIB):Create(p, cls, p) end)
+  P("create", okC and ok(row))
+  if not ok(row) then return end
+  P("set", pcall(function() row:SetItemStack({ Item = item, Amount = 5 }, nil) end))
+  P("text", pcall(function() row.AmountText:SetText(FText("5/10x")) end))
+  P("colour", pcall(function() row.AmountText:SetColour({ SpecifiedColor = COST_RED, ColorUseRule = 0 }) end))
+  local host = w("Scr_Cost")
+  if ok(host) then P("add", pcall(function() host:AddChild(row) end)) else P("add", "skipped (window closed)") end
+end
+
 -- block = BPO_BlueprintUnit_C only (main.lua opener filter; the container is used for lookups below, never as opener). player = DMSPlayerObject. ctl = controller or nil.
 function M.open(block, player, ctl)
   ExecuteInGameThread(function()
     if M.closing and os.clock() - (M.closing_at or 0) < 3 then return end   -- previous close still tearing down
     if M.isOpen() or S.root or S.p then return end                           -- already open: block interact does nothing
     if not ok(block) then L("open: no block"); return end
+    pcall(M.hideCrates, block)
 
     local p = ok(ctl) and ctl or nil
     if not ok(p) then p = localCtl() end
@@ -725,6 +922,11 @@ function M.open(block, player, ctl)
     local miss = {}
     for _, n in ipairs(CONTRACT) do if not ok(w(n)) then miss[#miss + 1] = n end end
     if #miss > 0 then L("missing widgets: " .. table.concat(miss, " ")) end
+    local hdr = w("Txt_CostHdr")
+    if ok(hdr) then
+      local sh, ht = pcall(function() return hdr:GetText():ToString() end)
+      if sh and ht ~= HDR_TXT then L("cost header text is '" .. tostring(ht) .. "', designer should set '" .. HDR_TXT .. "'") end
+    end
 
     -- grids: unit (Scr_UnitInv) and player mirror (Host_PlayerInv)
     local invCls = StaticFindObject(INV_CLS)

@@ -147,6 +147,22 @@ pcall(function()
     pcall(function() if BPU.isOpen() then pcall(ExecuteInGameThread, BPU.zCycle) end end)
   end)
 end)
+-- DEV only: F7 one game WBP_ItemAmount row probe (steps logged), F8 crate/link dump. Work without the window open.
+pcall(function()
+  RegisterKeyBind(Key.F7, function()
+    pcall(ExecuteInGameThread, function() pcall(BPU.probeCost) end)
+  end)
+end)
+pcall(function()
+  RegisterKeyBind(Key.F8, function()
+    pcall(ExecuteInGameThread, function() pcall(BPU.crateDebug) end)
+  end)
+end)
+-- crate hide, world scan: every 3 s. Only crate sims (BP_BPUnitStoreObj_01_C) cost anything; done ones are cached.
+pcall(LoopAsync, 3000, function()
+  pcall(ExecuteInGameThread, function() pcall(BPU.hideCrates, nil) end)
+  return false
+end)
 -- DEV only: F11 toggles live shift probe (IsInputKeyDown LeftShift/RightShift, 500 ms), F12 cycles input-mode variants
 pcall(function()
   RegisterKeyBind(Key.F11, function()
