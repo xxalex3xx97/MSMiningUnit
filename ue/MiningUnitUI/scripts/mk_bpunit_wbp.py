@@ -130,7 +130,22 @@ wbp = new_wbp('WBP_BlueprintUnit')
 root = add(wbp, U.Overlay, 'Root', '', var=False)   # Overlay default non-variable; Panel below is the contract root
 tree = root.get_outer()
 # frame: outline > body (Mining Unit window convention)
-border('Panel', 'Root', OUTLINE, (2, 2, 2, 2), h='Fill', v='Fill')
+def sizebox(name, parent, wd, ht, **sl):
+    z = add(wbp, U.SizeBox, name, parent, var=False)
+    for k, v in (('bOverride_WidthOverride', True), ('bOverride_HeightOverride', True)):   # flags: UMG SizeBox needs them True
+        try:
+            z.set_editor_property(k, v)
+        except Exception as e:
+            print('SIZEBOX-FLAG-NOTSET', k, e)
+    z.set_editor_property('width_override', float(wd)); z.set_editor_property("height_override", float(ht))
+    if sl:
+        slot(z, **sl)
+    return z
+
+
+# fixed centred 1200x900 frame, independent of the viewport slot; modal stays outside (full-screen backdrop)
+sizebox('Frame_Size', 'Root', 1200, 900, h='Center', v='Center')
+border('Panel', 'Frame_Size', OUTLINE, (2, 2, 2, 2), h='Fill', v='Fill')
 border('Row_Body', 'Panel', BODY, (10, 10, 10, 10), h='Fill', v='Fill')
 box(U.HorizontalBox, 'Row_Cols', 'Row_Body', h='Fill', v='Fill')
 
@@ -190,8 +205,7 @@ border('Pnl_ImportModal', 'Root', lin('000000', 0.6), None, h='Fill', v='Fill')
 pm = ELib.find_source_widget_by_name(wbp, 'Pnl_ImportModal')
 pm.set_editor_property('horizontal_alignment', U.HorizontalAlignment.H_ALIGN_CENTER)
 pm.set_editor_property('vertical_alignment', U.VerticalAlignment.V_ALIGN_CENTER)
-sz = add(wbp, U.SizeBox, 'Row_ImportSize', 'Pnl_ImportModal', var=False)
-sz.set_editor_property('width_override', 640.0); sz.set_editor_property('height_override', 420.0)
+sizebox('Row_ImportSize', 'Pnl_ImportModal', 640, 420)
 border('Row_ImportOutline', 'Row_ImportSize', OUTLINE, (2, 2, 2, 2), h='Fill', v='Fill')
 border('Row_ImportBody', 'Row_ImportOutline', BODY, (14, 12, 14, 12), h='Fill', v='Fill')
 box(U.VerticalBox, 'Row_ImportStack', 'Row_ImportBody', h='Fill', v='Fill')

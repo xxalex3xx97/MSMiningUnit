@@ -21,5 +21,22 @@ for n in names:
             cdo.get_editor_property(n)
         except Exception:
             print('NOTVAR', n); nonvar += 1
+def chain(w):
+    o = []
+    while w:
+        o.append(w.get_name()); w = w.get_parent()
+    return ' < '.join(o)
+for n in ('Frame_Size', 'Row_ImportSize'):
+    z = ELib.find_source_widget_by_name(wbp, n)
+    print('SIZEBOX', n, z.get_class().get_name(), 'W', z.get_editor_property('width_override'), 'H', z.get_editor_property('height_override'),
+          'bW', z.get_editor_property('bOverride_WidthOverride'), 'bH', z.get_editor_property('bOverride_HeightOverride'))
+fz = ELib.find_source_widget_by_name(wbp, 'Frame_Size')
+print('SLOT', type(fz.slot).__name__, 'h', fz.slot.get_editor_property('horizontal_alignment'), 'v', fz.slot.get_editor_property('vertical_alignment'))
+pn = ELib.find_source_widget_by_name(wbp, 'Panel')
+print('PANEL-SLOT', type(pn.slot).__name__, 'h', pn.slot.get_editor_property('horizontal_alignment'), 'v', pn.slot.get_editor_property('vertical_alignment'))
+print('PATH Panel', chain(pn))
+print('PATH Pnl_ImportModal', chain(ELib.find_source_widget_by_name(wbp, 'Pnl_ImportModal')))
+root = ELib.find_source_widget_by_name(wbp, 'Root')
+print('ROOT', root.get_class().get_name(), [root.get_child_at(i).get_name() for i in range(root.get_children_count())])
 print('EDT_CLASS', ELib.find_source_widget_by_name(wbp, 'Edt_ImportJson').get_class().get_name())
 print('CHECK-DONE n_missing=%d n_notvar=%d total=%d' % (miss, nonvar, len(names)))
