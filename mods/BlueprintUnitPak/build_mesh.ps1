@@ -4,9 +4,14 @@ $root = if ($env:MS_MODS_ROOT) { $env:MS_MODS_ROOT } else { 'F:\MSDemoMods' }
 $retoc = "$root\tools\retoc\retoc.exe"
 $name = 'pakchunk97-BPUnitMesh_P'
 Remove-Item "$d\stage_mesh" -Recurse -Force -ErrorAction SilentlyContinue
-foreach ($k in 'Machines', 'Effects') { New-Item -ItemType Directory -Force "$d\stage_mesh\MainSequence\Content\Meshes\$k" | Out-Null }
+# mesh\<k> -> Content\<dest>
+$map = @{ 'Machines' = 'Meshes\Machines'; 'Effects' = 'Meshes\Effects'; 'Materials' = 'Materials' }
 New-Item -ItemType Directory -Force "$d\out" | Out-Null
-foreach ($k in 'Machines', 'Effects') { Copy-Item "$d\mesh\$k\*" "$d\stage_mesh\MainSequence\Content\Meshes\$k\" }
+foreach ($k in $map.Keys) {
+    $t = "$d\stage_mesh\MainSequence\Content\$($map[$k])"
+    New-Item -ItemType Directory -Force $t | Out-Null
+    Copy-Item "$d\mesh\$k\*" "$t\"
+}
 & $retoc to-zen --version UE5_7 "$d\stage_mesh" "$d\out\$name.utoc"; if ($LASTEXITCODE) { throw 'to-zen failed' }
 $v = & $retoc verify "$d\out\$name.utoc" 2>&1 | Out-String
 if ($v -notmatch 'verified') { throw "verify: $v" }

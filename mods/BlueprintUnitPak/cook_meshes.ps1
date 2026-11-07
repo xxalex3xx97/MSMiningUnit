@@ -10,6 +10,7 @@ $c = "$root\ue\MiningUnitUI\Content\Meshes"
 $names = @{ 'Machines' = 'SM2_BPUnitTbl'; 'Effects' = 'SM_BPUnitBlueprintHolo_01' }
 # fresh import: drop old copies
 foreach ($k in $names.Keys) { Remove-Item "$c\$k\$($names[$k]).*" -Force -ErrorAction SilentlyContinue }
+Remove-Item "$root\ue\MiningUnitUI\Content\Materials\M_BPUnitGrid.*" -Force -ErrorAction SilentlyContinue
 $py = "$d\ue_import_table.py"
 for ($i = 0; $i -lt 4; $i++) {   # run 1,2 = imports (crash after save is expected), run 3 = post-process
     Remove-Item "$env:TEMP\bpunit_import.log" -ErrorAction SilentlyContinue
@@ -31,4 +32,8 @@ foreach ($k in $names.Keys) {
     Remove-Item "$d\mesh\$k\*" -Force
     Copy-Item "$cooked\$k\$($names[$k]).*" "$d\mesh\$k\"
 }
+# our own material only (stand-ins in Materials\ must never ship)
+New-Item -ItemType Directory -Force "$d\mesh\Materials" | Out-Null
+Remove-Item "$d\mesh\Materials\*" -Force
+Copy-Item "$root\ue\MiningUnitUI\Saved\Cooked\Windows\MiningUnitUI\Content\Materials\M_BPUnitGrid.*" "$d\mesh\Materials\"
 Get-ChildItem "$d\mesh" -Recurse -File | ForEach-Object { "{0}  {1}" -f $_.FullName, $_.Length }
