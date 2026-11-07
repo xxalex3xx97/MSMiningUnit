@@ -12,3 +12,5 @@ Install: copy this folder to the game's Mods\BlueprintUnitUI (enabled.txt + Scri
 - Build button: placeholder only (`Build is not implemented yet (M5)`), no command. Planned M5: bp_build / bp_cancel.
 
 Unverified: all runtime behaviour (hooks, container lookup, grid setup, teardown order, import round trip with the DLL).
+
+- Window size: the WBP owns it (full-screen Root, centred fixed 1200x900 SizeBox). Lua viewport sizing is off (`USE_VIEWPORT_SIZING = false` in bpu_window.lua). A `[BPUnitUI] geometry ...` line is logged ~200 ms after open (desired, cached abs/local, viewport, DPI).

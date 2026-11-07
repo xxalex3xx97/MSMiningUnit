@@ -471,6 +471,8 @@ end
 -- Runs AFTER AddToViewport: anchors/alignment/position/size are slot setters (silent no-op before the slot exists).
 local LIB_LAYOUT = "/Script/UMG.Default__WidgetLayoutLibrary"
 local WIN_W, WIN_H, WIN_FRAC = 1200, 900, 0.9
+-- false: the WBP owns the size (full-screen Root, centred fixed 1200x900 SizeBox). Lua calls below are not run.
+local USE_VIEWPORT_SIZING = false
 local function sizeCall(tag, f)
   local s, e = pcall(f)
   L("size " .. tag .. " ok=" .. tostring(s) .. (s and "" or (" err=" .. tostring(e))))
@@ -496,6 +498,25 @@ local function sizeWindow(wbp, p)
   sizeCall("desired", function() wbp:SetDesiredSizeInViewport({ X = w, Y = h }) end)
   local sd, d = pcall(function() return wbp:GetDesiredSize() end)
   L("size final desired ok=" .. tostring(sd) .. " x=" .. tostring(sd and rd(d, "X")) .. " y=" .. tostring(sd and rd(d, "Y")) .. " inVp=" .. tostring(inVp(wbp)))
+end
+
+-- geometry probe (open + 200 ms): real layout numbers, to compare with the expected centred 1200x900 slate frame.
+-- Values are "XxY" or "n/a" (pcall'd). One line.
+local function v2(s, v) if s and type(v) == "userdata" then return tostring(rd(v, "X")) .. "x" .. tostring(rd(v, "Y")) end return "n/a" end
+local function geomProbe(wbp, p)
+  if S.w ~= wbp or not ok(wbp) then L("geometry skipped: window closed"); return end
+  local sv, v = pcall(function() return StaticFindObject(LIB_LAYOUT):GetViewportSize(p) end)
+  local ss, sc = pcall(function() return StaticFindObject(LIB_LAYOUT):GetViewportScale(p) end)
+  local sd, d = pcall(function() return wbp:GetDesiredSize() end)
+  local sg, g = pcall(function() return wbp:GetCachedGeometry() end)
+  local ga, gl = nil, nil
+  if sg and type(g) == "userdata" then
+    local sa, a = pcall(function() return g:GetAbsoluteSize() end); ga = v2(sa, a)
+    local sl, l = pcall(function() return g:GetLocalSize() end); gl = v2(sl, l)
+  end
+  L("geometry desired=" .. v2(sd, d) .. " cachedAbs=" .. (ga or "n/a") .. " cachedLocal=" .. (gl or "n/a")
+    .. " viewport=" .. v2(sv, v) .. " dpi=" .. tostring(ss and type(sc) == "number" and sc or "n/a")
+    .. " want=" .. WIN_W .. "x" .. WIN_H .. " inVp=" .. tostring(inVp(wbp)))
 end
 
 -- P4 probe (open time only): why no container matched. ContainerObject classes, machines whose ParentID == block ID or frame ID (cap 30 lines).
@@ -607,7 +628,8 @@ function M.open(block, player, ctl)
     S.imp, S.poll, S.itemMap = false, nil, nil
     L("CreateWidget ok " .. nm(wbp) .. " [" .. cn(wbp) .. "]")
     try("AddToViewport", function() wbp:AddToViewport(Z) end)
-    sizeWindow(wbp, p)
+    if USE_VIEWPORT_SIZING then sizeWindow(wbp, p) end
+    pcall(ExecuteWithDelay, 200, function() pcall(ExecuteInGameThread, function() geomProbe(wbp, p) end) end)
 
     local miss = {}
     for _, n in ipairs(CONTRACT) do if not ok(w(n)) then miss[#miss + 1] = n end end
