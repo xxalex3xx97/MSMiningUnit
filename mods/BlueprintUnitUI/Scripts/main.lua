@@ -1,4 +1,4 @@
--- BlueprintUnitUI: Blueprint Unit window (WBP_BlueprintUnit via bpu_window.lua). F / ESC = close, F9 = dev cost test.
+-- BlueprintUnitUI: Blueprint Unit window (WBP_BlueprintUnit via bpu_window.lua). F / ESC = close (ESC closes the import modal first), F9 = dev cost test.
 -- Opened by post-hooks on WidgetSubsystem:ToggleWindow, WidgetSubsystem:ShowWindow and DMSPlayerController:ToggleWidget
 -- (block arg BPO_BlueprintUnit_C). Every game call goes through pcall. Every log line gets TAG.
 
@@ -49,7 +49,9 @@ local function clearClicks()
         pcall(ExecuteWithDelay, 100, function() pcall(ExecuteInGameThread, hookRemove) end)
     end
 end
-BPU.bind({ onClick = onClick, clear = clearClicks })
+-- MiningBenchMod/dlls/ (same dir as Mining's MiningCmd.txt): BlueprintImport.json / .status / .cost, MiningCmd.txt
+local DATA_DIR = (SRC and (SRC .. "../../MiningBenchMod/dlls/")) or "ue4ss/Mods/MiningBenchMod/dlls/"
+BPU.bind({ onClick = onClick, clear = clearClicks, data = DATA_DIR })
 
 -- vanilla WBP_StationInventory: BP_BlueprintUnit's import is renamed (clone.js), so it should not open. Belt and braces:
 -- close any instance that still shows. Scheduled after our open; a missing class just gives no instances.
@@ -110,7 +112,8 @@ hookOne("/Script/MainSequence.DMSPlayerController:ToggleWidget", "DMSPlayerContr
 
 pcall(function()
   RegisterKeyBind(Key.ESCAPE, function()
-    if BPU.isOpen() then pcall(ExecuteInGameThread, BPU.close) end
+    if BPU.impOpen() then pcall(ExecuteInGameThread, BPU.impClose)
+    elseif BPU.isOpen() then pcall(ExecuteInGameThread, BPU.close) end
   end)
 end)
 pcall(function()

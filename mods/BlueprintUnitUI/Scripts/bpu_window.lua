@@ -1,5 +1,7 @@
--- Blueprint Unit window (WBP_BlueprintUnit). API: bind / open(block, player, ctl) / close / isOpen / fKey / setCost / devCost.
--- Read-only: Lua never writes an inventory. Two WBP_Inventory grids (unit + player) from the container, cost rows, placeholder buttons.
+-- Blueprint Unit window (WBP_BlueprintUnit). API: bind / open(block, player, ctl) / close / isOpen / fKey /
+-- impOpen / impClose (import modal) / setCost / devCost.
+-- Read-only inventory: Lua never writes an inventory. Import = writes BlueprintImport.json and one MiningCmd.txt line,
+-- then polls BlueprintImport.status (and reads BlueprintImport.cost when done).
 -- Every game call goes through pcall. Every log line gets the [BPUnitUI] tag. Forward slashes only in paths.
 
 local M = {}
@@ -20,23 +22,35 @@ local Z = 49                                   -- below dev menu 50 (same as Min
 local COST_N = 40
 local COST_RED = { R = 0.604, G = 0, B = 0.067, A = 1 }
 local COST_WHITE = { R = 1, G = 1, B = 1, A = 1 }
+local COST_GREEN = { R = 0.1, G = 0.6, B = 0.2, A = 1 }
+local POLL_MS, POLL_MAX_S = 500, 60
+local REM_NAME = { ConveyorBelt = "belt", Splitter = "splitter", Container = "container" }
 -- widget names the WBP must provide (contract). Missing ones are logged once per open.
-local CONTRACT = { "Panel", "Txt_Title", "Btn_Close", "Txt_Close", "Txt_Status", "Btn_Import", "Txt_Import", "Btn_Build", "Txt_Build",
-  "Txt_CostHdr", "Scr_Cost", "Txt_CostEmpty", "Txt_UnitInvTitle", "Scr_UnitInv", "Txt_PlayerInvTitle", "Host_PlayerInv" }
+local CONTRACT = { "Panel", "Txt_Title", "Btn_Close", "Txt_Close", "Txt_Status", "Txt_Summary", "Txt_Removes",
+  "Btn_Import", "Txt_Import", "Btn_Build", "Txt_Build",
+  "Txt_CostHdr", "Scr_Cost", "Txt_CostEmpty", "Txt_UnitInvTitle", "Scr_UnitInv", "Txt_PlayerInvTitle", "Host_PlayerInv",
+  "Pnl_ImportModal", "Txt_ImportTitle", "Btn_ImportClose", "Txt_ImportClose", "Edt_ImportJson", "Txt_ImportHint",
+  "Btn_ImportOk", "Txt_ImportOk", "Btn_ImportCancel", "Txt_ImportCancel" }
 for i = 1, COST_N do
   CONTRACT[#CONTRACT + 1] = "Row_Cost_" .. i
   CONTRACT[#CONTRACT + 1] = "Img_Cost_" .. i
   CONTRACT[#CONTRACT + 1] = "Txt_CostHave_" .. i
   CONTRACT[#CONTRACT + 1] = "Txt_CostName_" .. i
+  CONTRACT[#CONTRACT + 1] = "Txt_CostRefund_" .. i
 end
 
 -- S.w = WBP instance = viewport widget (names resolve here). S.p = controller. S.uw/S.pw = grids. S.tc = last text per name.
-local S = { root = nil, w = nil, p = nil, cls = nil, frame = nil, uw = nil, pw = nil, unitInv = nil, playerInv = nil, cost = nil, tc = nil }
-local BIND -- {onClick, clear} from main.lua
-function M.bind(api) BIND = api end
+-- S.imp = import modal shown. S.poll = { seq, t0, last } while waiting for our import. S.itemMap = name -> Item DA (per open).
+local S = { root = nil, w = nil, p = nil, cls = nil, frame = nil, uw = nil, pw = nil, unitInv = nil, playerInv = nil,
+  cost = nil, tc = nil, imp = false, poll = nil, itemMap = nil }
+local BIND -- {onClick, clear, data} from main.lua
+local DATA = "ue4ss/Mods/MiningBenchMod/dlls/"   -- MiningBenchMod/dlls/ (main.lua passes the absolute-ish dir)
+local lastSeq = 0                                -- last MiningCmd seq we wrote (module lifetime)
+function M.bind(api) BIND = api; DATA = api.data or DATA end
 
 -- ESlateVisibility: 0 Visible, 1 Collapsed
 local function setVis(o, shown) if ok(o) then try("vis", function() o:SetVisibility(shown and 0 or 1) end) end end
+local function tint(o, col) if ok(o) then try("colour", function() o:SetColorAndOpacity({ SpecifiedColor = col }) end) end end
 
 -- LoadAsset is registry-gated. FAssetData table -> AssetRegistryHelpers:GetAsset (game thread), as in MiningUnitUI.
 local ARH
@@ -84,10 +98,26 @@ local function countOf(a)
   return "?"
 end
 
+-- item by object name (ITEM_x), FindAllOf('Item') once per open
+local function itemFor(name)
+  if not S.itemMap then
+    S.itemMap = {}
+    local s, list = pcall(FindAllOf, "Item")
+    for _, it in ipairs((s and type(list) == "table") and list or {}) do
+      if ok(it) then
+        local n = nm(it)
+        if n ~= "?" and not n:find("Default__", 1, true) then S.itemMap[n] = it end
+      end
+    end
+  end
+  return S.itemMap[name]
+end
+
 -- read-only count: unit + player inventory. GetItemAmount error -> logged once, counts as 0
 local amtErr = false
 local function haveOf(item)
   local have = 0
+  if not item then return 0 end
   for _, inv in ipairs({ S.unitInv, S.playerInv }) do
     if ok(inv) then
       local s, v = pcall(function() return inv:GetItemAmount(item) end)
@@ -98,26 +128,47 @@ local function haveOf(item)
   return have
 end
 
--- cost rows: list = array of { item = <Item DA>, need = n }. Row i shown when set, else collapsed. Read-only.
-local iconLogged = false
+-- cost rows: list = array of { name = "ITEM_x", need, refund, net } (net = need - refund). Read-only.
+-- net == 0 -> row hidden. net > 0 -> "have/netx" (red when short). net < 0 -> "needed 0" + green "+N refund".
+-- Rows sorted by name, capped at COST_N. Txt_CostEmpty when no row shows.
+local iconLogged, missLogged = false, {}
 function M.setCost(list)
-  S.cost = list or {}
-  setVis(w("Txt_CostEmpty"), #S.cost == 0)
+  local rows = {}
+  for _, e in ipairs(list or {}) do
+    if type(e) == "table" and type(e.name) == "string" and (e.net or 0) ~= 0 then rows[#rows + 1] = e end
+  end
+  table.sort(rows, function(a, b) return a.name:lower() < b.name:lower() end)
+  if #rows > COST_N then L("cost rows truncated " .. (#rows - COST_N)) end
+  local shown = math.min(#rows, COST_N)
+  S.cost = rows
+  setVis(w("Txt_CostEmpty"), shown == 0)
   for i = 1, COST_N do
     local row = w("Row_Cost_" .. i)
-    local e = S.cost[i]
-    if e and ok(e.item) then
-      local item, need = e.item, e.need or 0
-      local have = haveOf(item)
+    local e = (i <= shown) and rows[i] or nil
+    if e then
+      local item = itemFor(e.name)
+      if not item and not missLogged[e.name] then missLogged[e.name] = true; L("cost item not found: " .. e.name) end
+      local net = e.net or 0
+      local label = item and itemName(item) or (e.name:gsub("^ITEM_", ""))
       setVis(row, true)
-      txt("Txt_CostName_" .. i, itemName(item))
-      txt("Txt_CostHave_" .. i, string.format("%d/%dx", math.floor(have), math.floor(need)))
-      local tb = w("Txt_CostHave_" .. i)
-      local col = have < need and COST_RED or COST_WHITE
-      if ok(tb) then try("cost colour " .. i, function() tb:SetColorAndOpacity({ SpecifiedColor = col }) end) end
+      txt("Txt_CostName_" .. i, label)
+      local have = math.floor(haveOf(item))
+      local hv = w("Txt_CostHave_" .. i)
+      local rf = w("Txt_CostRefund_" .. i)
+      if net > 0 then
+        txt("Txt_CostHave_" .. i, string.format("%d/%dx", have, math.floor(net)))
+        tint(hv, have < net and COST_RED or COST_WHITE)
+        setVis(rf, false)
+      else
+        txt("Txt_CostHave_" .. i, "needed 0")
+        tint(hv, COST_WHITE)
+        txt("Txt_CostRefund_" .. i, string.format("+%d refund", math.floor(-net)))
+        tint(rf, COST_GREEN)
+        setVis(rf, true)
+      end
       local img = w("Img_Cost_" .. i)
-      if ok(img) then try("cost icon " .. i, function() img:SetBrushFromTexture(item.Icon, false) end) end
-      if not iconLogged then
+      if item and ok(img) then try("cost icon " .. i, function() img:SetBrushFromTexture(item.Icon, false) end) end
+      if item and not iconLogged then
         iconLogged = true
         local s, ic = pcall(function() return item.Icon end)
         L("P5 Item.Icon class=" .. ((s and ok(ic)) and cn(ic) or tostring(s and ic or "nil")))
@@ -126,22 +177,23 @@ function M.setCost(list)
       setVis(row, false)
     end
   end
+  L("cost rows " .. shown)
 end
 
--- DEV: 3 fake cost rows from the first Item DAs (need 5 / 50 / 500)
+-- DEV: 3 fake cost entries from the first Item DAs (need 5 / 50 / 10, refund 0 / 0 / 12 -> last one shows refund)
 function M.devCost()
-  local items = {}
+  local names = {}
   local s, list = pcall(FindAllOf, "Item")
-  for _, it in ipairs(s and list or {}) do
-    if #items == 3 then break end
+  for _, it in ipairs((s and type(list) == "table") and list or {}) do
+    if #names == 3 then break end
     if ok(it) then
-      local s1, n = pcall(function() return it:GetFName():ToString() end)
-      if s1 and n and not n:find("Default__", 1, true) then items[#items + 1] = it end
+      local n = nm(it)
+      if n ~= "?" and not n:find("Default__", 1, true) then names[#names + 1] = n end
     end
   end
-  local needs = { 5, 50, 500 }
+  local needs, refunds = { 5, 50, 10 }, { 0, 0, 12 }
   local out = {}
-  for i, it in ipairs(items) do out[i] = { item = it, need = needs[i] } end
+  for i, n in ipairs(names) do out[i] = { name = n, need = needs[i], refund = refunds[i], net = needs[i] - refunds[i] } end
   L("dev cost: " .. #out .. " entries")
   M.setCost(out)
 end
@@ -181,9 +233,207 @@ end
 
 function M.isOpen() return ok(S.frame) and inVp(S.frame) end
 
+-- import modal state (Lua flag + window valid)
+function M.impOpen() return S.imp == true and ok(S.w) end
+
+-- ---------------------------------------------------------------------------------------------
+-- Import: BlueprintImport.json (text), MiningCmd.txt line "<seq>|0|bp_import <abs path>", BlueprintImport.status / .cost
+-- ---------------------------------------------------------------------------------------------
+-- forward slashes, '..' segments collapsed (DATA is built from the script dir + ../../)
+local function normPath(p)
+  p = p:gsub("\\", "/")
+  local prev
+  repeat prev = p; p = p:gsub("[^/]+/%.%./", "", 1) until p == prev
+  return (p:gsub("/%./", "/"))
+end
+local function dataPath(name) return normPath(DATA .. name) end
+
+local function writeFile(path, data)
+  local fh, err = io.open(path, "wb")
+  if not fh then return false, err end
+  local okw, werr = fh:write(data)
+  fh:close()
+  return okw ~= nil, werr
+end
+
+-- seq strictly above: now (unix ms, as Mining), last one we wrote, and the one in MiningCmd.txt
+local function nextSeq()
+  local fileSeq = 0
+  local fh = io.open(dataPath("MiningCmd.txt"), "rb")
+  if fh then
+    local line = fh:read("l")
+    fh:close()
+    fileSeq = tonumber(line and line:match("^(%d+)|") or "") or 0
+  end
+  lastSeq = math.max(os.time() * 1000, lastSeq + 1, fileSeq + 1)
+  return lastSeq
+end
+
+local function prettyRemoves(s)
+  local out = {}
+  for part in s:gmatch("[^,]+") do
+    local raw, cnt = part:match("^(.-):(%d+)$")
+    if raw then
+      local n = raw:gsub("_C$", "")
+      n = n:gsub("^BP_", "")
+      n = n:gsub("Object$", "")
+      n = REM_NAME[n] or n:lower()
+      local c = tonumber(cnt)
+      out[#out + 1] = c .. " " .. (c == 1 and n or (n .. "s"))
+    end
+  end
+  return table.concat(out, ", ")
+end
+
+-- BlueprintImport.cost: no header, lines ITEM_Name|need|refund|net (integers). Malformed lines skipped.
+local function readCost()
+  local fh = io.open(dataPath("BlueprintImport.cost"), "rb")
+  if not fh then L("cost file missing"); M.setCost({}); return end
+  local body = fh:read("a") or ""
+  fh:close()
+  local list, bad = {}, 0
+  for line in body:gmatch("[^\r\n]+") do
+    local name, need, refund, net = line:match("^([^|]+)|(%-?%d+)|(%-?%d+)|(%-?%d+)$")
+    if name then
+      list[#list + 1] = { name = name, need = tonumber(need), refund = tonumber(refund), net = tonumber(net) }
+    else
+      bad = bad + 1
+    end
+  end
+  if bad > 0 then L("cost: skipped " .. bad .. " malformed lines") end
+  M.setCost(list)
+end
+
+-- results area: summary, removes, cost rows back to empty
+local function resetResults()
+  txt("Txt_Summary", ""); setVis(w("Txt_Summary"), false)
+  txt("Txt_Removes", ""); setVis(w("Txt_Removes"), false)
+  M.setCost({})
+end
+
+-- BlueprintImport.status: line 1 "state|text", then key=value lines. Returns state, text, kv (nil if no file)
+local function readStatus()
+  local fh = io.open(dataPath("BlueprintImport.status"), "rb")
+  if not fh then return nil end
+  local body = fh:read("a") or ""
+  fh:close()
+  local lines = {}
+  for line in body:gmatch("[^\r\n]+") do lines[#lines + 1] = line end
+  local st, text = (lines[1] or ""):match("^([^|]*)|?(.*)$")
+  local kv = {}
+  for i = 2, #lines do
+    local k, v = lines[i]:match("^(%w+)=(.*)$")
+    if k then kv[k] = v end
+  end
+  return st or "", text or "", kv
+end
+
+local pollTick -- forward: schedulePoll and pollTick call each other
+local function schedulePoll()
+  pcall(ExecuteWithDelay, POLL_MS, function() pcall(ExecuteInGameThread, pollTick) end)
+end
+
+local function showDone(text, kv)
+  local bp = kv.blueprint or ""
+  txt("Txt_Status", bp ~= "" and ("Blueprint: " .. bp) or "Ready")
+  txt("Txt_Summary", text)
+  setVis(w("Txt_Summary"), text ~= "")
+  local pretty = ((tonumber(kv.remove) or 0) > 0) and prettyRemoves(kv.removes or "") or ""
+  txt("Txt_Removes", pretty ~= "" and ("removes: " .. pretty) or "")
+  setVis(w("Txt_Removes"), pretty ~= "")
+  readCost()
+end
+
+pollTick = function()
+  local p = S.poll
+  if not p then return end
+  if not ok(S.w) then S.poll = nil; return end
+  if os.time() - p.t0 > POLL_MAX_S then
+    S.poll = nil
+    txt("Txt_Status", "error: timeout")
+    L("import timeout seq=" .. p.seq)
+    return
+  end
+  local st, text, kv = readStatus()
+  if st and kv and kv.seq and tonumber(kv.seq) == p.seq then
+    local line = st .. "|" .. text
+    if line ~= p.last then p.last = line; L("import status seq=" .. p.seq .. " " .. line) end
+    if st == "done" then
+      S.poll = nil
+      showDone(text, kv)
+    elseif st == "error" then
+      S.poll = nil
+      txt("Txt_Status", "error: " .. text)
+    elseif st == "working" then
+      txt("Txt_Status", text ~= "" and text or "Importing...")
+    end
+  end
+  if S.poll == p then schedulePoll() end
+end
+
+-- Btn_Import: open the modal, keep previous text, focus the box
+local function impOpenModal()
+  if not ok(S.w) then return end
+  S.imp = true
+  setVis(w("Pnl_ImportModal"), true)
+  local box = w("Edt_ImportJson")
+  if ok(box) then try("import focus", function() box:SetKeyboardFocus() end) end
+end
+
+-- X and ESC: close the modal, keep the text
+function M.impClose()
+  S.imp = false
+  setVis(w("Pnl_ImportModal"), false)
+end
+
+-- Cancel: clear the box, close the modal
+local function impCancel()
+  if not M.impOpen() then return end
+  local box = w("Edt_ImportJson")
+  if ok(box) then try("import clear", function() box:SetText(FText("")) end) end
+  M.impClose()
+end
+
+-- Import: read the box once, write the file atomically, send the command, poll
+local function impOk()
+  if not M.impOpen() then return end
+  local box = w("Edt_ImportJson")
+  if not ok(box) then L("import: text box missing"); txt("Txt_Status", "error: text box missing"); return end
+  local s, t = pcall(function() return box:GetText():ToString() end)
+  if not s or type(t) ~= "string" then L("import: text read failed"); txt("Txt_Status", "error: could not read text"); return end
+  if t == "" then txt("Txt_Status", "paste the blueprint JSON first"); return end
+
+  local target = dataPath("BlueprintImport.json")
+  local tmp = target .. ".tmp"
+  local wok, werr = writeFile(tmp, t)
+  if not wok then L("import: tmp write failed " .. tostring(werr)); txt("Txt_Status", "error: write failed"); return end
+  os.remove(target)
+  local rok, rerr = os.rename(tmp, target)
+  if not rok then
+    L("import: rename failed (" .. tostring(rerr) .. "), writing target directly")
+    os.remove(tmp)
+    wok, werr = writeFile(target, t)
+    if not wok then L("import: write failed " .. tostring(werr)); txt("Txt_Status", "error: write failed"); return end
+  end
+  L("import text " .. #t .. " bytes written")
+
+  M.impClose()
+  txt("Txt_Status", "Importing...")
+  resetResults()
+
+  local seq = nextSeq()
+  local line = seq .. "|0|bp_import " .. target
+  local cok, cerr = writeFile(dataPath("MiningCmd.txt"), line)
+  if not cok then L("MiningCmd.txt write failed " .. tostring(cerr)); txt("Txt_Status", "error: command write failed"); return end
+  L("cmd " .. line)
+  S.poll = { seq = seq, t0 = os.time(), last = nil }
+  schedulePoll()
+end
+
 function M.close()
   if BIND and BIND.clear then BIND.clear() end  -- drop button callbacks + global layout hook
-  S.cost, S.tc = nil, nil
+  S.cost, S.tc, S.itemMap = nil, nil, nil
+  S.poll, S.imp = nil, false
   if not (S.root or S.p or S.frame) then return end
   if M.closing and os.clock() - (M.closing_at or 0) < 3 then return end   -- already closing: idempotent
   M.closes = (M.closes or 0) + 1
@@ -211,7 +461,9 @@ function M.close()
   if not pcall(ExecuteWithDelay, 50, function() pcall(ExecuteInGameThread, teardown) end) then teardown() end
 end
 
+-- F: closes the window, except while the import modal is open (typing) or an edit box has focus
 function M.fKey()
+  if M.impOpen() then return end
   if M.isOpen() and os.clock() - (S.t0 or 0) > 0.5 and not typing() then M.close() end
 end
 
@@ -352,6 +604,7 @@ function M.open(block, player, ctl)
     S.unitInv, S.playerInv = unitInv, playerInv
     S.t0 = os.clock()
     S.tc = {}
+    S.imp, S.poll, S.itemMap = false, nil, nil
     L("CreateWidget ok " .. nm(wbp) .. " [" .. cn(wbp) .. "]")
     try("AddToViewport", function() wbp:AddToViewport(Z) end)
     sizeWindow(wbp, p)
@@ -370,18 +623,22 @@ function M.open(block, player, ctl)
       L("P3: WBP_Inventory class not found, grids skipped")
     end
 
-    -- buttons (placeholders: no inventory write)
+    -- buttons
     if BIND and BIND.onClick then
       local function bind(n, fn)
         local b = w(n); if ok(b) then try("bind " .. n, function() BIND.onClick(b, fn) end) end
       end
       bind("Btn_Close", M.close)
-      bind("Btn_Import", function() L("Btn_Import clicked (placeholder)"); txt("Txt_Status", "ready") end)
-      bind("Btn_Build", function() L("Btn_Build clicked (placeholder)"); txt("Txt_Status", "ready") end)
+      bind("Btn_Import", impOpenModal)
+      bind("Btn_Build", function() L("Btn_Build clicked (placeholder, M5)"); txt("Txt_Status", "Build is not implemented yet (M5)") end)
+      bind("Btn_ImportClose", M.impClose)
+      bind("Btn_ImportCancel", impCancel)
+      bind("Btn_ImportOk", impOk)
     else
       L("open: no api.onClick (call bind first)")
     end
-    M.setCost({})
+    setVis(w("Pnl_ImportModal"), false)
+    resetResults()
 
     -- input focus: UI-only so drags do not reach the game camera. Fallbacks as in MiningUnitUI.
     local ui = StaticFindObject(LIB)
