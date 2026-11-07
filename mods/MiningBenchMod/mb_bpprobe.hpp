@@ -83,6 +83,7 @@
 #include <cstring>
 #include <Unreal/CoreUObject/UObject/FStrProperty.hpp>
 #include <Unreal/Property/FTextProperty.hpp>
+#include "mb_portdata.hpp"   // kPortCls: generated port table (scripts/gen_portdata_hpp.py)
 
 namespace
 {
@@ -2893,8 +2894,30 @@ namespace
 
     // WHAT: fills cfg of every new machine (empty = no config). Recipe machines with a Recipe; undergrounds by pairing (exit cells -> cells).
     //       Recipe = the game recipe Name already resolved by pp_resolve_recipes (verbatim, original case; vault rea-machine-config.md s2).
-    //       Ports: (Face,Index) -> array index is not in machines.json, so every port is written enabled and the note says so.
+    //       Ports: site (Face,Index) -> game byte via kPortCls (pp_site_flags: verified classes at rot 0 only); else all ports enabled, logged.
     //       "" = OK, else the underground refusal reason.
+    const PPortCls* pp_port_cls(const std::string& dat) { for (const PPortCls& t : kPortCls) if (dat == t.dat) return &t; return nullptr; }
+    bool pp_port_verified(const std::string& dat) { const PPortCls* c = pp_port_cls(dat); return c && c->verified; }
+    // WHAT: site Ports (JSON) -> game port enabled bytes, class port order. ok = false + why (reason text, no prefix) when not usable:
+    //       class unverified, rotation != 0 (game rotation of the list unverified), or a port not in the table. Pure (selftest "ports:").
+    bool pp_site_flags(const PMach& m, std::vector<uint8_t>& flags, std::string& why)
+    {
+        const PPortCls* c = pp_port_cls(m.dat);
+        if (!c || !c->verified) { why = "unverified " + m.bcls; return false; }
+        if (m.rot != 0) { why = "unverified rotation " + m.bcls + " rot " + std::to_string(m.rot); return false; }
+        std::vector<uint8_t> f(static_cast<size_t>(c->n), 1);
+        for (const PPort& p : m.ports)
+        {
+            int g = -1;
+            for (int k = 0; k < c->ns && g < 0; ++k)
+                if (std::string(1, c->site[k].face) == p.face && c->site[k].index == p.index) g = c->site[k].game;
+            if (g < 0 || g >= c->n) { why = "unknown port " + p.face + std::to_string(p.index) + " on " + m.bcls; return false; }
+            f[static_cast<size_t>(g)] = p.enabled ? 1 : 0;
+        }
+        flags = f;
+        return true;
+    }
+
     std::string pp_encode_cfg(std::vector<PMach>& ms, std::vector<PMach>& cells)
     {
         for (PMach& m : ms)
@@ -2913,8 +2936,15 @@ namespace
                 if (m.hasPorts) bp_out(L"PASTE note: Ports without Recipe ignored for " + widen(m.bcls));
                 continue;
             }
-            m.cfg = pp_cfg_recipe(m.recipe, std::vector<uint8_t>(static_cast<size_t>(rt->ports), 1));
-            if (m.hasPorts) bp_out(L"PASTE note: port mapping unverified for " + widen(m.bcls) + L", all " + widen(std::to_string(rt->ports)) + L" ports written enabled");
+            std::vector<uint8_t> en(static_cast<size_t>(rt->ports), 1);
+            if (m.hasPorts)
+            {
+                std::vector<uint8_t> f;
+                std::string why;
+                if (pp_site_flags(m, f, why)) en = f;
+                else bp_out(widen("PASTE PORTS " + why + ", all ports on"));
+            }
+            m.cfg = pp_cfg_recipe(m.recipe, en);
             if (!rt->verified) bp_out(L"PASTE note: config layout assumed (INF, not seen in a save) for " + widen(m.bcls));
         }
         return pp_pair_underground(ms, cells);
@@ -3774,15 +3804,24 @@ namespace
             if (!pp_recipe_mach(m.dat)) { bp_out(widen("PASTE KEEP note: config not compared for " + m.bcls + " id=" + id + " (kept as is)")); continue; }
             const PCfgDiff d = pp_cfg_diff(m.cfg, m.live);
             if (!d.ok) { bp_out(widen("PASTE CFG " + id + " " + m.bcls + " live unknown (" + d.why + "), kept as is")); continue; }
-            // WHY: the site port order -> game port index mapping is unverified and the encoder writes all ports enabled, so a port the user
-            //      disabled in the game would be switched back on: port diffs are NOT applied (only logged) until the mapping is verified.
-            if (!d.ports.empty()) bp_out(widen("PASTE note: " + std::to_string(d.ports.size()) + " port difference(s) on id " + id + " not applied (port mapping unverified)"));
-            if (!d.recipe) continue;
+            // WHY: target port flags are trusted only from pp_site_flags (verified class, rot 0, Ports in the blueprint). Otherwise the target
+            //      is all-on and a port the user disabled would be switched back on: port diffs are logged, not sent.
             PCfgChg c;
             c.m = m;
             c.recipe = d.recipe;
             c.oldRec = d.liveRec;
             c.newRec = d.targetRec;
+            if (!d.ports.empty())
+            {
+                std::vector<uint8_t> f;
+                std::string why;
+                const size_t np = d.ports.size();
+                if (m.rot != 0 && pp_port_verified(m.dat)) bp_out(widen("PASTE PORTS port diff skipped: rotation unverified id=" + id + " " + m.bcls));
+                else if (!m.hasPorts) bp_out(widen("PASTE note: " + std::to_string(np) + " port difference(s) on id " + id + " not applied (no Ports in blueprint)"));
+                else if (!pp_site_flags(m, f, why)) bp_out(widen("PASTE note: " + std::to_string(np) + " port difference(s) on id " + id + " not applied (" + why + ")"));
+                else c.ports = d.ports;
+            }
+            if (!d.recipe && c.ports.empty()) continue;
             chg.push_back(c);
             if (d.recipe) ++recChanged;
         }
@@ -4354,7 +4393,7 @@ namespace
         return s;
     }
     // WHAT: status line 1 text: "place P, keep K, remove R[ (refund <items>)], recipe changes C". The refund part only when R > 0.
-    std::string pp_import_text(int place, int keep, int remove, const PCostMap& refund, int recipes)
+    std::string pp_import_text(int place, int keep, int remove, const PCostMap& refund, int recipes, int ports = 0)
     {
         std::string s = "place " + std::to_string(place) + ", keep " + std::to_string(keep) + ", remove " + std::to_string(remove);
         if (remove > 0)
@@ -4362,7 +4401,9 @@ namespace
             const std::string r = pp_import_refund_txt(refund);
             s += " (refund " + (r.empty() ? std::string("none") : r) + ")";
         }
-        return s + ", recipe changes " + std::to_string(recipes);
+        s += ", recipe changes " + std::to_string(recipes);
+        if (ports > 0) s += ", port changes " + std::to_string(ports);
+        return s;
     }
     // WHAT: removes= value: "Class:count" per class (short name), most numerous first (ties by name). "" when none.
     std::string pp_import_removes(const std::vector<PMach>& removed)
@@ -4462,7 +4503,7 @@ namespace
         P.blocks = blocks;
         g_bpplan = P;
         const int teleN = pp_count_tele(P.place);   // planned Teleporters: may stay unplaced if not unlocked (not read here)
-        std::string txt = pp_import_text(static_cast<int>(P.place.size()), static_cast<int>(P.kept.size()), static_cast<int>(P.removed.size()), ic.refund, P.recChanged);
+        std::string txt = pp_import_text(static_cast<int>(P.place.size()), static_cast<int>(P.kept.size()), static_cast<int>(P.removed.size()), ic.refund, P.recChanged, P.portChanged);
         if (teleN > 0) txt += " | not unlocked: Teleporter x" + std::to_string(teleN);
         if (blocks) txt += " | station blocks: not implemented yet";
         std::string st = "done|" + txt + "\n";
@@ -5146,6 +5187,38 @@ namespace
             const bool wok = std::filesystem::exists(wp, wec) && !std::filesystem::exists(tp, wec);
             std::filesystem::remove(wp, wec);
             pchk(wok, "write_atomic: file written, no .tmp left");
+        }
+        // port flags (mb_portdata.hpp): site Ports -> game bytes. Prefix ports:
+        {
+            bool cntok = true;
+            for (const PRecipeMach& t : kPasteRecipe) if (const PPortCls* c = pp_port_cls(t.dat)) if (c->n != t.ports) cntok = false;
+            pchk(cntok, "ports: table port counts match kPasteRecipe");
+            auto mkp = [](const char* dat, const char* bcls, int rot, std::vector<PPort> ports) {
+                PMach m; m.dat = dat; m.bcls = bcls; m.rot = rot; m.hasPorts = true; m.ports = std::move(ports); return m; };
+            std::vector<uint8_t> fl;
+            std::string why;
+            PMach rs = mkp("DAT_Refinery", "BP_RefineryObject", 0, { { "N", 0, true }, { "E", 1, true }, { "S", 2, false }, { "W", 3, true } });
+            pchk(pp_site_flags(rs, fl, why) && fl == std::vector<uint8_t>({ 1, 0, 1, 1 }), "ports: Refinery South off -> 01 00 01 01 (index 1 off)");
+            std::vector<PMach> rv{ rs }, rc0;
+            pchk(pp_encode_cfg(rv, rc0).empty() && rv[0].cfg == pp_cfg_recipe("titaniumplates", { 1, 0, 1, 1 }), "ports: Refinery encoder writes the site flags");
+            PMach as = mkp("DAT_Assembler", "BP_AssemblerObject", 0, { { "E", 2, true }, { "S", 4, false }, { "S", 5, true } });
+            pchk(pp_site_flags(as, fl, why) && fl == std::vector<uint8_t>({ 1, 1, 1, 0, 1, 1, 1, 1 }), "ports: Assembler S-left off -> 01 01 01 00 01 01 01 01");
+            PMach ar = as; ar.rot = 1;
+            pchk(!pp_site_flags(ar, fl, why) && why.find("rotation") != std::string::npos, "ports: rot 1 flags refused (rotation unverified)");
+            PMach hx = rs; hx.hasHex = true; hx.hexcfg = { 1, 0, 255 };
+            std::vector<PMach> hv{ hx }, hc;
+            pchk(pp_encode_cfg(hv, hc).empty() && hv[0].cfg == std::vector<uint8_t>({ 1, 0, 255 }), "ports: ConfigHex pass-through unchanged");
+            PMach sc = mkp("DAT_Supercomputer", "BP_SupercomputerObject", 0, { { "N", 0, false } });
+            std::vector<PMach> sv{ sc }, scc;
+            pchk(pp_encode_cfg(sv, scc).empty() && sv[0].cfg == pp_cfg_recipe("SiliconWafers", std::vector<uint8_t>(8, 1)), "ports: unverified class stays all-on");
+            PMach kr = mkp("DAT_Refinery", "BP_RefineryObject", 1, { { "N", 0, true }, { "E", 1, true }, { "S", 2, true }, { "W", 3, true } });
+            kr.id = 5; kr.recipe = "titaniumplates"; kr.cfg = pp_cfg_recipe("titaniumplates", { 1, 1, 1, 1 }); kr.live = pp_cfg_recipe("titaniumplates", { 1, 0, 1, 1 });
+            std::vector<PCfgChg> kc; int krc = 0;
+            pp_kept_changes({ kr }, kc, krc);
+            pchk(kc.empty() && krc == 0, "ports: rot 1 port diff skipped (no change sent)");
+            kr.rot = 0;
+            pp_kept_changes({ kr }, kc, krc);
+            pchk(kc.size() == 1 && kc[0].ports == std::vector<int>({ 1 }) && !kc[0].recipe && krc == 0, "ports: rot 0 port diff -> one toggle at index 1");
         }
         // bp_build (M5): pure helpers, no game needed. Prefix build:
         {
