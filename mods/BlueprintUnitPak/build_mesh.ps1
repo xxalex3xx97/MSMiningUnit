@@ -5,7 +5,7 @@ $retoc = "$root\tools\retoc\retoc.exe"
 $name = 'pakchunk97-BPUnitMesh_P'
 Remove-Item "$d\stage_mesh" -Recurse -Force -ErrorAction SilentlyContinue
 # mesh\<k> -> Content\<dest>
-$map = @{ 'Machines' = 'Meshes\Machines'; 'Effects' = 'Meshes\Effects'; 'Materials' = 'Materials' }
+$map = @{ 'Machines' = 'Meshes\Machines'; 'Effects' = 'Meshes\Effects' }
 New-Item -ItemType Directory -Force "$d\out" | Out-Null
 foreach ($k in $map.Keys) {
     $t = "$d\stage_mesh\MainSequence\Content\$($map[$k])"

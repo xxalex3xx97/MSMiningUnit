@@ -14,8 +14,8 @@ MESHES = {
     "SM2_BPUnitTbl": ("/Game/Meshes/Machines", {
         "Orange1": "/Game/Materials/Instances/MI_PaintedMetal_Orange", "White1": "/Game/Materials/Instances/MI_PaintedMetal_White",
         "Grey1": "/Game/Materials/Instances/MI_PaintedMetal_Grey", "Black1": "/Game/Materials/Instances/MI_PaintedMetal_Black",
-        "Glow1": "/Game/Materials/M_Holotable", "Screen1": "/Game/Art/MaterialLibrary/MI_Screens_01",
-        "Grid1": "/Game/Materials/M_BPUnitGrid"}),
+        "Screen1": "/Game/Art/MaterialLibrary/MI_Screens_01", "Ring1": "/Game/Materials/M_Hologram",
+        "Holotable": "/Game/Materials/M_Holotable"}),
     "SM_BPUnitBlueprintHolo_01": ("/Game/Meshes/Effects", {"Holo1": "/Game/Materials/M_Hologram"}),
 }
 L = []
@@ -24,55 +24,6 @@ def log(m):
 def sp(o, k, v):
     try: o.set_editor_property(k, v)
     except Exception as e: log("  set %s failed: %r" % (k, e))
-def mk_grid():
-    # our own shipped material: blueprint grid on the 0..1 disc UV, unlit emissive, opaque
-    p = "/Game/Materials/M_BPUnitGrid"
-    if eal.does_asset_exist(p): eal.delete_asset(p)
-    m = at.create_asset("M_BPUnitGrid", "/Game/Materials", unreal.Material, unreal.MaterialFactoryNew())
-    ml = unreal.MaterialEditingLibrary
-    m.set_editor_property("shading_model", unreal.MaterialShadingModel.MSM_UNLIT)
-    m.set_editor_property("blend_mode", unreal.BlendMode.BLEND_OPAQUE)
-    m.set_editor_property("two_sided", True)
-    X = [0]
-    def n(cls, **kw):
-        e = ml.create_material_expression(m, cls, X[0], 0); X[0] += 200
-        for k, v in kw.items(): e.set_editor_property(k, v)
-        return e
-    def c(a, o, b, i): ml.connect_material_expressions(a, o, b, i)
-    E = unreal
-    uv = n(E.MaterialExpressionTextureCoordinate)
-    def mul(a, k):
-        e = n(E.MaterialExpressionMultiply, const_b=k); c(a, "", e, "A"); return e
-    def sub(a, k):
-        e = n(E.MaterialExpressionSubtract, const_b=k); c(a, "", e, "A"); return e
-    def mask(a, r, g):
-        e = n(E.MaterialExpressionComponentMask, r=r, g=g, b=False, a=False); c(a, "", e, ""); return e
-    def mx(a, b):
-        e = n(E.MaterialExpressionMax); c(a, "", e, "A"); c(b, "", e, "B"); return e
-    def sat(a):
-        e = n(E.MaterialExpressionSaturate); c(a, "", e, ""); return e
-    def grid(cells, w):
-        # distance of each cell centre axis: abs(frac(uv*cells)-0.5); line where max(dx,dy) > 0.5-w
-        f = n(E.MaterialExpressionFrac); c(mul(uv, cells), "", f, "")
-        d = n(E.MaterialExpressionAbs); c(sub(f, 0.5), "", d, "")
-        e = mx(mask(d, True, False), mask(d, False, True))
-        return sat(mul(sub(e, 0.5 - w), 1.0 / (w * 0.5)))
-    minor = mul(grid(20, 0.012), 0.45)
-    major = grid(4, 0.02)
-    ctr = n(E.MaterialExpressionConstant2Vector, r=0.5, g=0.5)
-    dist = n(E.MaterialExpressionDistance); c(uv, "", dist, "A"); c(ctr, "", dist, "B")
-    border = sat(mul(sub(dist, 0.47), 1.0 / 0.012))      # strong outer border circle, stays inside r=0.5
-    inside = n(E.MaterialExpressionOneMinus); c(sat(mul(sub(dist, 0.5), 400.0)), "", inside, "")  # circular mask
-    line = mul(mx(mx(minor, major), border), 1.0)
-    lit = n(E.MaterialExpressionMultiply); c(line, "", lit, "A"); c(inside, "", lit, "B")
-    bg = n(E.MaterialExpressionConstant3Vector, constant=unreal.LinearColor(0.0, 0.015, 0.06, 1))
-    fg = n(E.MaterialExpressionConstant3Vector, constant=unreal.LinearColor(0.25, 0.75, 2.0, 1))
-    lp = n(E.MaterialExpressionLinearInterpolate); c(bg, "", lp, "A"); c(fg, "", lp, "B"); c(lit, "", lp, "Alpha")
-    ml.connect_material_property(lp, "", unreal.MaterialProperty.MP_EMISSIVE_COLOR)
-    ml.recompile_material(m)
-    eal.save_asset(p)
-    log("created " + p)
-
 def main():
     global eal, at
     # Interchange ignores FbxImportUI options and skipped our UCX_ hulls: force the legacy FBX importer
@@ -107,7 +58,6 @@ def main():
             at.import_asset_tasks([t])
             log("imported %s (crash expected next; rerun to continue)" % p)
             return
-    mk_grid()
     for name, (dest, slotmap) in MESHES.items():
         p = dest + "/" + name
         sm = eal.load_asset(p)
