@@ -141,6 +141,8 @@ for (const f of [BP_NEW + '.uasset', BP_NEW + '.uexp', PROMPT + '.uasset', PROMP
 }
 // ---- Job D: hidden default container machine = clone of vanilla large container (sim + actor) ----
 // sim BP_ContainerObject_2 -> BP_BPUnitStoreObj_01, actor BP_Container_2 -> BP_BPUnitStore. Parent BP_ContainerObject stays.
+// Off unless BPU_CONTAINER=1 (build_pak.ps1 -WithContainer). Crashes game on block creation, cause under investigation.
+if (process.env.BPU_CONTAINER === '1') {
 const MACH_IN = (process.env.MS_MODS_ROOT || 'F:\\MSDemoMods') + '\\legacy\\MainSequence\\Content\\Blueprints\\Machines';
 const MACH_OUT = path.join(__dirname, 'stage', 'MainSequence', 'Content', 'Blueprints', 'Machines');
 fs.mkdirSync(MACH_OUT, { recursive: true });
@@ -181,6 +183,7 @@ for (const f of [SIM_NEW + '.uasset', SIM_NEW + '.uexp', ACT_NEW + '.uasset', AC
   }
 }
 console.log('machine leftover scan done');
+}
 
 console.log('leftover scan done');
 if (bad) process.exit(2);

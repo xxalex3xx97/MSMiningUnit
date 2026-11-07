@@ -8,6 +8,8 @@ Co-op: every player needs the same pak. Chunk 97 is also used by the dev MSTestC
 Tools: MS_MODS_ROOT (default F:\MSDemoMods) for legacy/ source and tools\retoc.
 
 ## S1 hidden container default machine (step 4+5 done, not installed, not in game)
+- DISABLED in build: build_pak.ps1 skips patch_bpo_machine.py and clone.js Job D unless `-WithContainer` (or `$withContainer = $true`; clone.js needs BPU_CONTAINER=1).
+- Crash cause under investigation: the container pak100 crashed the game on block creation (EXCEPTION_ACCESS_VIOLATION at 0x110).
 - clone.js Job D: Machines\BP_ContainerObject_2 -> BP_BPUnitStoreObj_01 (sim), Machines\BP_Container_2 -> BP_BPUnitStore (actor). Parent BP_ContainerObject untouched.
 - Sim uexp int32 patch: InventorySize @120 32->120, StackSizeBonusMultiplier @124 10->200 (from diff_container.py: large=32/10, normal=16 at 120, normal has no bonus value).
 - Sizes differ: normal uexp 322 B, large uexp 454 B (not same-length). Large uexp values stored as plain LE int32.
