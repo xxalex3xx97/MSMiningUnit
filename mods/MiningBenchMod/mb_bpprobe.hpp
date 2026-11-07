@@ -4020,8 +4020,15 @@ namespace
             if (alive(o) && o->GetName().rfind(STR("Default__"), 0) != 0 && o->GetClassPrivate()->GetName() == STR("BP_BPUnitStoreObj_01_C") &&
                 (c->simId == 0 || obj_id(o) == c->simId))
                 units.push_back(o);
-        if (units.empty()) { c->err = c->simId ? "no Blueprint Unit with id " + std::to_string(c->simId) : std::string("no Blueprint Unit (BP_BPUnitStoreObj_01_C) in the world"); return; }
-        if (units.size() > 1) { c->err = "several Blueprint Units, pass unit <id>"; return; }
+        if (c->simId && units.empty()) { c->err = "unit " + std::to_string(c->simId) + " not found"; return; }
+        if (units.empty()) { c->err = "no Blueprint Unit (BP_BPUnitStoreObj_01_C) in the world"; return; }
+        if (!c->simId && units.size() > 1)
+        {
+            std::string ids;
+            for (UObject* o : units) ids += (ids.empty() ? "" : ", ") + std::to_string(obj_id(o));
+            c->err = "several Blueprint Units (ids: " + ids + "): open the window of the unit you want to build with, pass unit <id>";
+            return;
+        }
         UObject* u = units[0];
         c->unitId = obj_id(u);
         if (UObject* pi = get_obj_prop(u, STR("Inventory"))) if (alive(pi)) { c->inv = pi; return; }
@@ -4765,7 +4772,7 @@ namespace
         BInv pi, ui;
         std::string err;
         if (!bb_read_both(pi, ui, err)) return bb_refuse(err);
-        bp_out(widen("BUILD unit inventory = id " + std::to_string(ui.id) + ", unit sim id " + std::to_string(g_bpbuild.unitSimId) + ", player inventory id " + std::to_string(pi.id)));
+        bp_out(widen("BUILD unit sim=" + std::to_string(g_bpbuild.unitSimId) + " inv=" + std::to_string(ui.id) + " player inv=" + std::to_string(pi.id)));
         PCrCtx cr;
         if (!seh_run(pp_creative_fn, &cr)) bp_out(L"FAULT bp_build creative flag " + seh_describe(g_seh));
         g_bpbuild.creative = cr.state == 1;
