@@ -1,15 +1,16 @@
 # S1 step 5: add the hidden container machine to DefaultMachines of stage BPO_BlueprintUnit (clone of vanilla BPO_CommandModule).
 # The vanilla CONNECTOR array (uexp 374, BPO_LargeConnector_C) is NOT touched.
 # DefaultMachines is a separate property = unversioned-header index 24, absent in BPO_CommandModule. So the export 1 header
-# gains idx 24 (uexp 116-117 `07 02` -> `02 02 04 02`) and its 14-byte value goes right before idx 29's value.
+# gains idx 24 (uexp 116-117 `07 02` -> `02 02 04 02`) and its 22-byte value goes right before idx 29's value.
+# Element now = count | 80 09 0c | class | 80 07 06 (Transform, mask 06 = Height+Rotation omitted) | X i32 | Y i32 (22 bytes).
+# X, Y = machine units relative to block origin (env BPU_MX / BPU_MY, default 8, 8).
 # Patches the .uasset/.uexp in place.
 # Usage: python -I patch_bpo_machine.py <DIR with BPO_BlueprintUnit.uasset/.uexp> <CLASS PACKAGE> <CLASS NAME>
 #        python -I patch_bpo_machine.py --walk <base path without ext>   (print CONNECTOR array walk only)
 #   vanilla container: <CLASS PACKAGE>=/Game/Blueprints/Machines/BP_ContainerObject_2  <CLASS NAME>=BP_ContainerObject_2_C
 #   clone container:   <CLASS PACKAGE>=/Game/Blueprints/Machines/BP_BPUnitStoreObj_01  <CLASS NAME>=BP_BPUnitStoreObj_01_C
 # Layout is parsed and asserted, not hardcoded. verify() re-parses the output bytes before anything is written.
-# ponytail: machine at grid cell (0,0) = `80 07 07` (no transform payload). Real placement later: machine coords ~8x finer
-#   than block cells; offset needs `80 07 06` + X,Y int32. Not done: X, Y = 0, 0.
+# ponytail: X,Y tuned by live test only (8,8 primary; fallbacks 8,10 / 10,10 / 16,16). Scale assumed, not verified.
 import struct
 import sys
 import os
@@ -22,8 +23,9 @@ HDR = 104            # uexp offset of export 1 unversioned property header
 HDR_VANILLA = bytes.fromhex('00 0c 01 02 02 04 02 04 01 02 02 04 07 02 07 03')
 HDR_IDX = [0, 1, 2, 3, 4, 5, 7, 10, 11, 14, 15, 17, 20, 21, 29, 37]
 IDX_DM = 24          # unversioned property index of DefaultMachines
+MX, MY = int(os.environ.get('BPU_MX', 8)), int(os.environ.get('BPU_MY', 8))   # machine position (int32 each)
 HDR_NEW = bytes.fromhex('02 02 04 02')   # replaces vanilla '07 02' at HDR+12: skip 2 -> idx 24, skip 4 -> idx 29
-GROW = 16            # export 1 SerialSize growth: 2 header bytes + 14 value bytes
+GROW = 24            # export 1 SerialSize growth: 2 header bytes + 22 value bytes
 GROW_HDR = 2         # the header bytes shift everything after uexp 118 (connector array 374 -> 376, its end 404 -> 406)
 TAIL = 18            # from idx 29 value to uexp end: ff*4, idx 37 (6 bytes), trailer (4), footer (4)
 
@@ -86,8 +88,9 @@ def hdr_idx(e):
 
 
 def value(ref):
-    # DefaultMachines value (14 bytes): count 1 | 80 09 0c | class ref | 80 07 07 (cell, no payload)
-    return struct.pack('<i', 1) + b'\x80\x09\x0c' + struct.pack('<i', ref) + b'\x80\x07\x07'
+    # DefaultMachines value (22 bytes): count 1 | 80 09 0c | class ref | 80 07 06 | X i32 | Y i32
+    return (struct.pack('<i', 1) + b'\x80\x09\x0c' + struct.pack('<i', ref)
+            + b'\x80\x07\x06' + struct.pack('<ii', MX, MY))
 
 
 if sys.argv[1] == '--walk':
@@ -175,7 +178,7 @@ def sh(v):
 
 TOTN = sh(TOT)
 VAL = value(NEWREF)
-assert len(VAL) == 14
+assert len(VAL) == 22
 
 # ---- uasset header ----
 h = bytearray(a[:NO])
@@ -201,7 +204,7 @@ out_a = (h + a[NO:IO] + newnames + a[IO:EO] + imp + ex + a[EO + EXP_STRIDE * EC:
 # ---- uexp: header gets idx 24 (+2 bytes), value (14 bytes) inserted before idx 29 value ----
 out_e = e[:HDR + 12] + HDR_NEW + e[HDR + 14:INS] + VAL + e[INS:]
 NI = INS + GROW_HDR                   # inserted value start in out_e (header grew by 2)
-assert len(out_e) == L + GROW and out_e[NI:NI + 14] == VAL
+assert len(out_e) == L + GROW and out_e[NI:NI + 22] == VAL
 
 
 def verify(oa, oe):
@@ -265,14 +268,16 @@ def verify(oa, oe):
     idx, hend = hdr_idx(oe)
     chk('header idx %s == vanilla + [24]' % idx, idx == sorted(HDR_IDX + [IDX_DM]) and hend == HDR + 18)
     chk('header bytes 104..115 unchanged', oe[:HDR + 12] == e[:HDR + 12])
-    ni = len(oe) - TAIL - 14             # == INS + GROW_HDR: value starts right before idx 29 value
+    ni = len(oe) - TAIL - 22             # == INS + GROW_HDR: value starts right before idx 29 value
     chk('DefaultMachines count 1 at inserted block (%d)' % ni, i32(oe, ni) == 1)
     chk('machine element struct 80 09 0c', oe[ni + 4:ni + 7] == b'\x80\x09\x0c')
     ref = i32(oe, ni + 7)
     chk('machine class ref %d -> import %s' % (ref, NEW_CLS), ref == NEWREF and -ref - 1 == IC + 1 and onames[cls[5]] == NEW_CLS)
-    chk('machine transform 80 07 07 (cell 0,0, no payload)', oe[ni + 11:ni + 14] == b'\x80\x07\x07')
-    chk('uexp new block == value(%d)' % NEWREF, oe[ni:ni + 14] == VAL)
-    chk('uexp idx 29 + idx 37 + trailer + footer follow', oe[ni + 14:] == e[INS:])
+    chk('machine transform 80 07 06 (height+rot omitted)', oe[ni + 11:ni + 14] == b'\x80\x07\x06')
+    chk('machine X == %d' % MX, i32(oe, ni + 14) == MX)
+    chk('machine Y == %d' % MY, i32(oe, ni + 18) == MY)
+    chk('uexp new block == value(%d)' % NEWREF, oe[ni:ni + 22] == VAL)
+    chk('uexp idx 29 + idx 37 + trailer + footer follow', oe[ni + 22:] == e[INS:])
     chk('uexp body between header and value unchanged', oe[HDR + 16:ni] == e[HDR + 14:INS])
     els, end, nxt = walk(oe, DM + GROW_HDR)
     chk('CONNECTOR array still count 1 at uexp %d, ref %d' % (DM + GROW_HDR, CONN_REF), len(els) == 1 and els[0] == els0[0])

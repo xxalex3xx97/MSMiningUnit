@@ -8,7 +8,8 @@ Co-op: every player needs the same pak. Chunk 97 is also used by the dev MSTestC
 Tools: MS_MODS_ROOT (default F:\MSDemoMods) for legacy/ source and tools\retoc.
 
 ## S1 hidden container default machine (build variants)
-- `build_pak.ps1 -Container none|vanilla|clone` (default none). Output `out\<variant>\pakchunk100-BlueprintUnit_P.{pak,ucas,utoc}`, last built also copied to `out\`.
+- `build_pak.ps1 -Container none|vanilla|clone [-Pos X,Y]` (default none, 8,8). Output `out\<variant>\pakchunk100-BlueprintUnit_P.{pak,ucas,utoc}`; default pos also copied to `out\`. Other pos -> `out\<variant>_<X>_<Y>\` (not copied to `out\`).
+- `-Pos X,Y` = machine position (int32 X, Y, block-relative machine units, scale not verified). Element = count | `80 09 0c` class | `80 07 06` transform | X | Y (22 bytes). Env `BPU_MX`/`BPU_MY` read by patch_bpo_machine.py.
   - none: 5 packages, no container.
   - vanilla: 5 packages, container = vanilla `BP_ContainerObject_2` (32 slots, bonus 10). No Machines clone. Try this first.
   - clone: 6 packages (+ `Machines/BP_BPUnitStoreObj_01`), container = clone sim (120 slots, bonus 200).

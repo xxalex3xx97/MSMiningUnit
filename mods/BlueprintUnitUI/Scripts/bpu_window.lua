@@ -18,7 +18,7 @@ local LIB = "/Script/UMG.Default__WidgetBlueprintLibrary"
 local WBP_CLS = "/Game/MiningUnitUI/WBP_BlueprintUnit.WBP_BlueprintUnit_C"
 local INV_PKG = "/Game/Blueprints/Widgets/Display/Inventory/WBP_Inventory"
 local INV_CLS = "/Game/Blueprints/Widgets/Display/Inventory/WBP_Inventory.WBP_Inventory_C"
-local Z = 49                                   -- below dev menu 50 (same as Mining)
+local Z = 1                                    -- low: the game's cursor item stack (WBP_CursorItemStack, AddToViewport 2) draws over us during drag. F10 dev cycles Z live
 local COST_N = 40
 local COST_RED = { R = 0.604, G = 0, B = 0.067, A = 1 }
 local COST_WHITE = { R = 1, G = 1, B = 1, A = 1 }
@@ -581,6 +581,18 @@ local function diagContainers(bid, fid)
   L("P4 MachineObject instances=" .. nM .. " matching block/frame=" .. nMatch .. " shown=" .. shown)
 end
 
+-- DEV (F10): cycle the window's Z live. Re-add only: no close/teardown. Only while open.
+local ZCYC, zIdx = { 1, 0, 49 }, 1
+function M.zCycle()
+  local wbp = S.root
+  if not M.isOpen() or not ok(wbp) then return end
+  zIdx = zIdx % #ZCYC + 1
+  local n = ZCYC[zIdx]
+  pcall(function() wbp:RemoveFromParent() end)
+  if not pcall(function() wbp:AddToViewport(n) end) then L("zorder FAIL re-add") return end
+  L("zorder " .. tostring(n))
+end
+
 -- block = BPO_BlueprintUnit_C (or the BP_BPUnitStoreObj_01_C container itself). player = DMSPlayerObject. ctl = controller or nil.
 function M.open(block, player, ctl)
   ExecuteInGameThread(function()
@@ -602,8 +614,8 @@ function M.open(block, player, ctl)
     end
 
     -- container: the block's ContainerObject (ParentID == block ID, or same frame); fallback U1 = block frame inventory
-    local cont, srcName = nil, nil
-    if cn(block) == "BP_BPUnitStoreObj_01_C" then cont = block end
+    local cont, srcName, rule = nil, nil, nil
+    if cn(block) == "BP_BPUnitStoreObj_01_C" then cont = block; rule = "block is container" end
     local bid = rd(block, "ID")
     -- machines link to their frame by ParentID (MachineObject.ParentID = frame ID, per rea-machine-config), so match frame ID too
     local fid, bf = nil, nil
@@ -625,7 +637,10 @@ function M.open(block, player, ctl)
             local s1, cf = pcall(function() return c:GetFrame():GetFullName() end)
             sameFrame = s1 and cf == bf
           end
-          if byId or sameFrame then cont = c end
+          if byId or sameFrame then
+            cont = c
+            rule = (bid ~= nil and pid == bid) and "ParentID=block ID" or (fid ~= nil and pid == fid) and "ParentID=frame ID" or "same frame"
+          end
         end
       end
       if not cont then diagContainers(bid, fid) end
@@ -645,9 +660,9 @@ function M.open(block, player, ctl)
     -- probe P2
     local slots
     pcall(function() slots = unitInv:GetItemSlots() end)
-    L(string.format("P2 container ID=%s ParentID=%s inventory ID=%s slots=%s StackMultiplier=%s src=%s",
+    L(string.format("P2 container ID=%s ParentID=%s inventory ID=%s slots=%s StackMultiplier=%s src=%s rule=%s",
       tostring(cont and rd(cont, "ID") or "-"), tostring(cont and rd(cont, "ParentID") or "-"), tostring(rd(unitInv, "ID")),
-      tostring(countOf(slots)), tostring(rd(unitInv, "StackMultiplier")), tostring(srcName)))
+      tostring(countOf(slots)), tostring(rd(unitInv, "StackMultiplier")), tostring(srcName), tostring(rule or "-")))
 
     local lib = StaticFindObject(LIB)
     if not ok(lib) then L("open: lib invalid"); return end

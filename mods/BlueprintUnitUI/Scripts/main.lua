@@ -127,5 +127,11 @@ pcall(function()
     if BPU.isOpen() then pcall(ExecuteInGameThread, BPU.devCost) end
   end)
 end)
+-- DEV only: F10 cycles window Z (1, 0, 49) live, for drag tests
+pcall(function()
+  RegisterKeyBind(Key.F10, function()
+    if BPU.isOpen() then pcall(ExecuteInGameThread, BPU.zCycle) end
+  end)
+end)
 
-print(TAG .. "loaded. opener hooks on block interact, F / ESC close, F9 dev cost\n")
+print(TAG .. "loaded. opener hooks on block interact, F / ESC close, F9 dev cost, F10 dev zorder\n")
