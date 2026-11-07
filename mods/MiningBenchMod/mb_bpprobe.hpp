@@ -6,6 +6,9 @@
 //       SYNC below): removes conflicting machines and stale ones (DisassembleInput, never Dock/SolarPanel/Console) and places after the removal. Result line in
 //       dlls\PasteStatus.txt. bp_paste_selftest (read only: parser + footprint/floor/overlap checks, PASS/FAIL in BPProbe.txt).
 //       bp_import <path> [station <id>] (dry run: plans like bp_paste replace, prices it; WRITES only dlls\BlueprintImport.cost + .status; places, removes, sends nothing).
+//       bp_build [unit <storeSimId>] (M5, WRITES: builds the imported plan from the Blueprint Unit + player items: refund room check, removals, InventoryInput
+//       quick moves, chunked BuildInput, +3 s verify; status dlls\BlueprintBuild.status). bp_build_cancel. bp_invmove <primId> <secId> <slot> [action] [receiver]
+//       (probe, WRITES one InventoryInput; logs both inventories now and at +2 s).
 //       bp_setpath accepts hex text for ArrayProperty<byte> (machineconfigdata=<hex>): copied into a new TArray with FMemory::Malloc.
 //       Machine config bytes (SerializedMachineConfig, vault rea-machine-config.md s2/s3) are written by bp_paste: recipe machines
 //       (Recipe + Ports, layout 01 00 FString i32 n bytes), undergrounds (PROVEN in game: a pair = ONE machine at the entrance,
@@ -1608,6 +1611,7 @@ namespace
                 else if (CastField<FFloatProperty>(p)) { *reinterpret_cast<float*>(d) = static_cast<float>(_wtof(val.c_str())); ok = true; }
                 else if (CastField<FDoubleProperty>(p)) { *reinterpret_cast<double*>(d) = _wtof(val.c_str()); ok = true; }
                 else if (CastField<FByteProperty>(p) && p->GetSize() == 1) { *d = static_cast<uint8_t>(_wtoi(val.c_str())); ok = true; }
+                else if (CastField<FEnumProperty>(p) && p->GetSize() == 1) { *d = static_cast<uint8_t>(_wtoi(val.c_str())); ok = true; }   // WHY: InventoryInput.Action is a u8 (rea-machine-config.md); pre-emptive, probe confirms
                 else if (CastField<FObjectProperty>(p))
                 {
                     if (val == L"null") { *reinterpret_cast<UObject**>(d) = nullptr; ok = true; }
@@ -1671,8 +1675,8 @@ namespace
         const int receiver = std::atoi(c->tok[2].c_str());
         const std::wstring cname = widen(c->tok[1]);
         // WHY: the native flush drops commands whose cmd+0x28 type id is 0 (same as warp, mb_warpreal.hpp); BuildInput 0x2e, DisassembleInput 0x2f (rea-placement.md). Both go to receiver 0.
-        const int32_t tid = cname == L"BuildInput" ? 0x2e : cname == L"DisassembleInput" ? 0x2f : cname == L"MachinePortInput" ? 17 : cname == L"SetRecipeInput" ? 20 : 0;   // ids 17/20: vault rea-machine-config.md s4
-        if (receiver < 0 || (receiver == 0 && !tid)) { s += L"REFUSE receiver id must be > 0 (0 only for BuildInput/DisassembleInput)\n"; return; }
+        const int32_t tid = cname == L"BuildInput" ? 0x2e : cname == L"DisassembleInput" ? 0x2f : cname == L"MachinePortInput" ? 17 : cname == L"SetRecipeInput" ? 20 : cname == L"InventoryInput" ? 12 : 0;   // ids 17/20/12: vault rea-machine-config.md s4
+        if (receiver < 0 || (receiver == 0 && !tid)) { s += L"REFUSE receiver id must be > 0 (0 only for BuildInput/DisassembleInput/InventoryInput)\n"; return; }
         UClass* cls = UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, (std::wstring(L"/Script/MainSequence.") + cname).c_str());
         if (!alive(cls) || !bp_is_input(cls)) { s += L"REFUSE not a live InputCommand class: " + cname + L"\n"; return; }
         UObject* ctrl = first_of(STR("DMSPlayerController"));
@@ -2465,6 +2469,26 @@ namespace
                    std::vector<PMach> removed; std::vector<int> staleIds; PBuildables bld; std::vector<PMach> existing;
                    std::map<std::string, int64_t> need, refund; uint64_t fp = 0; bool valid = false; std::string skippedUg; };
     PPlan g_bpplan;
+
+    // ===== bp_build (M5): builds g_bpplan from the items in a Blueprint Unit + the player inventory (InventoryInput moves, staged chunks) =====
+    using BMap = std::map<std::string, int64_t>;   // item raw name (ITEM_HullPlate) -> amount; same keys as PPlan.need / refund
+    // WHAT: one inventory slot: item name ("" = empty), amount, MaxStackSize (1 when unreadable).
+    struct BSlot { std::string item; int64_t amount = 0; int64_t max = 1; };
+    // WHAT: one inventory read: slots in order, the inventory object id (InventoryInput ids), ok = read.
+    struct BInv { std::vector<BSlot> slots; int id = 0; bool ok = false; };
+    // WHAT: bp_build run state. stage 0 idle, 1 room (refund space), 2 removing, 3 refund moved out, 4 chunk start, 5 staging wait, 6 place wait, 7 verify.
+    //       Plan data (need, refund, place, chg, station) stays in g_bpplan (import is refused while a build runs).
+    struct BpBuildRun { bool active = false; int stage = 0, tries = 0, rounds = 0, stageRounds = 0, seq = 0;
+                        ULONGLONG t_next = 0, t_start = 0, t_stage = 0, t_issue = 0;
+                        int unitSimId = 0, unitInvId = 0, playerInvId = 0; bool creative = false, chgSent = false;
+                        std::vector<RefundItem> rneed; std::vector<int> removeIds; std::vector<BMap> costs;
+                        size_t chunkFrom = 0, chunkTo = 0, countedFrom = static_cast<size_t>(-1); int chunks = 0, chunksDone = 0;
+                        BMap chunkNeed; std::vector<BSlot> snap; std::vector<int> issued;
+                        int placed = 0, removed = 0, movedOut = 0, movedIn = 0, verifyP = -1, verifyN = 0; };
+    BpBuildRun g_bpbuild;
+    // WHAT: bp_invmove probe: the two inventories are logged again 2 s after the send (bp_build_tick).
+    struct BbProbe { bool on = false; ULONGLONG t = 0; int prim = 0, sec = 0; };
+    BbProbe g_bbprobe;
 
     // WHAT: "Class" short name: path and '.' suffix removed, "_C" removed. "/Game/x/BPO_A.BPO_A_C" -> "BPO_A".
     std::string pp_short(std::string s)
@@ -3566,12 +3590,14 @@ namespace
         }
     }
 
+    // WHAT: pp_verify result: present = placed + kept machines found (-1 = station not read), total = how many were checked, missing = first 10 ("Cls@(x,y)").
+    struct PVerify { int present = -1, total = 0; std::string missing; };
     // WHAT: +3 s check: every placed machine must be on the station with the same class and GridLocation. Logs VERIFY and updates the status line.
-    void pp_verify()
+    PVerify pp_verify()
     {
         PasteCtx c;
         c.station = g_bpaste.station;
-        if (!seh_run(pp_scan_fn, &c)) { bp_out(L"PASTE VERIFY FAULT " + seh_describe(g_seh)); return; }
+        if (!seh_run(pp_scan_fn, &c)) { bp_out(L"PASTE VERIFY FAULT " + seh_describe(g_seh)); return PVerify{}; }
         std::vector<bool> used(c.existing.size(), false);
         int present = 0, miss = 0;
         std::string missing;
@@ -3619,6 +3645,7 @@ namespace
             }
         }
         pp_status(pp_head(g_bpaste.placed, static_cast<int>(g_bpaste.ms.size()) - g_bpaste.placed) + "; verify " + std::to_string(present) + " of " + std::to_string(n) + " (missing: " + (missing.empty() ? std::string("none") : missing) + ")");
+        return PVerify{ present, n, missing };
     }
 
     // ----- recipe names (live, under seh_run): the config string is the Recipe asset's Name property, verbatim -----
@@ -3778,6 +3805,250 @@ namespace
     }
 
     // WHAT: bp_paste <path|clip> [station <id>] [replace]. Validates everything first; places nothing on any refusal. Writes (only on user command).
+    // ----- bp_build helpers: pure ones (bp_paste_selftest "build:") and the inventory / move wrappers (reads and sends under seh_run) -----
+    // WHAT: pure. Total per item over the non-empty slots.
+    BMap bb_totals(const std::vector<BSlot>& s)
+    {
+        BMap t;
+        for (const BSlot& x : s) if (!x.item.empty() && x.amount > 0) t[x.item] += x.amount;
+        return t;
+    }
+    // WHAT: pure. Largest MaxStackSize per item over both inventories.
+    BMap bb_maxes(const std::vector<BSlot>& a, const std::vector<BSlot>& b)
+    {
+        BMap m;
+        for (const auto* v : { &a, &b })
+            for (const BSlot& x : *v) if (!x.item.empty() && x.max > m[x.item]) m[x.item] = x.max;
+        return m;
+    }
+    // WHAT: pure. need minus what is held, positive part only.
+    BMap bb_shortfall(const BMap& need, const BMap& have)
+    {
+        BMap s;
+        for (const auto& kv : need)
+        {
+            auto f = have.find(kv.first);
+            const int64_t h = f == have.end() ? 0 : f->second;
+            if (kv.second - h > 0) s[kv.first] = kv.second - h;
+        }
+        return s;
+    }
+    // WHAT: pure. "Name xN, ..." (ITEM_ stripped) of the positive entries.
+    std::string bb_list(const BMap& m)
+    {
+        std::string s;
+        for (const auto& kv : m)
+        {
+            if (kv.second <= 0) continue;
+            const std::string nm = kv.first.rfind("ITEM_", 0) == 0 ? kv.first.substr(5) : kv.first;
+            s += (s.empty() ? "" : ", ") + nm + " x" + std::to_string(kv.second);
+        }
+        return s;
+    }
+    // WHAT: pure. "" when player + unit + refund cover every need item; else "not enough items: Name xN, ..." (short = need - player - unit - refund).
+    std::string bb_total_check(const BMap& need, const BMap& refund, const BMap& player, const BMap& unit)
+    {
+        auto get = [](const BMap& m, const std::string& k) -> int64_t { auto f = m.find(k); return f == m.end() ? 0 : f->second; };
+        BMap shortN;
+        for (const auto& kv : need)
+            shortN[kv.first] = kv.second - get(player, kv.first) - get(unit, kv.first) - get(refund, kv.first);
+        const std::string s = bb_list(shortN);
+        return s.empty() ? std::string() : "not enough items: " + s;
+    }
+    // WHAT: pure. Unit slots to move in, slot order, until the shortfall of each item is covered (a slot counts for its whole amount). Empty slots skipped. At most maxMoves.
+    std::vector<int> bb_stage_moves(const std::vector<BSlot>& unit, BMap shortfall, size_t maxMoves = 40)
+    {
+        std::vector<int> out;
+        for (size_t i = 0; i < unit.size() && out.size() < maxMoves; ++i)
+        {
+            const BSlot& s = unit[i];
+            if (s.item.empty() || s.amount <= 0) continue;
+            auto f = shortfall.find(s.item);
+            if (f == shortfall.end() || f->second <= 0) continue;
+            out.push_back(static_cast<int>(i));
+            f->second -= s.amount;
+        }
+        return out;
+    }
+    // WHAT: pure. Slots (slot order) holding one of the items.
+    std::vector<int> bb_moveout_slots(const std::vector<BSlot>& player, const std::set<std::string>& items)
+    {
+        std::vector<int> out;
+        for (size_t i = 0; i < player.size(); ++i)
+            if (!player[i].item.empty() && player[i].amount > 0 && items.count(player[i].item)) out.push_back(static_cast<int>(i));
+        return out;
+    }
+    // WHAT: pure. Refund items the build does not need (need 0 or absent): these may go into the unit to free player room.
+    std::set<std::string> bb_moveset(const std::vector<RefundItem>& refund, const BMap& need)
+    {
+        std::set<std::string> s;
+        for (const RefundItem& r : refund)
+        {
+            auto f = need.find(r.label);
+            if (r.amount > 0 && (f == need.end() || f->second <= 0)) s.insert(r.label);
+        }
+        return s;
+    }
+    // WHAT: pure. Longest run of machines from `from` whose cumulative cost fits the player's free space (refund_fit: partial stacks first, then empty slots).
+    //       Space needed = cumulative cost - what the player already holds. maxOf = MaxStackSize per item (1 when absent). 0 = the first machine does not fit.
+    size_t bb_chunk_len(const std::vector<BMap>& costs, size_t from, const std::vector<BSlot>& player, const BMap& maxOf = BMap())
+    {
+        std::map<std::string, uint64_t> ids;   // fake item ids (refund_fit compares ids)
+        auto idOf = [&](const std::string& n) -> uint64_t { auto f = ids.find(n); if (f != ids.end()) return f->second; const uint64_t v = ids.size() + 1; ids[n] = v; return v; };
+        std::vector<RSlot> slots;
+        for (const BSlot& s : player) slots.push_back(s.item.empty() || s.amount <= 0 ? RSlot{ 0, 0 } : RSlot{ idOf(s.item), s.amount });
+        const BMap have = bb_totals(player);
+        BMap cum;
+        size_t n = 0;
+        for (size_t k = from; k < costs.size(); ++k)
+        {
+            for (const auto& kv : costs[k]) cum[kv.first] += kv.second;
+            std::vector<RefundItem> need;
+            for (const auto& kv : cum)
+            {
+                const int64_t sh = kv.second - (have.count(kv.first) ? have.at(kv.first) : 0);
+                if (sh <= 0) continue;
+                auto mx = maxOf.find(kv.first);
+                need.push_back(RefundItem{ idOf(kv.first), kv.first, sh, mx == maxOf.end() ? int64_t(1) : mx->second });
+            }
+            if (refund_fit(slots, need).missing != 0) break;
+            n = k + 1 - from;
+        }
+        return n;
+    }
+    // WHAT: pure. How many of `want` are on the station (same class + x + y as pp_verify; each existing machine counts once). missing = first 10 "Cls@(x,y)".
+    int bb_present(const std::vector<PMach>& want, const std::vector<PMach>& existing, std::string& missing)
+    {
+        std::vector<bool> used(existing.size(), false);
+        int present = 0, miss = 0;
+        missing.clear();
+        for (const PMach& m : want)
+        {
+            bool found = false;
+            for (size_t k = 0; k < existing.size() && !found; ++k)
+                if (!used[k] && existing[k].bcls == m.bcls && existing[k].x == m.x && existing[k].y == m.y) { used[k] = true; found = true; }
+            if (found) { ++present; continue; }
+            if (miss++ < 10) missing += (missing.empty() ? "" : ", ") + m.bcls + "@(" + std::to_string(m.x) + "," + std::to_string(m.y) + ")";
+        }
+        return present;
+    }
+    // WHAT: pure. Probe text of an inventory: "[slot] Name xAmount/Max" per used slot, then "empty N".
+    std::string bb_inv_text(const std::vector<BSlot>& s)
+    {
+        std::string t;
+        int empty = 0;
+        for (size_t i = 0; i < s.size(); ++i)
+        {
+            if (s[i].item.empty() || s[i].amount <= 0) { ++empty; continue; }
+            const std::string nm = s[i].item.rfind("ITEM_", 0) == 0 ? s[i].item.substr(5) : s[i].item;
+            t += (t.empty() ? "" : ", ") + std::string("[") + std::to_string(i) + "] " + nm + " x" + std::to_string(s[i].amount) + "/" + std::to_string(s[i].max);
+        }
+        return t + (t.empty() ? "" : ", ") + "empty " + std::to_string(empty);
+    }
+    // WHAT: one InventoryInput quick move (action 2 = quick move; primary = inventory holding the slot, secondary = destination). Under seh_run. false when refused (reason logged).
+    // WHY: if the probe shows the direction reversed, swap the two ids here only.
+    bool bb_move(int prim, int sec, int slot, int action = 2)
+    {
+        BpSend s;
+        s.tok = { "bp_send", "InventoryInput", "0", "primaryinventoryid=" + std::to_string(prim), "secondaryinventoryid=" + std::to_string(sec),
+                  "slotindex=" + std::to_string(slot), "action=" + std::to_string(action) };
+        g_bpp.pending = false;
+        if (!seh_run(bp_send_fn, &s)) { bp_out(L"FAULT bb_move " + seh_describe(g_seh)); return false; }
+        if (!s.called) bp_out(s.out);
+        return s.called;
+    }
+    // WHAT: one inventory read under seh_run (ItemSlots, item name, amount, MaxStackSize). The id = the inventory's object id.
+    struct BbReadCtx { UObject* inv = nullptr; BInv out; };
+    void bb_read_fn(void* p)
+    {
+        auto* c = static_cast<BbReadCtx*>(p);
+        FProperty* tp = c->inv->GetPropertyByNameInChain(STR("ItemSlots"));
+        auto* ap = tp ? CastField<FArrayProperty>(tp) : nullptr;
+        auto* arr = ap ? c->inv->GetValuePtrByPropertyNameInChain<TArray<uint8_t>>(STR("ItemSlots")) : nullptr;
+        auto* sp = ap ? CastField<FStructProperty>(ap->GetInner()) : nullptr;
+        if (!arr || !sp || !sp->GetStruct()) return;
+        const int es = ap->GetInner()->GetElementSize();
+        std::vector<BSlot> slots;
+        for (int i = 0; i < arr->Num(); ++i)
+        {
+            const uint8_t* e = reinterpret_cast<uint8_t*>(arr->GetData()) + static_cast<size_t>(i) * es;
+            uint64_t item = 0;
+            int32_t amt = 0;
+            int off = 0;
+            if (!stack_read(sp->GetStruct(), e, item, amt, off)) return;
+            BSlot s;
+            if (amt > 0 && item != 0)
+            {
+                UObject* it = reinterpret_cast<UObject*>(static_cast<uintptr_t>(item));
+                s.item = alive(it) ? to_utf8(it->GetName()) : std::string("?");
+                s.amount = amt;
+                int32_t mx = 0;
+                if (alive(it) && get_int_prop(it, STR("MaxStackSize"), mx) && mx > 0) s.max = mx;
+            }
+            slots.push_back(s);
+        }
+        c->out.slots = slots;
+        c->out.id = obj_id(c->inv);
+        c->out.ok = true;
+    }
+    bool bb_read(UObject* inv, BInv& out)
+    {
+        if (!alive(inv)) return false;
+        BbReadCtx c;
+        c.inv = inv;
+        if (!seh_run(bb_read_fn, &c)) { bp_out(L"FAULT bb_read " + seh_describe(g_seh)); return false; }
+        out = c.out;
+        return out.ok;
+    }
+    // WHAT: the player's inventory read (sets playerInvId). false when unreadable.
+    bool bb_player_read(BInv& out)
+    {
+        UObject* inv = player_inventory();
+        if (!inv || !bb_read(inv, out)) return false;
+        g_bpbuild.playerInvId = out.id;
+        return true;
+    }
+    // WHAT: under seh_run: the Blueprint Units (BP_BPUnitStoreObj_01_C; simId 0 = any) and the inventory of the one found: its Inventory property, else the
+    //       SaveableObject whose id is its InventoryID. err = not found / several / unreadable.
+    struct BbUnitCtx { int simId = 0; UObject* inv = nullptr; int unitId = 0; std::string err; };
+    void bb_unit_fn(void* p)
+    {
+        auto* c = static_cast<BbUnitCtx*>(p);
+        std::vector<UObject*> sv, units;
+        UObjectGlobals::FindAllOf(STR("SaveableObject"), sv);
+        for (UObject* o : sv)
+            if (alive(o) && o->GetName().rfind(STR("Default__"), 0) != 0 && o->GetClassPrivate()->GetName() == STR("BP_BPUnitStoreObj_01_C") &&
+                (c->simId == 0 || obj_id(o) == c->simId))
+                units.push_back(o);
+        if (units.empty()) { c->err = c->simId ? "no Blueprint Unit with id " + std::to_string(c->simId) : std::string("no Blueprint Unit (BP_BPUnitStoreObj_01_C) in the world"); return; }
+        if (units.size() > 1) { c->err = "several Blueprint Units, pass unit <id>"; return; }
+        UObject* u = units[0];
+        c->unitId = obj_id(u);
+        if (UObject* pi = get_obj_prop(u, STR("Inventory"))) if (alive(pi)) { c->inv = pi; return; }
+        int32_t iv = 0;
+        if (get_int_prop(u, STR("InventoryID"), iv))
+            for (UObject* o : sv) if (alive(o) && obj_id(o) == iv && o->GetName().rfind(STR("Default__"), 0) != 0) { c->inv = o; return; }
+        c->err = "Blueprint Unit inventory unreadable (no Inventory / InventoryID)";
+    }
+    // WHAT: the Blueprint Unit (simId 0 = the only one) and its inventory. Sets unitSimId / unitInvId. false + err when not found or unreadable.
+    bool bb_unit_read(int simId, BInv& out, std::string& err)
+    {
+        BbUnitCtx c;
+        c.simId = simId;
+        if (!seh_run(bb_unit_fn, &c)) { bp_out(L"FAULT bb_unit " + seh_describe(g_seh)); err = "unit lookup fault (see BPProbe.txt)"; return false; }
+        if (!c.err.empty()) { err = c.err; return false; }
+        if (!bb_read(c.inv, out)) { err = "unit inventory cannot be read"; return false; }
+        g_bpbuild.unitSimId = c.unitId;
+        g_bpbuild.unitInvId = out.id;
+        return true;
+    }
+    // WHAT: both inventories (player, Blueprint Unit). err = the refusal text when one cannot be read.
+    bool bb_read_both(BInv& pi, BInv& ui, std::string& err)
+    {
+        if (!bb_player_read(pi)) { err = "player inventory cannot be read"; return false; }
+        return bb_unit_read(g_bpbuild.unitSimId, ui, err);
+    }
+
     // WHAT: fingerprint of the live station (FNV-1a over id, bcls, x, y, h, rot of each machine, in order). Plan staleness check.
     uint64_t pp_fingerprint(const std::vector<PMach>& ex)
     {
@@ -3911,6 +4182,7 @@ namespace
         if (src.size() >= 2 && src.front() == '"' && src.back() == '"') src = src.substr(1, src.size() - 2);
         if (src.empty()) return STR("error: usage bp_paste <path|clip> [station <id>] [replace]");
         if (g_bpaste.active) return STR("error: previous bp_paste still running (see PasteStatus.txt)");
+        if (g_bpbuild.active) return STR("error: bp_build is running (see BlueprintBuild.status)");
         if (g_bpp.pending) return STR("error: previous bp_place/bp_send still being checked, wait 5 s");
         bp_file_init();
         bp_out(L"=== bp_paste " + widen(src) + (station ? L" station " + std::to_wstring(station) : L"") + (replace ? L" replace" : L""));
@@ -4110,7 +4382,7 @@ namespace
         for (size_t i = 0; i < tk.size(); ++i) src += (i ? " " : "") + tk[i];
         if (src.size() >= 2 && src.front() == '"' && src.back() == '"') src = src.substr(1, src.size() - 2);
         if (src.empty()) return pp_imp_fail(seq, "usage bp_import <path> [station <id>]");
-        if (g_bpaste.active || g_bpp.pending) return pp_imp_fail(seq, "busy: a build is running");
+        if (g_bpaste.active || g_bpp.pending || g_bpbuild.active) return pp_imp_fail(seq, "busy: a build is running");
         bp_file_init();
         bp_out(L"=== bp_import " + widen(src) + (station ? L" station " + std::to_wstring(station) : L""));
         pp_imp_write("BlueprintImport.status", "working|reading blueprint\nseq=" + std::to_string(seq) + "\n");
@@ -4175,6 +4447,413 @@ namespace
         bp_flush();
         return widen("ok import " + txt);
     }
+    // ===== bp_build (M5): builds g_bpplan from the Blueprint Unit + player items. Stages: 1 room, 2 removing, 3 refund moved out, 4 chunk start,
+    //       5 staging wait, 6 place wait, 7 verify. Status: BlueprintBuild.status. Every failure ends in error|msg (bb_fail), never silent. =====
+    // WHAT: writes BlueprintBuild.status (atomic): "state|text" then key=value lines. state = working | done | error.
+    void bb_status(const std::string& state, const std::string& text)
+    {
+        const BpBuildRun& r = g_bpbuild;
+        const bool v = g_bpplan.valid;
+        std::string s = state + "|" + text + "\n";
+        s += "seq=" + std::to_string(r.seq) + "\nstage=" + std::to_string(r.stage) + "\nplaced=" + std::to_string(r.placed) +
+             "\nkept=" + std::to_string(v ? g_bpplan.kept.size() : 0) + "\nremoved=" + std::to_string(r.removed) +
+             "\nrecipe=" + std::to_string(v ? g_bpplan.recChanged : 0) + "\nmoved_out=" + std::to_string(r.movedOut) + "\nmoved_in=" + std::to_string(r.movedIn) +
+             "\nchunk=" + std::to_string(r.chunksDone) + "/" + std::to_string(r.chunks) +
+             "\nverify=" + (r.verifyP < 0 ? std::string("-") : std::to_string(r.verifyP)) + "/" + std::to_string(r.verifyN) + "\n";
+        pp_imp_write("BlueprintBuild.status", s);
+        bp_out(widen("BUILD " + state + " " + text));
+    }
+    // WHAT: ends the run with error|msg and the counts. Returns the command result.
+    std::wstring bb_fail(const std::string& msg)
+    {
+        const BpBuildRun& r = g_bpbuild;
+        bb_status("error", msg + " (placed " + std::to_string(r.placed) + ", removed " + std::to_string(r.removed) + ", moved_out " +
+                  std::to_string(r.movedOut) + ", moved_in " + std::to_string(r.movedIn) + ")");
+        g_bpbuild.active = false;
+        g_bpbuild.stage = 0;
+        bp_flush();
+        return widen("error: " + msg);
+    }
+    // WHAT: refusal before the run starts: status error|msg (nothing sent). Returns the command result.
+    std::wstring bb_refuse(const std::string& msg)
+    {
+        bb_status("error", msg + " (placed 0, removed 0, moved_out 0, moved_in 0)");
+        bp_flush();
+        return widen("error: " + msg);
+    }
+    // WHAT: DisassembleInput per planned removal (receiver 0, as bp_paste replace). Stage 2 then waits until they are gone.
+    void bb_send_removals()
+    {
+        BpBuildRun& r = g_bpbuild;
+        int sent = 0;
+        for (int id : r.removeIds)
+        {
+            BpSend s;
+            s.tok = { "bp_send", "DisassembleInput", "0", "targetid=" + std::to_string(id), "bmassdisassemble=0" };
+            g_bpp.pending = false;
+            if (!seh_run(bp_send_fn, &s)) bp_out(L"FAULT bp_build " + seh_describe(g_seh));
+            if (s.called) ++sent; else bp_out(s.out);
+        }
+        r.removed = sent;
+        if (sent != static_cast<int>(r.removeIds.size())) { bb_fail("removal refused for " + std::to_string(static_cast<int>(r.removeIds.size()) - sent) + " machines (see BPProbe.txt)"); return; }
+        r.stage = 2;
+        r.tries = 0;
+        r.t_next = GetTickCount64() + 1500;
+        bb_status("working", "removing " + std::to_string(sent) + " machines");
+    }
+    // WHAT: all chunks placed: config changes (if not sent yet), g_bpaste filled for pp_verify, stage 7 at +3 s.
+    void bb_finish()
+    {
+        const PPlan& P = g_bpplan;
+        BpBuildRun& r = g_bpbuild;
+        if (!r.chgSent) { pp_send_changes(P.chg); r.chgSent = true; }
+        g_bpaste = BpPasteRun{};
+        g_bpaste.station = P.station;
+        g_bpaste.ms = P.place;
+        g_bpaste.kept = P.kept;
+        g_bpaste.chg = P.chg;
+        g_bpaste.placed = r.placed;
+        g_bpaste.recChanged = P.recChanged;
+        g_bpaste.sync = true;
+        g_bpaste.staleN = r.removed;
+        r.stage = 7;
+        r.t_next = GetTickCount64() + 3000;
+        bb_status("working", "verifying at +3 s");
+    }
+    // WHAT: BuildInput for chunk [chunkFrom, chunkTo) (config changes first, once). Stage 6 waits for the machines.
+    void bb_place_chunk()
+    {
+        const PPlan& P = g_bpplan;
+        BpBuildRun& r = g_bpbuild;
+        if (!r.chgSent) { pp_send_changes(P.chg); r.chgSent = true; }
+        const std::vector<PMach> slice(P.place.begin() + static_cast<std::ptrdiff_t>(r.chunkFrom), P.place.begin() + static_cast<std::ptrdiff_t>(r.chunkTo));
+        const int n = pp_place_all(slice, P.station);
+        r.placed += n;
+        if (n != static_cast<int>(slice.size())) { bb_fail("BuildInput refused for " + std::to_string(static_cast<int>(slice.size()) - n) + " machines in chunk " + std::to_string(r.chunksDone + 1) + " (see BPProbe.txt)"); return; }
+        r.stage = 6;
+        r.t_stage = GetTickCount64();
+        r.t_next = r.t_stage + 500;
+        bb_status("working", "placed chunk " + std::to_string(r.chunksDone + 1) + " (" + std::to_string(slice.size()) + " machines), waiting");
+    }
+    // WHAT: stage 4, chunk start: reads both inventories, sizes the chunk by free space, moves what the player lacks in from the unit (or places at once).
+    void bb_chunk_start()
+    {
+        const PPlan& P = g_bpplan;
+        BpBuildRun& r = g_bpbuild;
+        const ULONGLONG now = GetTickCount64();
+        if (r.chunkFrom >= P.place.size()) { bb_finish(); return; }
+        BInv pi, ui;
+        std::string err;
+        if (!bb_read_both(pi, ui, err)) { bb_fail(err); return; }
+        const size_t n = r.creative ? P.place.size() - r.chunkFrom : bb_chunk_len(r.costs, r.chunkFrom, pi.slots, bb_maxes(pi.slots, ui.slots));
+        if (n == 0) { bb_fail("player inventory full, free slots and build again (" + std::to_string(r.chunkFrom) + " of " + std::to_string(P.place.size()) + " placed)"); return; }
+        r.chunkTo = r.chunkFrom + n;
+        if (r.countedFrom != r.chunkFrom) { r.countedFrom = r.chunkFrom; ++r.chunks; }
+        r.chunkNeed.clear();
+        for (size_t k = r.chunkFrom; k < r.chunkTo; ++k)
+            for (const auto& kv : r.costs[k]) r.chunkNeed[kv.first] += kv.second;
+        const BMap shortfall = bb_shortfall(r.chunkNeed, bb_totals(pi.slots));
+        if (r.creative || shortfall.empty()) { bb_place_chunk(); return; }
+        r.issued = bb_stage_moves(ui.slots, shortfall);
+        if (r.issued.empty()) { bb_fail("items missing in unit and player: " + bb_list(shortfall)); return; }
+        r.snap = ui.slots;
+        for (int i : r.issued)
+            if (!bb_move(r.unitInvId, r.playerInvId, i)) { bb_fail("InventoryInput refused (see BPProbe.txt)"); return; }
+        r.movedIn += static_cast<int>(r.issued.size());
+        r.stage = 5;
+        r.t_stage = now;
+        r.t_next = now + 250;
+        bb_status("working", "staging chunk " + std::to_string(r.chunksDone + 1) + ": " + std::to_string(r.issued.size()) + " stacks from the unit");
+    }
+    // WHAT: stage 5: once the player holds the chunk's items, place it. Slots moved -> back to stage 4 (max 6 rounds). Nothing moved for 10 s -> stalled.
+    void bb_staging_wait()
+    {
+        BpBuildRun& r = g_bpbuild;
+        const ULONGLONG now = GetTickCount64();
+        BInv pi, ui;
+        std::string err;
+        if (!bb_read_both(pi, ui, err)) { bb_fail(err); return; }
+        const BMap shortfall = bb_shortfall(r.chunkNeed, bb_totals(pi.slots));
+        if (shortfall.empty()) { bb_place_chunk(); return; }
+        bool moved = !r.issued.empty();
+        for (int i : r.issued)
+        {
+            const size_t k = static_cast<size_t>(i);
+            if (k >= ui.slots.size() || k >= r.snap.size() || (ui.slots[k].item == r.snap[k].item && ui.slots[k].amount == r.snap[k].amount)) { moved = false; break; }
+        }
+        if (moved)
+        {
+            if (++r.stageRounds > 6) { bb_fail("staging stalled: " + bb_list(shortfall)); return; }
+            r.stage = 4;
+            r.t_next = now;
+            return;
+        }
+        if (now - r.t_stage > 10000) { bb_fail("staging stalled: " + bb_list(shortfall)); return; }
+        r.t_next = now + 250;
+    }
+    // WHAT: stage 6: the chunk's machines on the station (bb_present). All there -> next chunk. 20 s without them -> fail with the missing list.
+    void bb_place_wait()
+    {
+        const PPlan& P = g_bpplan;
+        BpBuildRun& r = g_bpbuild;
+        const ULONGLONG now = GetTickCount64();
+        PasteCtx c;
+        c.station = P.station;
+        if (!seh_run(pp_scan_fn, &c)) { bb_fail("live read fault while placing (see BPProbe.txt)"); return; }
+        if (!c.err.empty()) { bb_fail(c.err); return; }
+        const std::vector<PMach> slice(P.place.begin() + static_cast<std::ptrdiff_t>(r.chunkFrom), P.place.begin() + static_cast<std::ptrdiff_t>(r.chunkTo));
+        std::string missing;
+        const int pres = bb_present(slice, c.existing, missing);
+        if (pres == static_cast<int>(slice.size()))
+        {
+            ++r.chunksDone;
+            r.chunkFrom = r.chunkTo;
+            r.stageRounds = 0;
+            r.stage = 4;
+            r.t_next = now;
+            return;
+        }
+        if (now - r.t_stage > 20000) { bb_fail("chunk " + std::to_string(r.chunksDone + 1) + ": " + std::to_string(static_cast<int>(slice.size()) - pres) + " machines not placed (" + missing + ")"); return; }
+        r.t_next = now + 500;
+    }
+    // WHAT: stage 3: the refund stacks the build does not need must leave the player (into the unit). Re-issued every 2 s, 3 rounds; 10 s -> fail.
+    void bb_moveout_wait()
+    {
+        BpBuildRun& r = g_bpbuild;
+        const ULONGLONG now = GetTickCount64();
+        BInv pi, ui;
+        std::string err;
+        if (!bb_read_both(pi, ui, err)) { bb_fail(err); return; }
+        const std::vector<int> mo = bb_moveout_slots(pi.slots, bb_moveset(r.rneed, g_bpplan.need));
+        if (mo.empty()) { r.stage = 4; r.t_next = now; return; }
+        if (now - r.t_stage > 10000) { bb_fail("refund stacks could not be moved into the unit (unit full?)"); return; }
+        if (r.rounds < 3 && now - r.t_issue >= 2000)
+        {
+            ++r.rounds;
+            r.t_issue = now;
+            for (int s : mo) if (!bb_move(r.playerInvId, r.unitInvId, s)) { bb_fail("InventoryInput refused (see BPProbe.txt)"); return; }
+        }
+        r.t_next = now + 250;
+    }
+    // WHAT: stage 2: waits until the removed machines are gone (60 checks, 1 s apart). Then the refund stacks the build does not need go to the unit (stage 3), or straight to stage 4.
+    void bb_removal_wait()
+    {
+        BpBuildRun& r = g_bpbuild;
+        const ULONGLONG now = GetTickCount64();
+        PasteCtx c;
+        c.station = g_bpplan.station;
+        if (!seh_run(pp_scan_fn, &c)) { bb_fail("live read fault after removal (see BPProbe.txt)"); return; }
+        std::set<int> left;
+        for (const PMach& e : c.existing)
+            if (std::find(r.removeIds.begin(), r.removeIds.end(), e.id) != r.removeIds.end()) left.insert(e.id);
+        if (!left.empty())
+        {
+            if (++r.tries < 60) { bb_status("working", "removing, " + std::to_string(left.size()) + " left"); r.t_next = now + 1000; return; }
+            bb_fail(std::to_string(left.size()) + " machines still present after removal");
+            return;
+        }
+        BInv pi, ui;
+        std::string err;
+        if (!bb_read_both(pi, ui, err)) { bb_fail(err); return; }
+        const std::vector<int> mo = r.creative ? std::vector<int>() : bb_moveout_slots(pi.slots, bb_moveset(r.rneed, g_bpplan.need));
+        if (mo.empty()) { r.stage = 4; r.t_next = now; bb_status("working", "removal done"); return; }
+        for (int s : mo) if (!bb_move(r.playerInvId, r.unitInvId, s)) { bb_fail("InventoryInput refused (see BPProbe.txt)"); return; }
+        r.movedOut += static_cast<int>(mo.size());
+        r.stage = 3;
+        r.tries = 0;
+        r.rounds = 0;
+        r.t_stage = now;
+        r.t_issue = now;
+        r.t_next = now + 250;
+        bb_status("working", "moved " + std::to_string(mo.size()) + " refund stacks to the unit");
+    }
+    // WHAT: stage 1: waits until the refund fits the player inventory (refund_check), 10 s max, then removals go.
+    void bb_room_wait()
+    {
+        BpBuildRun& r = g_bpbuild;
+        const ULONGLONG now = GetTickCount64();
+        const std::string rerr = refund_check(r.rneed, "bp_build");
+        if (rerr.empty()) { bb_send_removals(); return; }
+        if (now - r.t_stage > 10000) { bb_fail(rerr); return; }
+        r.t_next = now + 500;
+    }
+    // WHAT: stage 7: the +3 s verify (pp_verify) and the final status line.
+    void bb_verify_final()
+    {
+        BpBuildRun& r = g_bpbuild;
+        const PVerify v = pp_verify();
+        r.verifyP = v.present;
+        r.verifyN = v.total;
+        r.active = false;
+        r.stage = 0;
+        const std::string counts = "placed " + std::to_string(r.placed) + ", kept " + std::to_string(g_bpplan.kept.size()) + ", removed " + std::to_string(r.removed) +
+                                   ", recipe " + std::to_string(g_bpplan.recChanged) + ", moved_out " + std::to_string(r.movedOut) + ", moved_in " + std::to_string(r.movedIn);
+        const std::string vt = " (verify " + std::to_string(v.present) + "/" + std::to_string(v.total) + ")";
+        if (v.present < 0) bb_status("error", "verify could not read the station; " + counts);
+        else if (v.total > v.present) bb_status("error", "verify missing " + v.missing + "; " + counts + vt);
+        else bb_status("done", counts + vt);
+        bp_flush();
+    }
+    // WHAT: inventory by object id (player inventory or a SaveableObject), under seh_run. Used by the bp_invmove probe log.
+    struct BbFindCtx { int id = 0; UObject* obj = nullptr; };
+    void bb_find_fn(void* p)
+    {
+        auto* c = static_cast<BbFindCtx*>(p);
+        UObject* pl = player_inventory();
+        if (alive(pl) && obj_id(pl) == c->id) { c->obj = pl; return; }
+        std::vector<UObject*> sv;
+        UObjectGlobals::FindAllOf(STR("SaveableObject"), sv);
+        for (UObject* o : sv)
+            if (alive(o) && o->GetName().rfind(STR("Default__"), 0) != 0 && obj_id(o) == c->id) { c->obj = o; return; }
+    }
+    // WHAT: logs one inventory by id ("BUILD INV <label> id=N: [slot] Name xA/M, ... empty K"). Probe use only.
+    void bb_log_inv(const std::string& label, int id)
+    {
+        BbFindCtx c;
+        c.id = id;
+        BInv bi;
+        if (!seh_run(bb_find_fn, &c) || !c.obj || !bb_read(c.obj, bi)) { bp_out(widen("BUILD INV " + label + " id=" + std::to_string(id) + ": not readable")); return; }
+        bp_out(widen("BUILD INV " + label + " id=" + std::to_string(id) + ": " + bb_inv_text(bi.slots)));
+    }
+    // WHAT: one step of a running bp_build (from bp_tick). Also the bp_invmove 2 s log. Waits by t_next; 300 s cap.
+    void bp_build_tick()
+    {
+        const ULONGLONG now = GetTickCount64();
+        if (g_bbprobe.on && now >= g_bbprobe.t)
+        {
+            g_bbprobe.on = false;
+            bb_log_inv("AFTER prim", g_bbprobe.prim);
+            bb_log_inv("AFTER sec", g_bbprobe.sec);
+        }
+        BpBuildRun& r = g_bpbuild;
+        if (!r.active || now < r.t_next) return;
+        if (now - r.t_start > 300000) { bb_fail("timeout after 300 s"); return; }
+        switch (r.stage)
+        {
+        case 1: bb_room_wait(); break;
+        case 2: bb_removal_wait(); break;
+        case 3: bb_moveout_wait(); break;
+        case 4: bb_chunk_start(); break;
+        case 5: bb_staging_wait(); break;
+        case 6: bb_place_wait(); break;
+        case 7: bb_verify_final(); break;
+        default: bb_fail("internal: unknown stage " + std::to_string(r.stage)); break;
+        }
+    }
+    // WHAT: "bp_build [unit <storeSimId>]": builds g_bpplan from the items in the Blueprint Unit and the player inventory. Checks the station
+    //       (fingerprint), the total items and the refund room first; nothing is removed or placed on a refusal. Only on user command (Lua Build button).
+    std::wstring bp_build_cmd(const std::string& cmd)
+    {
+        std::vector<std::string> tk;
+        { std::istringstream is(cmd.substr(8)); std::string t; while (is >> t) tk.push_back(t); }
+        if (!tk.empty() && !(tk.size() == 2 && tk[0] == "unit" && std::atoi(tk[1].c_str()) > 0)) return STR("error: usage bp_build [unit <storeSimId>]");
+        const int unitSim = tk.empty() ? 0 : std::atoi(tk[1].c_str());
+        if (g_bpbuild.active || g_bpaste.active || g_bpp.pending) return STR("error: busy: another build or paste is running");
+        g_bpbuild = BpBuildRun{};
+        g_bpbuild.seq = g_cmd.seq;
+        g_bpbuild.unitSimId = unitSim;
+        bp_file_init();
+        bp_out(L"=== bp_build " + widen(cmd));
+        if (!g_bpplan.valid) return bb_refuse("import first");
+        const PPlan& P = g_bpplan;
+        bb_status("working", "checking station");
+        PasteCtx c;
+        c.station = P.station;
+        if (!seh_run(pp_scan_fn, &c)) return bb_refuse("live read fault (see BPProbe.txt)");
+        if (!c.err.empty()) return bb_refuse(c.err);
+        if (pp_fingerprint(c.existing) != P.fp) return bb_refuse("station changed since import, import again");
+        BInv pi, ui;
+        std::string err;
+        if (!bb_read_both(pi, ui, err)) return bb_refuse(err);
+        bp_out(widen("BUILD unit inventory = id " + std::to_string(ui.id) + ", unit sim id " + std::to_string(g_bpbuild.unitSimId) + ", player inventory id " + std::to_string(pi.id)));
+        PCrCtx cr;
+        if (!seh_run(pp_creative_fn, &cr)) bp_out(L"FAULT bp_build creative flag " + seh_describe(g_seh));
+        g_bpbuild.creative = cr.state == 1;
+        PCostCtx cc;
+        cc.raw = true;
+        for (const PMach& m : P.place) cc.want.insert(m.bdat);
+        if (!seh_run(pp_cost_fn, &cc)) return bb_refuse("cost read fault (see BPProbe.txt)");
+        for (const PMach& m : P.place)
+        {
+            if (!cc.found.count(m.bdat)) bp_out(widen("BUILD no ItemCost read for " + m.bdat + " (counted as free)"));
+            g_bpbuild.costs.push_back(cc.cost[m.bdat]);
+        }
+        if (!g_bpbuild.creative)
+        {
+            const std::string terr = bb_total_check(P.need, P.refund, bb_totals(pi.slots), bb_totals(ui.slots));
+            if (!terr.empty()) return bb_refuse(terr);
+        }
+        for (const PMach& r : P.removed) g_bpbuild.removeIds.push_back(r.id);
+        if (P.place.empty() && g_bpbuild.removeIds.empty() && P.chg.empty()) { bb_status("done", "nothing to build"); bp_flush(); return STR("ok nothing to build"); }
+
+        // from here the run is active: every failure goes through bb_fail
+        BpBuildRun& r = g_bpbuild;
+        r.active = true;
+        r.t_start = GetTickCount64();
+        r.t_stage = r.t_start;
+        if (!r.removeIds.empty())
+        {
+            std::vector<std::pair<int, std::string>> rm;
+            for (const PMach& m : P.removed) rm.push_back({ m.id, m.bcls });
+            const std::string rfc = refund_for(rm, r.rneed);
+            if (!rfc.empty()) return bb_fail(rfc);
+            if (refund_check(r.rneed, "bp_build").empty()) bb_send_removals();
+            else
+            {
+                // refund does not fit: quick-move the refund stacks the build does not need into the unit, stage 1 re-checks
+                BInv pi2, ui2;
+                if (!bb_read_both(pi2, ui2, err)) return bb_fail(err);
+                const std::vector<int> mo = r.creative ? std::vector<int>() : bb_moveout_slots(pi2.slots, bb_moveset(r.rneed, P.need));
+                for (int s : mo) if (!bb_move(r.playerInvId, r.unitInvId, s)) return bb_fail("InventoryInput refused (see BPProbe.txt)");
+                r.movedOut += static_cast<int>(mo.size());
+                r.stage = 1;
+                r.t_stage = GetTickCount64();
+                r.t_next = r.t_stage + 500;
+                bb_status("working", "room for the refund: " + std::to_string(mo.size()) + " stacks moved to the unit, checking");
+            }
+        }
+        else
+        {
+            r.stage = 4;
+            r.t_next = GetTickCount64();
+            bb_status("working", "staging");
+        }
+        if (!r.active) return STR("error: build failed at start (see BlueprintBuild.status)");
+        bp_flush();
+        return STR("ok build started");
+    }
+    // WHAT: "bp_build_cancel": stops a running bp_build (status error|cancelled). Items already moved stay where they are.
+    std::wstring bp_build_cancel_cmd()
+    {
+        if (!g_bpbuild.active) return STR("error: no bp_build running");
+        bb_fail("cancelled");
+        return STR("ok bp_build cancelled");
+    }
+    std::wstring bp_invmove_cmd(const std::string& cmd)
+    {
+        std::vector<std::string> tk;
+        { std::istringstream is(cmd); std::string t; while (is >> t) tk.push_back(t); }
+        if (tk.size() < 4 || tk.size() > 6) return STR("error: usage bp_invmove <primId> <secId> <slot> [action] [receiver]");
+        const int prim = std::atoi(tk[1].c_str()), sec = std::atoi(tk[2].c_str()), slot = std::atoi(tk[3].c_str());
+        const int action = tk.size() >= 5 ? std::atoi(tk[4].c_str()) : 2;
+        const int recv = tk.size() >= 6 ? std::atoi(tk[5].c_str()) : 0;
+        if (prim <= 0 || sec <= 0 || slot < 0) return STR("error: bad inventory id or slot");
+        bp_file_init();
+        bp_out(L"=== bp_invmove " + widen(cmd));
+        bb_log_inv("BEFORE prim", prim);
+        bb_log_inv("BEFORE sec", sec);
+        BpSend s;
+        s.tok = { "bp_send", "InventoryInput", std::to_string(recv), "primaryinventoryid=" + std::to_string(prim), "secondaryinventoryid=" + std::to_string(sec),
+                  "slotindex=" + std::to_string(slot), "action=" + std::to_string(action) };
+        g_bpp.pending = false;
+        const bool ok = seh_run(bp_send_fn, &s);
+        bp_out(s.out);
+        if (!ok) bp_out(L"FAULT bp_invmove " + seh_describe(g_seh));
+        g_bbprobe = BbProbe{ ok && s.called, GetTickCount64() + 2000, prim, sec };
+        bp_flush();
+        return (ok && s.called) ? STR("ok bp_invmove sent, inventories logged 2 s later (BPProbe.txt)") : STR("error: bp_invmove refused (see BPProbe.txt)");
+    }
+
     // WHAT: bp_paste_selftest: parser, footprint, floor and overlap checks on embedded data. Nothing is placed. PASS/FAIL to BPProbe.txt.
     std::wstring bp_paste_selftest_cmd()
     {
@@ -4432,6 +5111,47 @@ namespace
             std::filesystem::remove(wp, wec);
             pchk(wok, "write_atomic: file written, no .tmp left");
         }
+        // bp_build (M5): pure helpers, no game needed. Prefix build:
+        {
+            BMap need{ { "ITEM_X", 10 } }, ref2{ { "ITEM_X", 2 } }, ref3{ { "ITEM_X", 3 } }, pl3{ { "ITEM_X", 3 } }, un4{ { "ITEM_X", 4 } };
+            pchk(bb_total_check(need, ref3, pl3, un4).empty(), "build: total 10 = player 3 + unit 4 + refund 3 OK");
+            pchk(bb_total_check(need, ref2, pl3, un4) == "not enough items: X x1", "build: refund 2 -> X x1 short");
+            BMap n2{ { "ITEM_A", 5 }, { "ITEM_B", 5 } };
+            pchk(bb_total_check(n2, {}, {}, {}) == "not enough items: A x5, B x5", "build: two short items listed");
+            pchk(bb_total_check(BMap{}, {}, {}, {}).empty(), "build: empty need = OK");
+            std::vector<BSlot> u1{ BSlot{ "ITEM_A", 5, 50 } };
+            pchk(bb_stage_moves(u1, BMap{ { "ITEM_A", 3 } }) == std::vector<int>({ 0 }), "build: stack 5, shortfall 3 -> one move");
+            std::vector<BSlot> u3{ BSlot{ "ITEM_A", 5, 50 }, BSlot{ "ITEM_A", 5, 50 }, BSlot{ "ITEM_A", 5, 50 } };
+            pchk(bb_stage_moves(u3, BMap{ { "ITEM_A", 8 } }) == std::vector<int>({ 0, 1 }), "build: shortfall 8 over 5,5,5 -> slots 0,1 in order");
+            std::vector<BSlot> ue{ BSlot{}, BSlot{ "ITEM_A", 5, 50 } };
+            pchk(bb_stage_moves(ue, BMap{ { "ITEM_A", 3 } }) == std::vector<int>({ 1 }), "build: empty slots skipped");
+            pchk(bb_stage_moves(u3, BMap{}).empty() && bb_stage_moves(u3, BMap{ { "ITEM_A", 0 } }).empty(), "build: shortfall 0 -> no moves");
+            std::vector<BSlot> u10(10, BSlot{ "ITEM_A", 5, 50 });
+            pchk(bb_stage_moves(u10, BMap{ { "ITEM_A", 1000 } }, 3).size() == 3, "build: maxMoves cap");
+            std::vector<BSlot> pl{ BSlot{}, BSlot{ "ITEM_HullPlate", 3, 50 }, BSlot{ "ITEM_Other", 2, 50 } };
+            pchk(bb_moveout_slots(pl, { "ITEM_HullPlate" }) == std::vector<int>({ 1 }), "build: moveout = slots with the set items only");
+            BMap maxA{ { "ITEM_A", 100 } }, maxA50{ { "ITEM_A", 50 } };
+            std::vector<BMap> c150{ BMap{ { "ITEM_A", 150 } } };
+            std::vector<BSlot> oneEmpty{ BSlot{} };
+            pchk(bb_chunk_len(c150, 0, oneEmpty, maxA) == 0, "build: 1 free slot, A 150 max 100 -> chunk 0");
+            std::vector<BMap> c60{ BMap{ { "ITEM_A", 60 } }, BMap{ { "ITEM_A", 60 } } };
+            std::vector<BSlot> twoEmpty{ BSlot{}, BSlot{} };
+            pchk(bb_chunk_len(c60, 0, twoEmpty, maxA50) == 1, "build: 2 free slots, A 60 max 50 -> 1 machine per chunk");
+            std::vector<BSlot> held{ BSlot{ "ITEM_A", 50, 50 }, BSlot{ "ITEM_A", 50, 50 }, BSlot{ "ITEM_A", 20, 50 } };
+            pchk(bb_chunk_len(c60, 0, held, maxA50) == 2, "build: 120 A already in player -> 2 machines per chunk");
+            std::vector<BMap> c100(4, BMap{ { "ITEM_A", 100 } });
+            std::vector<BSlot> full4{ BSlot{ "ITEM_A", 100, 100 }, BSlot{ "ITEM_A", 100, 100 }, BSlot{ "ITEM_A", 100, 100 }, BSlot{ "ITEM_A", 100, 100 } };
+            pchk(bb_chunk_len(c100, 0, full4, maxA) == 4, "build: player holds all items -> full length");
+            PMach w1; w1.bcls = "BP_A"; w1.x = 1; w1.y = 1;
+            PMach w2 = w1; w2.x = 3;
+            PMach w3; w3.bcls = "BP_B"; w3.x = 5; w3.y = 5;
+            std::string bmiss;
+            const int bpres = bb_present({ w1, w2, w3 }, { w1, w2 }, bmiss);
+            pchk(bpres == 2 && bmiss == "BP_B@(5,5)", "build: present 2 of 3, missing BP_B@(5,5)");
+            pchk(PVerify{}.present == -1, "build: PVerify default present -1 (not read)");
+            std::vector<RefundItem> rf{ RefundItem{ 1, "ITEM_A", 2, 50 }, RefundItem{ 2, "ITEM_B", 3, 50 } };
+            pchk(bb_moveset(rf, BMap{ { "ITEM_B", 2 } }) == std::set<std::string>({ "ITEM_A" }), "build: moveset = refund with need 0 (A moves, B needed)");
+        }
         bp_out(L"SELFTEST paste " + std::to_wstring(pass) + L"/" + std::to_wstring(total));
         bp_flush();
         return pass == total ? widen("ok selftest PASS " + std::to_string(pass) + "/" + std::to_string(total)) : STR("error: selftest FAIL (see BPProbe.txt)");
@@ -4574,6 +5294,7 @@ namespace
         bp_place_tick();
         bp_run_tick();
         bp_paste_tick();
+        bp_build_tick();
         {
             std::lock_guard<std::mutex> lk(g_bp.mu);   // Probe 7: HITLOG lines from the hook
             for (const std::wstring& l : g_bp.hitq) bp_out(l);
@@ -4690,6 +5411,9 @@ namespace
         if (cmd == "bp_paste" || cmd.rfind("bp_paste ", 0) == 0) return bp_paste_cmd(cmd);
         if (cmd == "bp_paste_selftest") return bp_paste_selftest_cmd();
         if (cmd.rfind("bp_import ", 0) == 0) return bp_import_cmd(cmd);
+        if (cmd == "bp_build" || cmd.rfind("bp_build ", 0) == 0) return bp_build_cmd(cmd);
+        if (cmd == "bp_build_cancel") return bp_build_cancel_cmd();
+        if (cmd.rfind("bp_invmove ", 0) == 0) return bp_invmove_cmd(cmd);
         if (cmd.rfind("bp_obj ", 0) == 0) return bp_obj_cmd(cmd);
         if (cmd == "bp_recipes") return bp_recipes_cmd();
         if (cmd == "bp_paste_station") return pp_fail("import station (blocks) is not implemented yet; use Import factory");
