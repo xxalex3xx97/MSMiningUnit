@@ -6,7 +6,7 @@ const LOC_IN = (process.env.MS_MODS_ROOT || 'F:\\MSDemoMods') + '\\legacy\\MainS
 const LOC_OUT = path.join(__dirname, 'stage', 'MainSequence', 'Content', 'Data', 'Localization');
 fs.mkdirSync(LOC_OUT, { recursive: true });
 // hologram template transform (BP uexp doubles). Vanilla: loc (0,0,141.0058747886738), scale 0.0325. designer sets HOLO_*.
-const HOLO_SCALE = 1.0, HOLO_Z = 141.006;
+const HOLO_SCALE = 1.0, HOLO_Z = 150;
 const HOLO_VAN_Z = 141.0058747886738, HOLO_VAN_SCALE = 0.0325;
 const HOLO_OFF = { locX: 8281, locY: 8289, locZ: 8297, scX: 8305, scY: 8313, scZ: 8321 };
 const BPO_OLD = 'BPO_CommandModule', BPO_NEW = 'BPO_BlueprintUnit';
