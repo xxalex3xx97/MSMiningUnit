@@ -139,16 +139,17 @@ for (const f of [BP_NEW + '.uasset', BP_NEW + '.uexp', PROMPT + '.uasset', PROMP
     if (n > -2) { console.log('LEFTOVER ' + s + ' in ' + f); bad = true; }
   }
 }
-// ---- Job D: hidden default container machine = clone of vanilla large container (sim + actor) ----
-// sim BP_ContainerObject_2 -> BP_BPUnitStoreObj_01, actor BP_Container_2 -> BP_BPUnitStore. Parent BP_ContainerObject stays.
-// Off unless BPU_CONTAINER=1 (build_pak.ps1 -WithContainer). Crashes game on block creation, cause under investigation.
+// ---- Job D: hidden default container machine = clone of vanilla large container SIM only (BP_ContainerObject_2 -> BP_BPUnitStoreObj_01) ----
+// Actor NOT cloned/renamed: the sim imports its actor as BP_Container_2_C from package /Game/Blueprints/Machines/BP_Container
+// (vanilla quirk, kept). Renaming the actor broke that import. Parent BP_ContainerObject stays.
+// Off unless BPU_CONTAINER=1 (build_pak.ps1 -Container clone).
 if (process.env.BPU_CONTAINER === '1') {
 const MACH_IN = (process.env.MS_MODS_ROOT || 'F:\\MSDemoMods') + '\\legacy\\MainSequence\\Content\\Blueprints\\Machines';
 const MACH_OUT = path.join(__dirname, 'stage', 'MainSequence', 'Content', 'Blueprints', 'Machines');
 fs.mkdirSync(MACH_OUT, { recursive: true });
 const SIM_OLD = 'BP_ContainerObject_2', SIM_NEW = 'BP_BPUnitStoreObj_01';
-const ACT_OLD = 'BP_Container_2', ACT_NEW = 'BP_BPUnitStore';
-if (SIM_OLD.length !== SIM_NEW.length || ACT_OLD.length !== ACT_NEW.length) throw new Error('length mismatch: machine');
+const ACT_OLD = 'BP_Container_2';  // not renamed; checked only in the sim leftover scan (import "BP_Container_2_C" stays)
+if (SIM_OLD.length !== SIM_NEW.length) throw new Error('length mismatch: machine');
 // sim uexp int32 (BP_ContainerObject_2.uexp, from diff_container.py): InventorySize @120, StackSizeBonusMultiplier @124
 const INV_OFF = 120, INV_OLD = 32, INV_NEW = 120;
 const BONUS_OFF = 124, BONUS_OLD = 10, BONUS_NEW = 200;
@@ -159,25 +160,22 @@ function machJob(src, dst, fn) {
   fs.writeFileSync(path.join(MACH_OUT, dst), buf);
   return c;
 }
-const simUa = machJob(SIM_OLD + '.uasset', SIM_NEW + '.uasset', (b) => ({ sim: both(b, SIM_OLD, SIM_NEW), act: both(b, ACT_OLD, ACT_NEW) }));
+const simUa = machJob(SIM_OLD + '.uasset', SIM_NEW + '.uasset', (b) => ({ sim: both(b, SIM_OLD, SIM_NEW) }));
 need('machine sim uasset self', simUa.sim);
 const simUe = machJob(SIM_OLD + '.uexp', SIM_NEW + '.uexp', (b) => {
   const inv = b.readInt32LE(INV_OFF), bon = b.readInt32LE(BONUS_OFF);
   if (inv !== INV_OLD || bon !== BONUS_OLD) throw new Error('machine layout shift: InventorySize ' + inv + ' bonus ' + bon);
   b.writeInt32LE(INV_NEW, INV_OFF); b.writeInt32LE(BONUS_NEW, BONUS_OFF);
-  return { sim: both(b, SIM_OLD, SIM_NEW), act: both(b, ACT_OLD, ACT_NEW) };
+  return { sim: both(b, SIM_OLD, SIM_NEW) };
 });
 console.log('machine sim uexp: inventory ' + INV_OLD + '->' + INV_NEW + ' @' + INV_OFF + ', bonus ' + BONUS_OLD + '->' + BONUS_NEW + ' @' + BONUS_OFF + ', refs ' + JSON.stringify(simUe));
-const actUa = machJob(ACT_OLD + '.uasset', ACT_NEW + '.uasset', (b) => ({ sim: both(b, SIM_OLD, SIM_NEW), act: both(b, ACT_OLD, ACT_NEW) }));
-need('machine actor uasset self', actUa.act);
-const actUe = machJob(ACT_OLD + '.uexp', ACT_NEW + '.uexp', (b) => ({ act: both(b, ACT_OLD, ACT_NEW) }));
-console.log('machine actor uexp refs ' + JSON.stringify(actUe));
-// parent import must survive; leftover scan on the machine outputs
+// parent import must survive; leftover scan on the sim outputs (actor import BP_Container_2_C is expected to stay)
 const simOut = fs.readFileSync(path.join(MACH_OUT, SIM_NEW + '.uasset'));
 if (simOut.indexOf('/Game/Blueprints/Machines/BP_ContainerObject', 0, 'latin1') === -1) { console.log('ERROR parent import BP_ContainerObject missing'); bad = true; }
-for (const f of [SIM_NEW + '.uasset', SIM_NEW + '.uexp', ACT_NEW + '.uasset', ACT_NEW + '.uexp']) {
+if (simOut.indexOf('/Game/Blueprints/Machines/BP_Container\0', 0, 'latin1') === -1) { console.log('ERROR actor import package BP_Container missing'); bad = true; }
+for (const f of [SIM_NEW + '.uasset', SIM_NEW + '.uexp']) {
   const b = fs.readFileSync(path.join(MACH_OUT, f));
-  for (const s of [SIM_OLD, ACT_OLD]) {
+  for (const s of [SIM_OLD]) {
     const n = b.indexOf(s, 0, 'latin1') + b.indexOf(u16(s), 0, 'latin1');
     if (n > -2) { console.log('LEFTOVER ' + s + ' in ' + f); bad = true; }
   }

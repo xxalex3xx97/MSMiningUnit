@@ -7,13 +7,22 @@ Not installed by the build: copy the pak files into the game's Paks folder yours
 Co-op: every player needs the same pak. Chunk 97 is also used by the dev MSTestCube pak: never install both.
 Tools: MS_MODS_ROOT (default F:\MSDemoMods) for legacy/ source and tools\retoc.
 
-## S1 hidden container default machine (step 4+5 done, not installed, not in game)
-- DISABLED in build: build_pak.ps1 skips patch_bpo_machine.py and clone.js Job D unless `-WithContainer` (or `$withContainer = $true`; clone.js needs BPU_CONTAINER=1).
-- Crash cause under investigation: the container pak100 crashed the game on block creation (EXCEPTION_ACCESS_VIOLATION at 0x110).
-- clone.js Job D: Machines\BP_ContainerObject_2 -> BP_BPUnitStoreObj_01 (sim), Machines\BP_Container_2 -> BP_BPUnitStore (actor). Parent BP_ContainerObject untouched.
-- Sim uexp int32 patch: InventorySize @120 32->120, StackSizeBonusMultiplier @124 10->200 (from diff_container.py: large=32/10, normal=16 at 120, normal has no bonus value).
-- Sizes differ: normal uexp 322 B, large uexp 454 B (not same-length). Large uexp values stored as plain LE int32.
-- DefaultMachines decoded: uexp 374 count (1->2), element 378..403 (26 B), next int32 20 @404. patch_bpo_machine.py inserts element 2 (22 B) at uexp 404: class ref -35 (new import 34 BP_BPUnitStoreObj_01_C), X=Y=0 (tune in-game), Height/Rot omitted. Header: +2 names, +2 imports (package 33, class 34), +1 preload (export 1 CreateBefore block, same as connector). Run after clone.js + registry + research, before to-zen. `python -I patch_bpo_machine.py --walk <base>` prints the element walk.
+## S1 hidden container default machine (build variants)
+- `build_pak.ps1 -Container none|vanilla|clone` (default none). Output `out\<variant>\pakchunk100-BlueprintUnit_P.{pak,ucas,utoc}`, last built also copied to `out\`.
+  - none: 5 packages, no container.
+  - vanilla: 5 packages, container = vanilla `BP_ContainerObject_2` (32 slots, bonus 10). No Machines clone. Try this first.
+  - clone: 6 packages (+ `Machines/BP_BPUnitStoreObj_01`), container = clone sim (120 slots, bonus 200).
+- Container = DefaultMachines entry. It is NOT the connector array: vanilla uexp 374 is the CONNECTOR array (`BPO_LargeConnector_C`, count 1, end 404), left untouched.
+  DefaultMachines is a separate property, unversioned-header index 24, absent in BPO_CommandModule. `patch_bpo_machine.py <DIR> <CLASS PKG> <CLASS NAME>`:
+  header uexp 116-117 `07 02` -> `02 02 04 02` (+2 bytes, idx 24 added), 14-byte value `01 00 00 00 | 80 09 0c | class ref | 80 07 07` inserted before idx 29 value (`ff ff ff ff`).
+  Export 1 SerialSize +16. Connector array moves 374 -> 376 (its end 404 -> 406) after the header growth; verify() checks it there.
+  Machine cell (0,0), no payload. Real placement later: `80 07 06` + X,Y int32, machine coords ~8x finer than block cells.
+- Names/imports/preload: +2 names, +2 imports (package + BlueprintGeneratedClass), +1 CreateBefore preload entry (export 1, same as connector).
+- `python -I patch_bpo_machine.py --walk <base>` prints the CONNECTOR walk only.
+- clone.js Job D (gated on BPU_CONTAINER=1): sim BP_ContainerObject_2 -> BP_BPUnitStoreObj_01 only, InventorySize @120 32->120, bonus @124 10->200.
+  Actor is NOT cloned/renamed. Sim imports actor `BP_Container_2_C` from package `/Game/Blueprints/Machines/BP_Container` (vanilla quirk, package exists in legacy).
+  Earlier renaming of the actor (BP_Container_2 -> BP_BPUnitStore) also rewrote that import name to `BP_BPUnitStore_C` and left it dangling against package BP_Container (inferred from the import dump, not run in game).
+- Previous crash cause: container appended to the CONNECTOR array (debugger finding). Not yet tested in game.
 
 ## Window fix (vanilla suppress)
 - clone.js Job E: BP_BlueprintUnit.uasset import WBP_StationInventory -> WBP_BPUnitNoWindow00 (same length, ascii+utf16; 3 hits: package path, WBP_StationInventory_C, Default__). Same trick as Mining Unit WBP_Workbench -> WBP_MiningUnt. Lua also closes any live WBP_StationInventory_C 100 ms after open (main.lua closeVanilla).

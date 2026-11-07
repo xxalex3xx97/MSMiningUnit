@@ -1,21 +1,31 @@
-# S1 step 5: append the hidden container machine (BP_BPUnitStoreObj_01) as the 2nd DefaultMachines element of
-# stage BPO_BlueprintUnit (clone of vanilla BPO_CommandModule). Patches the .uasset/.uexp in place.
-# Usage: python -I patch_bpo_machine.py <DIR with BPO_BlueprintUnit.uasset/.uexp>
-#        python -I patch_bpo_machine.py --walk <base path without ext>   (print DefaultMachines walk only)
+# S1 step 5: add the hidden container machine to DefaultMachines of stage BPO_BlueprintUnit (clone of vanilla BPO_CommandModule).
+# The vanilla CONNECTOR array (uexp 374, BPO_LargeConnector_C) is NOT touched.
+# DefaultMachines is a separate property = unversioned-header index 24, absent in BPO_CommandModule. So the export 1 header
+# gains idx 24 (uexp 116-117 `07 02` -> `02 02 04 02`) and its 14-byte value goes right before idx 29's value.
+# Patches the .uasset/.uexp in place.
+# Usage: python -I patch_bpo_machine.py <DIR with BPO_BlueprintUnit.uasset/.uexp> <CLASS PACKAGE> <CLASS NAME>
+#        python -I patch_bpo_machine.py --walk <base path without ext>   (print CONNECTOR array walk only)
+#   vanilla container: <CLASS PACKAGE>=/Game/Blueprints/Machines/BP_ContainerObject_2  <CLASS NAME>=BP_ContainerObject_2_C
+#   clone container:   <CLASS PACKAGE>=/Game/Blueprints/Machines/BP_BPUnitStoreObj_01  <CLASS NAME>=BP_BPUnitStoreObj_01_C
 # Layout is parsed and asserted, not hardcoded. verify() re-parses the output bytes before anything is written.
-# ponytail: grid cell fixed at X,Y below (0,0); no real placement logic. In-game may need another cell.
+# ponytail: machine at grid cell (0,0) = `80 07 07` (no transform payload). Real placement later: machine coords ~8x finer
+#   than block cells; offset needs `80 07 06` + X,Y int32. Not done: X, Y = 0, 0.
 import struct
 import sys
 import os
 import hashlib
 
-X, Y = 0, 0  # grid cell of the new container (default; vanilla connector is (-2,0)). Tune in-game if needed.
-NEW_PKG = '/Game/Blueprints/Machines/BP_BPUnitStoreObj_01'
-NEW_CLS = 'BP_BPUnitStoreObj_01_C'
 CONNECTOR = 'BPO_LargeConnector_C'
-DM = 374            # uexp offset of DefaultMachines count (vanilla: 1)
-EXP_STRIDE = 96     # export table entry size in this file (chain-checked below)
-ELEM_NEW = 22       # bytes of the new element
+DM = 374             # uexp offset of the CONNECTOR array count (vanilla: 1). Not changed by this script.
+EXP_STRIDE = 96      # export table entry size in this file (chain-checked below)
+HDR = 104            # uexp offset of export 1 unversioned property header
+HDR_VANILLA = bytes.fromhex('00 0c 01 02 02 04 02 04 01 02 02 04 07 02 07 03')
+HDR_IDX = [0, 1, 2, 3, 4, 5, 7, 10, 11, 14, 15, 17, 20, 21, 29, 37]
+IDX_DM = 24          # unversioned property index of DefaultMachines
+HDR_NEW = bytes.fromhex('02 02 04 02')   # replaces vanilla '07 02' at HDR+12: skip 2 -> idx 24, skip 4 -> idx 29
+GROW = 16            # export 1 SerialSize growth: 2 header bytes + 14 value bytes
+GROW_HDR = 2         # the header bytes shift everything after uexp 118 (connector array 374 -> 376, its end 404 -> 406)
+TAIL = 18            # from idx 29 value to uexp end: ff*4, idx 37 (6 bytes), trailer (4), footer (4)
 
 i32 = lambda b, q: struct.unpack_from('<i', b, q)[0]
 i64 = lambda b, q: struct.unpack_from('<q', b, q)[0]
@@ -35,11 +45,10 @@ def read_names(buf, n, p):
     return out, p
 
 
-def walk(e):
-    # DefaultMachines: count, then per element: 80 0b 0c | class ref i32 | 80 07 tmask | X i32 | Y i32 | [Rot i32 if !(tmask&4)] | cfg count i32 (0)
-    # Height is omitted (tmask&2) in every element seen; MachineID/PaletteID omitted (struct mask 0c).
-    n = i32(e, DM)
-    p = DM + 4
+def walk(e, dm=DM):
+    # CONNECTOR array at dm: count, then per element: 80 0b 0c | class ref i32 | 80 07 tmask | X i32 | Y i32 | [Rot i32 if !(tmask&4)] | cfg count i32 (0)
+    n = i32(e, dm)
+    p = dm + 4
     out = []
     for _ in range(n):
         assert e[p:p + 2] == b'\x80\x0b' and e[p + 2] == 0x0c, ('struct header', p)
@@ -61,6 +70,26 @@ def walk(e):
     return out, p, i32(e, p)
 
 
+def hdr_idx(e):
+    # unversioned header from HDR: uint16 fragments (skip = v&0x7f, zero-mask = v&0x80, last = v&0x100, values = v>>9)
+    p, cur, out = HDR, 0, []
+    while True:
+        v = struct.unpack_from('<H', e, p)[0]
+        p += 2
+        assert not v & 0x80, 'zero mask in header not handled'
+        cur += v & 0x7f
+        for _ in range(v >> 9):
+            out.append(cur)
+            cur += 1
+        if v & 0x100:
+            return out, p
+
+
+def value(ref):
+    # DefaultMachines value (14 bytes): count 1 | 80 09 0c | class ref | 80 07 07 (cell, no payload)
+    return struct.pack('<i', 1) + b'\x80\x09\x0c' + struct.pack('<i', ref) + b'\x80\x07\x07'
+
+
 if sys.argv[1] == '--walk':
     base = sys.argv[2]
     els, end, nxt = walk(open(base + '.uexp', 'rb').read())
@@ -69,9 +98,13 @@ if sys.argv[1] == '--walk':
         print('  ', el)
     sys.exit(0)
 
+if len(sys.argv) != 4:
+    sys.exit('usage: patch_bpo_machine.py <DIR> <CLASS PACKAGE> <CLASS NAME>  |  --walk <base>')
+NEW_PKG, NEW_CLS = sys.argv[2], sys.argv[3]
 BASE = os.path.join(sys.argv[1], 'BPO_BlueprintUnit')
 a = open(BASE + '.uasset', 'rb').read()
 e = open(BASE + '.uexp', 'rb').read()
+L = len(e)
 
 # ---- vanilla layout (parsed + asserted) ----
 B = 60 + i32(a, 52)
@@ -97,7 +130,7 @@ def export(k):
 
 
 X0, X1 = export(0), export(1)
-assert X0['off'] == TOT and X1['off'] == TOT + X0['ser'] and TOT + X0['ser'] + X1['ser'] == TOT + len(e) - 4
+assert X0['off'] == TOT and X1['off'] == TOT + X0['ser'] and TOT + X0['ser'] + X1['ser'] == TOT + L - 4
 assert i32(a, B + 140) == TOT + X0['ser'] + X1['ser'], 'BulkDataStart layout'
 assert X0['fed'] == 0 and X1['fed'] == X0['sb'] + X0['cb'] + X0['sbc'] + X0['cbc']
 assert X1['fed'] + X1['sb'] + X1['cb'] + X1['sbc'] + X1['cbc'] == PLC
@@ -109,9 +142,21 @@ CONN_REF = -(conn_idx[0] + 1)
 cb0 = X1['fed'] + X1['sb']
 assert CONN_REF in PL[cb0:cb0 + X1['cb']], 'connector not in export 1 CreateBefore block'
 
-els0, end0, nxt0 = walk(e)
+# CONNECTOR array (uexp 374) is not touched: count 1, BPO_LargeConnector_C, end 404, next int 20
+els0, end0, nxt0 = walk(e)  # uexp 374 -> connector end 404 in vanilla
 assert len(els0) == 1 and els0[0]['ref'] == CONN_REF and end0 == 404 and nxt0 == 20
-assert X1['at'] and X1['off'] - TOT <= end0 < X1['off'] - TOT + X1['ser']
+assert X1['off'] - TOT <= DM < X1['off'] - TOT + X1['ser']
+
+# export 1 unversioned header: vanilla idx set, no idx 24 yet
+assert e[HDR:HDR + 16] == HDR_VANILLA, 'header bytes at uexp 104 differ from vanilla'
+assert e[HDR + 12:HDR + 14] == b'\x07\x02'
+idx0, hend0 = hdr_idx(e)
+assert idx0 == HDR_IDX and hend0 == HDR + 16 and IDX_DM not in idx0, idx0
+
+# tail: idx 29 value (ff ff ff ff), idx 37 (01 03 ..), trailer, footer
+INS = L - TAIL
+assert e[INS:INS + 4] == b'\xff' * 4 and e[INS + 4:INS + 6] == b'\x01\x03', 'idx 29/37 tail layout'
+assert e[-4:] == b'\xc1\x83\x2a\x9e' and e[-8:-4] == b'\0\0\0\0'
 
 # ---- new names / imports / preload ----
 NEWREF = -(IC + 2)                    # new class import index IC+1 -> ref -(IC+2)
@@ -129,8 +174,8 @@ def sh(v):
 
 
 TOTN = sh(TOT)
-ELEM_BYTES = b'\x80\x0b\x0c' + struct.pack('<i', NEWREF) + b'\x80\x07\x06' + struct.pack('<ii', X, Y) + struct.pack('<i', 0)
-assert len(ELEM_BYTES) == ELEM_NEW
+VAL = value(NEWREF)
+assert len(VAL) == 14
 
 # ---- uasset header ----
 h = bytearray(a[:NO])
@@ -140,24 +185,23 @@ for q in OFF_FIELDS:
 struct.pack_into('<i', h, B, NN + 2)
 struct.pack_into('<i', h, B + 32, IC + 2)
 struct.pack_into('<i', h, B + 156, PLC + 1)
-struct.pack_into('<i', h, B + 140, TOTN + X0['ser'] + X1['ser'] + ELEM_NEW)   # BulkDataStart
+struct.pack_into('<i', h, B + 140, TOTN + X0['ser'] + X1['ser'] + GROW)   # BulkDataStart
 h = bytes(h)
 
 ex = bytearray(a[EO:EO + EXP_STRIDE * EC])
 for k, x in enumerate((X0, X1)):
-    rel = x['off'] - TOT
-    struct.pack_into('<q', ex, EXP_STRIDE * k + 36, sh(x['off']) + (ELEM_NEW if rel > end0 else 0))
-struct.pack_into('<q', ex, EXP_STRIDE + 28, X1['ser'] + ELEM_NEW)
+    struct.pack_into('<q', ex, EXP_STRIDE * k + 36, sh(x['off']))      # both exports start before the change: offset only moves with header
+struct.pack_into('<q', ex, EXP_STRIDE + 28, X1['ser'] + GROW)
 struct.pack_into('<i', ex, EXP_STRIDE + 84, X1['cb'] + 1)
 ex = bytes(ex)
 
 out_a = (h + a[NO:IO] + newnames + a[IO:EO] + imp + ex + a[EO + EXP_STRIDE * EC:P3]
          + struct.pack('<i', NEWREF) + a[P3:])
 
-# ---- uexp: count 1->2, insert element at the end of element 1 (uexp 404) ----
-out_e = bytearray(e[:DM + 4] + e[DM + 4:end0] + ELEM_BYTES + e[end0:])
-struct.pack_into('<i', out_e, DM, 2)
-out_e = bytes(out_e)
+# ---- uexp: header gets idx 24 (+2 bytes), value (14 bytes) inserted before idx 29 value ----
+out_e = e[:HDR + 12] + HDR_NEW + e[HDR + 14:INS] + VAL + e[INS:]
+NI = INS + GROW_HDR                   # inserted value start in out_e (header grew by 2)
+assert len(out_e) == L + GROW and out_e[NI:NI + 14] == VAL
 
 
 def verify(oa, oe):
@@ -201,7 +245,7 @@ def verify(oa, oe):
              i32(oa, eo + 96 * k + 88), i32(oa, eo + 96 * k + 92)) for k in range(ec)]
     ser = [i64(oa, eo + 96 * k + 28) for k in range(ec)]
     off = [i64(oa, eo + 96 * k + 36) for k in range(ec)]
-    chk('export sizes %s == [104, %d]' % (ser, X1['ser'] + ELEM_NEW), ser == [X0['ser'], X1['ser'] + ELEM_NEW])
+    chk('export sizes %s == [%d, %d]' % (ser, X0['ser'], X1['ser'] + GROW), ser == [X0['ser'], X1['ser'] + GROW])
     chk('export SerialOffset chain %s' % off, off == [tot, tot + ser[0]])
     chk('export 1 CreateBefore count %d == %d' % (eall[1][2], X1['cb'] + 1), eall[1][2] == X1['cb'] + 1)
     chk('export fields FED/SB/SBC/CBC unchanged', eall == [(X0['fed'], X0['sb'], X0['cb'], X0['sbc'], X0['cbc']),
@@ -216,16 +260,24 @@ def verify(oa, oe):
     bulk = i32(oa, Bo + 140)
     chk('BulkDataStart %d == TotalHeaderSize + sum(SerialSize)' % bulk, bulk == tot + sum(ser))
     chk('uexp length %d == sum(SerialSize) + 4 footer' % len(oe), len(oe) == sum(ser) + 4)
-    els, end, nxt = walk(oe)
-    chk('DefaultMachines count 2', i32(oe, DM) == 2)
-    chk('element 1 unchanged (ref %d)' % CONN_REF, els[0] == els0[0])
-    chk('element 2 == ref %d, X=%d Y=%d, no rot, tmask 6' % (NEWREF, X, Y),
-        len(els) == 2 and els[1] == dict(ref=NEWREF, x=X, y=Y, rot=None, tmask=6))
-    chk('walk end 426, next int32 == 20 (got %d)' % nxt, end == 426 and nxt == 20)
-    chk('uexp prefix up to count unchanged', oe[:DM] == e[:DM])
-    chk('uexp element 1 bytes unchanged', oe[DM + 4:404] == e[DM + 4:404])
-    chk('uexp new element bytes at 404', oe[404:426] == ELEM_BYTES)
-    chk('uexp tail (from 404) unchanged', oe[426:] == e[404:])
+
+    # uexp: header idx set gains 24 (value count of header grows by one), value sits before idx 29
+    idx, hend = hdr_idx(oe)
+    chk('header idx %s == vanilla + [24]' % idx, idx == sorted(HDR_IDX + [IDX_DM]) and hend == HDR + 18)
+    chk('header bytes 104..115 unchanged', oe[:HDR + 12] == e[:HDR + 12])
+    ni = len(oe) - TAIL - 14             # == INS + GROW_HDR: value starts right before idx 29 value
+    chk('DefaultMachines count 1 at inserted block (%d)' % ni, i32(oe, ni) == 1)
+    chk('machine element struct 80 09 0c', oe[ni + 4:ni + 7] == b'\x80\x09\x0c')
+    ref = i32(oe, ni + 7)
+    chk('machine class ref %d -> import %s' % (ref, NEW_CLS), ref == NEWREF and -ref - 1 == IC + 1 and onames[cls[5]] == NEW_CLS)
+    chk('machine transform 80 07 07 (cell 0,0, no payload)', oe[ni + 11:ni + 14] == b'\x80\x07\x07')
+    chk('uexp new block == value(%d)' % NEWREF, oe[ni:ni + 14] == VAL)
+    chk('uexp idx 29 + idx 37 + trailer + footer follow', oe[ni + 14:] == e[INS:])
+    chk('uexp body between header and value unchanged', oe[HDR + 16:ni] == e[HDR + 14:INS])
+    els, end, nxt = walk(oe, DM + GROW_HDR)
+    chk('CONNECTOR array still count 1 at uexp %d, ref %d' % (DM + GROW_HDR, CONN_REF), len(els) == 1 and els[0] == els0[0])
+    chk('CONNECTOR element is %s' % CONNECTOR, onames[struct.unpack_from('<8i', oa, io_ + 32 * conn_idx[0])[5]] == CONNECTOR)
+    chk('connector walk end %d, next int32 == 20 (got end %d next %d)' % (404 + GROW_HDR, end, nxt), end == 404 + GROW_HDR and nxt == 20)
     diff = {q for q in range(NO) if oa[q] != a[q]}
     allowed = {q + i for q in OFF_FIELDS + [B, B + 32, B + 140, B + 156] for i in range(4)}
     chk('header bytes changed only at patched positions %s' % sorted(diff - allowed)[:8], diff <= allowed)
