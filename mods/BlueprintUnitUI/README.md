@@ -20,6 +20,19 @@ Install: copy this folder to the game's Mods\BlueprintUnitUI (enabled.txt + Scri
 - Done/error: Txt_Status = text (error prefixed), buttons re-enabled, then the import is re-run (`bp_import`, same path) so the cost list refreshes; the build line goes above the import summary in Txt_Summary.
 - Closing the window stops the build poll; the DLL keeps running (next open shows nothing until a new command).
 
+## Station Build flag (placeholder, DLL ignores it)
+- Optional `Chk_StationBuild` (CheckBox, designer-authored; missing = no error). Read at Import OK / Build click under pcall, kept in `S.stationBuild`.
+- Checked: `bp_import` (also the cost re-import after a build) and `bp_build` get the trailing token ` blocks 1` (e.g. `<seq>|0|bp_build unit <id> blocks 1`). Unchecked: nothing appended.
+- DLL: stores the flag, does not act on it. Status text gets the suffix ` | station blocks: not implemented yet` and key `blocks=ignored`. Optional `Txt_StationBuildHint` shows the same sentence while checked (set on click).
+- Teleporter keys (DLL): `locked=Teleporter:N` in BlueprintImport.status (planned Teleporters) and BlueprintBuild.status (missing at verify). Text `not unlocked: Teleporter xN` (import) / `not placed (probably not unlocked): Teleporter xN` (build). Not a research read: the lock is a guess.
+
+## Station Build (planned)
+Guard rules for the real implementation (not built; the flag above is only a placeholder):
+- Never remove or replace: the block the player stands in, the Dock, Command Module or Blueprint Unit blocks, or any block that connects the player's position to the dock.
+- Refuse any plan whose block removals would disconnect the player's block or the dock from the rest of the station graph.
+- Any plan that touches blocks needs a connectivity check on the block adjacency graph before the first removal.
+- Blocks are paid via PendingBlueprintInput (frame inventory + player inventory), not BuildInput.
+
 Unverified: all runtime behaviour (hooks, container lookup, grid setup, teardown order, import round trip with the DLL).
 
 - Window size: the WBP owns it (full-screen Root, centred fixed 1200x900 SizeBox). Lua viewport sizing is off (`USE_VIEWPORT_SIZING = false` in bpu_window.lua). A `[BPUnitUI] geometry ...` line is logged ~200 ms after open (desired, cached abs/local, viewport, DPI).

@@ -35,7 +35,7 @@ local CONTRACT = { "Panel", "Txt_Title", "Btn_Close", "Txt_Close", "Txt_Status",
   "Txt_CostHdr", "Scr_Cost", "Txt_CostEmpty", "Txt_UnitInvTitle", "Scr_UnitInv", "Txt_PlayerInvTitle", "Host_PlayerInv",
   "Pnl_ImportModal", "Txt_ImportTitle", "Btn_ImportClose", "Txt_ImportClose", "Edt_ImportJson", "Txt_ImportHint",
   "Btn_ImportOk", "Txt_ImportOk", "Btn_ImportCancel", "Txt_ImportCancel" }
--- optional, never logged if missing: Btn_CostPin, Txt_CostPin. Row_Cost_* are fallback only (checked in setCost).
+-- optional, never logged if missing: Btn_CostPin, Txt_CostPin, Chk_StationBuild (CheckBox), Txt_StationBuildHint. Row_Cost_* are fallback only (checked in setCost).
 
 -- S.w = WBP instance = viewport widget (names resolve here). S.p = controller. S.uw/S.pw = grids. S.tc = last text per name.
 -- S.imp = import modal shown. S.poll = { seq, t0, last } while waiting for our import. S.itemMap = name -> Item DA (per open).
@@ -513,6 +513,21 @@ local function impCancel()
   M.impClose()
 end
 
+-- Station Build placeholder: optional Chk_StationBuild (designer CheckBox). Read at click time under pcall, kept in S.stationBuild.
+-- Checked -> bp_import / bp_build get ' blocks 1' (DLL stores it, ignores it: status 'station blocks: not implemented yet').
+local function readStationBuild()
+  local c = w("Chk_StationBuild")
+  if ok(c) then
+    local s, v = pcall(function() return c:IsChecked() end)
+    if not s or type(v) ~= "boolean" then s, v = pcall(function() return c:GetCheckedState() == 1 end) end
+    if s and type(v) == "boolean" then S.stationBuild = v end
+  end
+  local h = w("Txt_StationBuildHint")
+  if ok(h) then txt("Txt_StationBuildHint", S.stationBuild and "station blocks: not implemented yet" or "") end
+  return S.stationBuild == true
+end
+local function blocksArg() return S.stationBuild and " blocks 1" or "" end
+
 -- Import: read the box once, write the file atomically, send the command, poll
 local function impOk()
   if not M.impOpen() then return end
@@ -541,7 +556,8 @@ local function impOk()
   resetResults()
 
   local seq = nextSeq()
-  if not sendCmd(seq .. "|0|bp_import " .. target) then txt("Txt_Status", "error: command write failed"); return end
+  readStationBuild()
+  if not sendCmd(seq .. "|0|bp_import " .. target .. blocksArg()) then txt("Txt_Status", "error: command write failed"); return end
   S.poll = { seq = seq, t0 = os.time(), last = nil, misLogged = {} }
   schedulePoll()
 end
@@ -860,7 +876,7 @@ local function scheduleBuild() pcall(ExecuteWithDelay, POLL_MS, function() pcall
 -- re-run the import of BlueprintImport.json (same path as Btn_Import) so the cost list refreshes
 local function sendImport()
   local seq = nextSeq()
-  if not sendCmd(seq .. "|0|bp_import " .. dataPath("BlueprintImport.json")) then
+  if not sendCmd(seq .. "|0|bp_import " .. dataPath("BlueprintImport.json") .. blocksArg()) then
     txt("Txt_Status", "error: command write failed"); showSummary(buildSummary("")); return
   end
   S.poll = { seq = seq, t0 = os.time(), last = nil, misLogged = {} }
@@ -906,7 +922,8 @@ local function buildClick()
   if not imported then txt("Txt_Status", "import first"); return end
   local seq = nextSeq()
   local uid = S.unitSim   -- container sim ID bound at open; nil = frame fallback (U1), no unit arg
-  if not sendCmd(seq .. "|0|bp_build" .. (uid and (" unit " .. uid) or ""), "build ") then
+  readStationBuild()
+  if not sendCmd(seq .. "|0|bp_build" .. (uid and (" unit " .. uid) or "") .. blocksArg(), "build ") then
     txt("Txt_Status", "error: command write failed"); return
   end
   S.build = { seq = seq, t0 = os.time(), last = nil, misLogged = {} }
