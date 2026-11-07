@@ -6,9 +6,11 @@ wbp = U.load_asset(ASSETS + '/WBP_BlueprintUnit')
 U.BlueprintEditorLibrary.compile_blueprint(wbp)
 cdo = U.get_default_object(wbp.generated_class())  # a widget is a variable iff the generated class has a property of its name
 names = ['Panel', 'Txt_Title', 'Btn_Close', 'Txt_Close', 'Txt_Status', 'Btn_Import', 'Txt_Import', 'Btn_Build', 'Txt_Build',
-         'Txt_CostHdr', 'Scr_Cost', 'Txt_CostEmpty', 'Txt_UnitInvTitle', 'Scr_UnitInv', 'Txt_PlayerInvTitle', 'Host_PlayerInv']
+         'Txt_CostHdr', 'Scr_Cost', 'Txt_CostEmpty', 'Txt_UnitInvTitle', 'Scr_UnitInv', 'Txt_PlayerInvTitle', 'Host_PlayerInv',
+         'Txt_Summary', 'Txt_Removes', 'Pnl_ImportModal', 'Txt_ImportTitle', 'Btn_ImportClose', 'Txt_ImportClose', 'Edt_ImportJson',
+         'Btn_ImportOk', 'Txt_ImportOk', 'Btn_ImportCancel', 'Txt_ImportCancel', 'Txt_ImportHint']
 for i in range(1, 41):
-    names += ['Row_Cost_%d' % i, 'Img_Cost_%d' % i, 'Txt_CostHave_%d' % i, 'Txt_CostName_%d' % i]
+    names += ['Row_Cost_%d' % i, 'Img_Cost_%d' % i, 'Txt_CostHave_%d' % i, 'Txt_CostName_%d' % i, 'Txt_CostRefund_%d' % i]
 miss = nonvar = 0
 for n in names:
     w = ELib.find_source_widget_by_name(wbp, n)
@@ -19,4 +21,5 @@ for n in names:
             cdo.get_editor_property(n)
         except Exception:
             print('NOTVAR', n); nonvar += 1
+print('EDT_CLASS', ELib.find_source_widget_by_name(wbp, 'Edt_ImportJson').get_class().get_name())
 print('CHECK-DONE n_missing=%d n_notvar=%d total=%d' % (miss, nonvar, len(names)))
