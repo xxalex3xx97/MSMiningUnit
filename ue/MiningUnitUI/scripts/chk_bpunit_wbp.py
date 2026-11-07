@@ -6,11 +6,14 @@ wbp = U.load_asset(ASSETS + '/WBP_BlueprintUnit')
 U.BlueprintEditorLibrary.compile_blueprint(wbp)
 cdo = U.get_default_object(wbp.generated_class())  # a widget is a variable iff the generated class has a property of its name
 names = ['Panel', 'Txt_Title', 'Btn_Close', 'Txt_Close', 'Txt_Status', 'Btn_Import', 'Txt_Import', 'Btn_Build', 'Txt_Build',
-         'Txt_CostHdr', 'Scr_Cost', 'Txt_CostEmpty', 'Txt_UnitInvTitle', 'Scr_UnitInv', 'Txt_PlayerInvTitle', 'Host_PlayerInv',
+         'Txt_CostHdr', 'Btn_CostPin', 'Txt_CostPin', 'Scr_Cost', 'Txt_CostEmpty', 'Txt_UnitInvTitle', 'Scr_UnitInv', 'Txt_PlayerInvTitle', 'Host_PlayerInv',
          'Txt_Summary', 'Txt_Removes', 'Pnl_ImportModal', 'Txt_ImportTitle', 'Btn_ImportClose', 'Txt_ImportClose', 'Edt_ImportJson',
          'Btn_ImportOk', 'Txt_ImportOk', 'Btn_ImportCancel', 'Txt_ImportCancel', 'Txt_ImportHint']
-for i in range(1, 41):
-    names += ['Row_Cost_%d' % i, 'Img_Cost_%d' % i, 'Txt_CostHave_%d' % i, 'Txt_CostName_%d' % i, 'Txt_CostRefund_%d' % i]
+gone = [n for n in ('Row_Cost_1', 'Img_Cost_1', 'Txt_CostHave_1', 'Txt_CostName_1', 'Txt_CostRefund_1', 'Row_Cost_40') if ELib.find_source_widget_by_name(wbp, n)]
+print('LEFTOVER-ROWS', gone)
+for n in ('Txt_Title', 'Txt_CostHdr', 'Txt_Status', 'Txt_Summary', 'Txt_Removes', 'Txt_Import', 'Txt_Build', 'Txt_UnitInvTitle', 'Txt_PlayerInvTitle', 'Txt_CostEmpty', 'Txt_CostPin'):
+    t = ELib.find_source_widget_by_name(wbp, n)
+    print('FONT', n, t.get_editor_property('font').get_editor_property('size'), 'wrap', t.get_editor_property('auto_wrap_text'))
 miss = nonvar = 0
 for n in names:
     w = ELib.find_source_widget_by_name(wbp, n)
