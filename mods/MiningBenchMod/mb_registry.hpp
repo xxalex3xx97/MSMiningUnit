@@ -951,25 +951,28 @@ namespace
         ++s.ticks;
         s.ships = ships;
         s.targets = targets;
-        reg_target_stage(s);   // deletes (suspects) and targeted rocks: always, cheap
+        // world probe EVERY tick (one seh_run, the player's system only). A change or no game world drops the pass and the save pointers
+        // before any save is read this tick. WHY: the stages below read the save objects; freed ones must never be read after a world change.
+        RegWorldCtx wc;
+        const int wsys = (seh_run(reg_world_fn, &wc) ? wc.sys : 0);
+        s.world_ok = wsys > 0;
+        const bool world_bad = wsys != s.world_sys || !s.world_ok;
+        if (world_bad)
+        {
+            // any change (menu -> game, game -> menu, another system) or no game world: the old pass is dropped; the pointers only on a change
+            if (wsys != s.world_sys) reg_seed_unbind(s);
+            s.world_sys = wsys;
+            reg_seed_abort(s);
+            s.seed_ms = now;
+            s.world_wait = true;
+        }
+        if (!world_bad && !s.world_wait) reg_target_stage(s);   // deletes (suspects) and targeted rocks: always, cheap
         // seed triggers, no ship needed: first tick, 10 min refresh, the player's system changed, no alive rock (retry every 5 s),
         // a mining ship in a system no pass covered (also restarts a running pass)
         bool start = false;
         if (now - s.trig_ms >= REG_TRIG_MS)
         {
             s.trig_ms = now;
-            RegWorldCtx wc;
-            const int sys = (seh_run(reg_world_fn, &wc) ? wc.sys : 0);
-            s.world_ok = sys > 0;
-            if (sys != s.world_sys)
-            {
-                // any change (menu -> game, game -> menu, another system): the old pass and its object pointers are dropped
-                s.world_sys = sys;
-                reg_seed_abort(s);
-                reg_seed_unbind(s);
-                s.seed_ms = now;
-                s.world_wait = true;
-            }
             if (s.world_wait && s.world_ok && now - s.seed_ms >= REG_EMPTY_RETRY_MS) { s.world_wait = false; start = true; }
             if (!s.seeding && s.world_ok && reg_alive_count(s) == 0 && now - s.seed_ms >= REG_EMPTY_RETRY_MS) start = true;
         }
@@ -1007,7 +1010,7 @@ namespace
                 if (!ships.empty()) reg_dump_file(s, ships[0].sys, ships[0].p, L"MiningRegistry.txt");
             }
             if (!reg_over_budget(perf_ms_since(t1))) reg_validate_stage(s, ships);
-            if (!reg_over_budget(perf_ms_since(t1))) reg_radius_stage(s, ships);
+            if (!world_bad && !s.world_wait && !reg_over_budget(perf_ms_since(t1))) reg_radius_stage(s, ships);
             if (!reg_over_budget(perf_ms_since(t1))) reg_actor_stage(s, ships);
             if (!reg_over_budget(perf_ms_since(t1))) reg_self_stage(s);
             if (s.self_ms == 0 && !s.seeding) s.self_ms = now;   // the periodic self-check counts from the first full pass
