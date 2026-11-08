@@ -598,6 +598,26 @@ namespace
         return gone;
     }
 
+    // WHAT: world tracker. id = identity of the loaded world (0 = unreadable), read each tick. LOADED = a different readable world than before
+    //       (menu -> game, save load): drop the object pointers. LOST = unreadable for bad_max ticks in a row (debounce): same drop, world not ok.
+    //       Same id, other system (a warp) = NONE.
+    struct RegWorldTrack { uint64_t id = 0; int bad = 0; bool ok = false; };
+    enum RegWorldEv { RWE_NONE = 0, RWE_LOADED = 1, RWE_LOST = 2 };
+    inline RegWorldEv reg_world_step(RegWorldTrack& t, uint64_t id, int bad_max)
+    {
+        if (id != 0)
+        {
+            t.bad = 0;
+            t.ok = true;
+            if (id == t.id) return RWE_NONE;
+            t.id = id;
+            return RWE_LOADED;
+        }
+        if (t.bad < bad_max) ++t.bad;
+        if (t.bad == bad_max && t.ok) { t.ok = false; t.id = 0; return RWE_LOST; }
+        return RWE_NONE;
+    }
+
     // ---- disk cache: format and checks (no file I/O here; the game side reads and writes the bytes) ----
     constexpr uint32_t REG_CACHE_MAGIC = 0x52474352;   // bytes 'R' 'C' 'G' 'R' (little endian)
     constexpr uint32_t REG_CACHE_VER = 1;

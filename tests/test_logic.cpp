@@ -1261,6 +1261,21 @@ static void t_reg_events()
     CHECK(g.events_since(6, ev) && ev.size() == 64);
 }
 
+static void t_reg_world_track()
+{
+    RegWorldTrack t;
+    CHECK(reg_world_step(t, 7, 4) == RWE_LOADED && t.ok);          // (a) first world
+    CHECK(reg_world_step(t, 7, 4) == RWE_NONE);                    // (b) warp: same id, other system
+    for (int i = 0; i < 3; ++i) CHECK(reg_world_step(t, 0, 4) == RWE_NONE);   // (c) 3 failed reads: debounced
+    CHECK(t.ok);
+    CHECK(reg_world_step(t, 7, 4) == RWE_NONE && t.bad == 0);
+    for (int i = 0; i < 3; ++i) reg_world_step(t, 0, 4);
+    CHECK(reg_world_step(t, 0, 4) == RWE_LOST && !t.ok && t.id == 0);   // (d) 4th failed read in a row
+    CHECK(reg_world_step(t, 0, 4) == RWE_NONE && !t.ok);           // further failed reads: nothing new
+    CHECK(reg_world_step(t, 7, 4) == RWE_LOADED && t.ok);          // (e) world back
+    CHECK(reg_world_step(t, 9, 4) == RWE_LOADED && t.ok);          // (f) save load without a gap
+}
+
 static void t_reg_within_nearest()
 {
     RockReg g;
@@ -2071,7 +2086,7 @@ int main()
         {"hazard_flee", t_hazard_flee}, {"targett_entry", t_targett_entry},
         {"path_block", t_path_block}, {"path_perf", t_path_perf}, {"path_waypoint", t_path_waypoint}, {"shield_drop", t_shield_drop}, {"fast_sample", t_fast_sample},
         {"rock_depleted", t_rock_depleted},
-        {"reg_table", t_reg_table}, {"reg_events", t_reg_events}, {"reg_within_nearest", t_reg_within_nearest}, {"reg_surface_block", t_reg_surface_block_radius},
+        {"reg_table", t_reg_table}, {"reg_events", t_reg_events}, {"reg_world_track", t_reg_world_track}, {"reg_within_nearest", t_reg_within_nearest}, {"reg_surface_block", t_reg_surface_block_radius},
         {"approach_throttle", t_approach_throttle}, {"bubble", t_bubble}, {"bubble_ladder", t_bubble_ladder}, {"bubble_scope", t_bubble_scope}, {"tune_geom", t_tune_geom}, {"flight_warp", t_flight_warp}, {"sweep_return_flee", t_sweep_return_flee}, {"path2_rules", t_path2_rules},
         {"reg_targeted_ore_budget", t_reg_targeted_ore_budget}, {"reg_bench", t_reg_bench}, {"reg_abs_m", t_reg_abs_m},
         {"box_probe_parse", t_box_probe_parse}, {"box_probe_uu_fwd", t_box_probe_uu_fwd}, {"reg_check_summary", t_reg_check_summary},
