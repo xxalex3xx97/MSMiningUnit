@@ -84,11 +84,10 @@ Build and asset scripts read these environment variables. Unset = the built-in f
 | `mods/MiningBenchMod/mb_mining.hpp` | mining loop state machine per ship (`mine_step` and `st_*` states), status and log output |
 | `mods/MiningBenchMod/mb_net.hpp` | dock network: one queue per dock, reservations, holding slots (Docks tab data) |
 | `mods/MiningUnitUI/` | Mining Unit window (release Lua): `Scripts/main.lua` (F4 / ESC / F keys), `Scripts/wbp_loader.lua` (widget loader, data) |
-| `mods/MSDevMenu/` | Dev Menu (dev only, separate mod, NOT in the release zip): F3 window, cheats, test buttons, probes |
 | `ue/MiningUnitUI/` | Unreal project for the window and the mining building block (art, paste trees, cook scripts) |
 | `tests/` | `run.ps1` (all checks), `test_logic.cpp`, `test_compat.cpp`, Python checks |
 | `tools/` | `compat_dump.py` (native pattern generator / verifier), `compat_names.py` (contract name list) |
-| `scripts/package.ps1` | builds `dist\MSMiningUnit-<ver>-preview-for-developer.zip` (and `-DevMenu` for `dist\MSDevMenu-<ver>.zip`) |
+| `scripts/package.ps1` | builds `dist\MSMiningUnit-<ver>-preview-for-developer.zip` |
 | `build.ps1` | compile the DLL (`-Install` copies it into the game; game must be closed) |
 | `docs/` | `ASSETS.md` (art origin and license), `DevReference.html` (developer reference, not in the zip) |
 
@@ -100,7 +99,7 @@ Needs VS2022 BuildTools and a RE-UE4SS checkout at `<repo>\build\RE-UE4SS` (not 
 .\build.ps1                 # compile only; check for "error C" in the output
 .\build.ps1 -Install        # compile + back up and install into the game (game must be closed)
 .\tests\run.ps1             # all unit and static checks, no game needed
-.\scripts\package.ps1 -DevMenu   # release zip (+ dev menu zip)
+.\scripts\package.ps1            # release zip
 ```
 A full game restart is needed for any DLL change.
 

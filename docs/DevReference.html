@@ -578,7 +578,6 @@ ship tick: if JumpAnimProgress &gt; 0: JumpAnimProgress++; UpdateJumpChargeProgr
 <h3 id="lua-files">Files</h3>
 <table>
 <tr><th>File</th><th>Role</th></tr>
-<tr><td><code>mods/SandboxMenu/Scripts/main.lua</code></td><td>Dev Menu (F3), Cheats tab (test buttons, "Warp current ship to pinned sector"), <code>sendMiningCmd</code> helper (writes MiningCmd.txt). Reduced from 1692 to ~706 lines after probe removal.</td></tr>
 <tr><td><code>native_mining.lua</code>, <code>native_probe.lua</code></td><td>opens the Mining window (<code>NP.openMining</code>); native_probe has dead exports to trim</td></tr>
 <tr><td><code>ue/MiningUnitUI/lua/wbp_loader.lua</code></td><td>loads <code>WBP_MiningUnit</code>, fills it from the status files, handles tabs, modals, saves INI</td></tr>
 <tr><td><code>ue/MiningUnitUI/scripts/gen_paste.py</code></td><td>generates the widget tree text the user pastes into the UE editor; <code>SPEC.md</code> holds the naming contract</td></tr>
