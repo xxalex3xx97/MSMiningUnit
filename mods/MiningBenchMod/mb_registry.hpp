@@ -121,6 +121,10 @@ namespace
         uint64_t pass = 0;
         std::set<int> sys_done;            // systems a pass has covered (started with a mining ship there)
         int world_sys = 0;                 // player's system at the last trigger check (0 = unknown)
+        bool world_ok = false;             // a game world is loaded (world_sys > 0): seeds may start
+        bool world_wait = false;           // world changed: the next seed waits REG_EMPTY_RETRY_MS (freed saves of the old world)
+        bool in_tick = false;              // set during registry_tick; still set at entry = the last tick faulted
+        int tick_faults = 0;               // consecutive faulted ticks
         ULONGLONG seed_ms = 0, self_ms = 0, stats_ms = 0, slow_ms = 0, sys_ms = 0, trig_ms = 0;
         std::string self_summary = "SUMMARY n/a (no selfcheck yet)";   // last selfcheck SUMMARY line (MiningRegistry.txt header)
         bool self_due = false;
@@ -337,6 +341,14 @@ namespace
     void reg_seed_abort(RegState& s)
     {
         s.seeding = false;
+        reg_seed_release(s);
+    }
+
+    // WHAT: drops every game object pointer of the registry (save objects of the table, lists of the running pass). The table rows stay.
+    // WHY: after a world load the save objects are freed; a later read through them faults (mb_rocks.hpp: alive_seh cannot see freed UObjects).
+    void reg_seed_unbind(RegState& s)
+    {
+        std::fill(s.save.begin(), s.save.end(), nullptr);
         reg_seed_release(s);
     }
 
@@ -923,26 +935,46 @@ namespace
     {
         (void)dt;
         RegState& s = reg_st();
+        if (s.in_tick)
+        {
+            // the previous tick never cleared the flag: it faulted (SEH in compat_run). Drop the pass and the object pointers.
+            ++s.tick_faults;
+            log_line(STR("REG tick faulted last time, seed aborted n=") + std::to_wstring(s.tick_faults));
+            reg_seed_abort(s);
+            reg_seed_unbind(s);
+            s.seed_ms = GetTickCount64();
+        }
+        s.in_tick = true;
         LARGE_INTEGER t0;
         QueryPerformanceCounter(&t0);
         const ULONGLONG now = GetTickCount64();
         ++s.ticks;
         s.ships = ships;
         s.targets = targets;
-        reg_target_stage(s);   // deletes (suspects) and targeted rocks: always, cheap
+        // world probe EVERY tick (one seh_run, the player's system only). A change or no game world drops the pass and the save pointers
+        // before any save is read this tick. WHY: the stages below read the save objects; freed ones must never be read after a world change.
+        RegWorldCtx wc;
+        const int wsys = (seh_run(reg_world_fn, &wc) ? wc.sys : 0);
+        s.world_ok = wsys > 0;
+        const bool world_bad = wsys != s.world_sys || !s.world_ok;
+        if (world_bad)
+        {
+            // any change (menu -> game, game -> menu, another system) or no game world: the old pass is dropped; the pointers only on a change
+            if (wsys != s.world_sys) reg_seed_unbind(s);
+            s.world_sys = wsys;
+            reg_seed_abort(s);
+            s.seed_ms = now;
+            s.world_wait = true;
+        }
+        if (!world_bad && !s.world_wait) reg_target_stage(s);   // deletes (suspects) and targeted rocks: always, cheap
         // seed triggers, no ship needed: first tick, 10 min refresh, the player's system changed, no alive rock (retry every 5 s),
         // a mining ship in a system no pass covered (also restarts a running pass)
         bool start = false;
         if (now - s.trig_ms >= REG_TRIG_MS)
         {
             s.trig_ms = now;
-            RegWorldCtx wc;
-            if (seh_run(reg_world_fn, &wc) && wc.sys > 0 && wc.sys != s.world_sys)
-            {
-                s.world_sys = wc.sys;
-                start = true;
-            }
-            if (!s.seeding && reg_alive_count(s) == 0 && now - s.seed_ms >= REG_EMPTY_RETRY_MS) start = true;
+            if (s.world_wait && s.world_ok && now - s.seed_ms >= REG_EMPTY_RETRY_MS) { s.world_wait = false; start = true; }
+            if (!s.seeding && s.world_ok && reg_alive_count(s) == 0 && now - s.seed_ms >= REG_EMPTY_RETRY_MS) start = true;
         }
         bool sys_new = false;
         if (now - s.sys_ms >= REG_SYS_MS)
@@ -959,13 +991,14 @@ namespace
             if (!s.seeding)
             {
                 if (s.seed_ms == 0 || now - s.seed_ms >= REG_SEED_REFRESH_MS) start = true;
-                if (start || sys_new) reg_seed_begin(s, ships);
+                if ((start || sys_new) && s.world_ok) reg_seed_begin(s, ships);
             }
-            else if (sys_new)
+            else if (sys_new && s.world_ok)
             {
                 reg_seed_abort(s);
                 reg_seed_begin(s, ships);
             }
+            if (s.seeding && !s.world_ok) { reg_seed_abort(s); reg_seed_unbind(s); s.seed_ms = now; }
             if (s.seeding) reg_seed_slice(s, reg_seed_budget(s, now));
             // stats and dump: not budget-gated (cheap, once a minute)
             LARGE_INTEGER t1;
@@ -977,7 +1010,7 @@ namespace
                 if (!ships.empty()) reg_dump_file(s, ships[0].sys, ships[0].p, L"MiningRegistry.txt");
             }
             if (!reg_over_budget(perf_ms_since(t1))) reg_validate_stage(s, ships);
-            if (!reg_over_budget(perf_ms_since(t1))) reg_radius_stage(s, ships);
+            if (!world_bad && !s.world_wait && !reg_over_budget(perf_ms_since(t1))) reg_radius_stage(s, ships);
             if (!reg_over_budget(perf_ms_since(t1))) reg_actor_stage(s, ships);
             if (!reg_over_budget(perf_ms_since(t1))) reg_self_stage(s);
             if (s.self_ms == 0 && !s.seeding) s.self_ms = now;   // the periodic self-check counts from the first full pass
@@ -992,6 +1025,8 @@ namespace
             s.slow_ms = now;
             log_line(STR("REG slow ms=") + std::to_wstring(ms) + STR(" rocks=") + std::to_wstring(s.tab.rocks.size()));
         }
+        s.in_tick = false;
+        s.tick_faults = 0;
     }
 
     // WHAT: rock died in the engine (delete listener, drained by rock_drain_dead): clears the actor handle and marks the rock suspect.
