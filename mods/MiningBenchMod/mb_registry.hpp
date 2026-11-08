@@ -23,7 +23,7 @@
 // TICK: registry_tick(dt, ships, targets) from cmd_tick (0.25 s block). Targets/suspects alive check every tick; triggers; the seed slice
 //       (own budget); the writer; then validation (2 km), radius reads, actor resolution, self-check (once after a pass and every 10 min),
 //       stats and dump every 60 s. Each of these stages is skipped when its budget is spent.
-// SEED TRIGGERS (no ship needed): first tick, every 10 min (safety refresh), the player's system changed (checked every 1 s),
+// SEED TRIGGERS (no ship needed): first tick, every 10 min (safety refresh), a world load (player controller/object identity changed; a warp does not count) (checked every 1 s),
 //       no alive rock (retry every 5 s while the world is not ready), a mining ship in a system no pass has covered yet (restarts a running
 //       pass: the table is kept, only the lists of the pass are dropped).
 // COMPARE: reg_cmp_run (SEH) walks g_rock_by_id: rows = registry vs actor (selfcheck, reg_check); missing = coverage (actors within 3 km, no entry).
@@ -54,6 +54,7 @@ namespace
     bool get_chunk(UObject* o, int64_t c[3]);
     int sys_id(UObject* o);
     bool ch_player(int& psys, int64_t pch[3]);   // mb_chunkhold.hpp: the player's system (0/false when unreadable)
+    UObject* ch_ctrl();                          // mb_chunkhold.hpp: the player controller (cached)
 
     // WHAT: periods and caps of the registry (ms / count).
     constexpr ULONGLONG REG_SEED_REFRESH_MS = 600000;   // safety full pass every 10 min
@@ -68,6 +69,7 @@ namespace
     constexpr double REG_DUMP_M = 20000.0;              // dump: rocks within this distance of the first ship
     constexpr size_t REG_LIST_N = 50;                   // rows logged by reg_query
     constexpr ULONGLONG REG_TRIG_MS = 1000;             // world system and rock count check (seed triggers)
+    constexpr int REG_NOWORLD_TICKS = 4;                // failed player reads in a row before the world counts as gone (4 x 0.25 s)
     constexpr ULONGLONG REG_EMPTY_RETRY_MS = 5000;      // seed retry while the table holds no alive rock (world not ready)
     constexpr double REG_MISSING_M = 3000.0;            // compare: a loaded actor this close with no registry entry counts as missing
     constexpr double REG_RAD_SEG_M = 1500.0;            // radius reads first for rocks this close to an approach segment (m)
@@ -123,7 +125,9 @@ namespace
         int world_sys = 0;                 // player's system at the last trigger check (0 = unknown)
         bool world_ok = false;             // a game world is loaded (world_sys > 0): seeds may start
         bool world_wait = false;           // world changed: the next seed waits REG_EMPTY_RETRY_MS (freed saves of the old world)
-        bool in_tick = false;              // set during registry_tick; still set at entry = the last tick faulted
+        RegWorldTrack wt;                  // world identity (controller + PlayerObject), debounced no-world count
+        bool seed_due = false;             // a seed is wanted; kept while the cache writer or a pass runs
+        bool in_tick = false;             // set during registry_tick; still set at entry = the last tick faulted
         int tick_faults = 0;               // consecutive faulted ticks
         ULONGLONG seed_ms = 0, self_ms = 0, stats_ms = 0, slow_ms = 0, sys_ms = 0, trig_ms = 0;
         std::string self_summary = "SUMMARY n/a (no selfcheck yet)";   // last selfcheck SUMMARY line (MiningRegistry.txt header)
@@ -215,13 +219,20 @@ namespace
     }
 
     // WHAT: the player's system id (run under seh_run). sys = 0 when unreadable.
-    struct RegWorldCtx { int sys = 0; };
+    struct RegWorldCtx { int sys = 0; uint64_t id = 0; };
     void reg_world_fn(void* p)
     {
         auto* x = static_cast<RegWorldCtx*>(p);
         int64_t pch[3] = {0, 0, 0};
         int ps = 0;
         if (ch_player(ps, pch)) x->sys = ps;
+        if (x->sys > 0)
+        {
+            UObject* c = ch_ctrl();
+            UObject* po = get_obj_prop(c, STR("PlayerObject"));
+            x->id = (static_cast<uint64_t>(reinterpret_cast<uintptr_t>(c)) * 1000003ull) ^ static_cast<uint64_t>(reinterpret_cast<uintptr_t>(po));
+            if (x->id == 0) x->id = 1;
+        }
     }
 
     // WHAT: frees the lists of the running pass (after a finish or an abort).
@@ -943,7 +954,9 @@ namespace
             reg_seed_abort(s);
             reg_seed_unbind(s);
             s.seed_ms = GetTickCount64();
+            s.world_wait = true;   // reseed after REG_EMPTY_RETRY_MS, not the 10 min refresh
         }
+        struct TickGuard { RegState& s; ~TickGuard() { s.in_tick = false; } } guard{s};   // C++ exception clears the flag; an SEH fault does not unwind (flag stays)
         s.in_tick = true;
         LARGE_INTEGER t0;
         QueryPerformanceCounter(&t0);
@@ -951,30 +964,36 @@ namespace
         ++s.ticks;
         s.ships = ships;
         s.targets = targets;
-        // world probe EVERY tick (one seh_run, the player's system only). A change or no game world drops the pass and the save pointers
+        // world probe EVERY tick (one seh_run, the player's system only). A world load or a lost world (debounced) drops the pass and the save pointers; a warp does not
         // before any save is read this tick. WHY: the stages below read the save objects; freed ones must never be read after a world change.
         RegWorldCtx wc;
-        const int wsys = (seh_run(reg_world_fn, &wc) ? wc.sys : 0);
-        s.world_ok = wsys > 0;
-        const bool world_bad = wsys != s.world_sys || !s.world_ok;
+        const bool rd = seh_run(reg_world_fn, &wc) && wc.sys > 0;
+        const RegWorldEv we = reg_world_step(s.wt, rd ? wc.id : 0, REG_NOWORLD_TICKS);
+        if (rd) s.world_sys = wc.sys;   // a warp only updates the system: pointers stay bound
+        s.world_ok = s.wt.ok;
+        const bool world_bad = we != RWE_NONE || !s.world_ok || !rd;   // a failed read this tick: no save is read (freed objects), pointers stay until LOST/LOADED
         if (world_bad)
         {
-            // any change (menu -> game, game -> menu, another system) or no game world: the old pass is dropped; the pointers only on a change
-            if (wsys != s.world_sys) reg_seed_unbind(s);
-            s.world_sys = wsys;
+            // save load or world gone: the old pass and the save pointers are dropped before any save is read this tick
+            if (we != RWE_NONE)
+            {
+                log_line(std::wstring(STR("REG world ")) + (we == RWE_LOADED ? STR("loaded") : STR("lost")) + STR(", pointers dropped"));
+                reg_seed_unbind(s);
+                s.seed_due = false;   // a pending seed must not skip the REG_EMPTY_RETRY_MS wait after the new world
+                s.world_sys = rd ? wc.sys : 0;
+            }
             reg_seed_abort(s);
             s.seed_ms = now;
             s.world_wait = true;
         }
         if (!world_bad && !s.world_wait) reg_target_stage(s);   // deletes (suspects) and targeted rocks: always, cheap
-        // seed triggers, no ship needed: first tick, 10 min refresh, the player's system changed, no alive rock (retry every 5 s),
+        // seed triggers, no ship needed: first tick, 10 min refresh, world loaded/reseed after a fault, no alive rock (retry every 5 s),
         // a mining ship in a system no pass covered (also restarts a running pass)
-        bool start = false;
         if (now - s.trig_ms >= REG_TRIG_MS)
         {
             s.trig_ms = now;
-            if (s.world_wait && s.world_ok && now - s.seed_ms >= REG_EMPTY_RETRY_MS) { s.world_wait = false; start = true; }
-            if (!s.seeding && s.world_ok && reg_alive_count(s) == 0 && now - s.seed_ms >= REG_EMPTY_RETRY_MS) start = true;
+            if (s.world_wait && s.world_ok && now - s.seed_ms >= REG_EMPTY_RETRY_MS) { s.world_wait = false; s.seed_due = true; }
+            if (!s.seeding && s.world_ok && reg_alive_count(s) == 0 && now - s.seed_ms >= REG_EMPTY_RETRY_MS) s.seed_due = true;
         }
         bool sys_new = false;
         if (now - s.sys_ms >= REG_SYS_MS)
@@ -990,14 +1009,15 @@ namespace
         {
             if (!s.seeding)
             {
-                if (s.seed_ms == 0 || now - s.seed_ms >= REG_SEED_REFRESH_MS) start = true;
-                if ((start || sys_new) && s.world_ok) reg_seed_begin(s, ships);
+                if (s.seed_ms == 0 || now - s.seed_ms >= REG_SEED_REFRESH_MS) s.seed_due = true;
+                if ((s.seed_due || sys_new) && s.world_ok && !s.world_wait) { s.seed_due = false; reg_seed_begin(s, ships); }
             }
-            else if (sys_new && s.world_ok)
+            else if (sys_new && s.world_ok && !s.world_wait)
             {
                 reg_seed_abort(s);
                 reg_seed_begin(s, ships);
             }
+            if (s.seeding) s.seed_due = false;
             if (s.seeding && !s.world_ok) { reg_seed_abort(s); reg_seed_unbind(s); s.seed_ms = now; }
             if (s.seeding) reg_seed_slice(s, reg_seed_budget(s, now));
             // stats and dump: not budget-gated (cheap, once a minute)
@@ -1025,7 +1045,6 @@ namespace
             s.slow_ms = now;
             log_line(STR("REG slow ms=") + std::to_wstring(ms) + STR(" rocks=") + std::to_wstring(s.tab.rocks.size()));
         }
-        s.in_tick = false;
         s.tick_faults = 0;
     }
 
