@@ -964,14 +964,14 @@ namespace
         ++s.ticks;
         s.ships = ships;
         s.targets = targets;
-        // world probe EVERY tick (one seh_run, the player's system only). A change or no game world drops the pass and the save pointers
+        // world probe EVERY tick (one seh_run, the player's system only). A world load or a lost world (debounced) drops the pass and the save pointers; a warp does not
         // before any save is read this tick. WHY: the stages below read the save objects; freed ones must never be read after a world change.
         RegWorldCtx wc;
         const bool rd = seh_run(reg_world_fn, &wc) && wc.sys > 0;
         const RegWorldEv we = reg_world_step(s.wt, rd ? wc.id : 0, REG_NOWORLD_TICKS);
         if (rd) s.world_sys = wc.sys;   // a warp only updates the system: pointers stay bound
         s.world_ok = s.wt.ok;
-        const bool world_bad = we != RWE_NONE || !s.world_ok;
+        const bool world_bad = we != RWE_NONE || !s.world_ok || !rd;   // a failed read this tick: no save is read (freed objects), pointers stay until LOST/LOADED
         if (world_bad)
         {
             // save load or world gone: the old pass and the save pointers are dropped before any save is read this tick
@@ -979,6 +979,7 @@ namespace
             {
                 log_line(std::wstring(STR("REG world ")) + (we == RWE_LOADED ? STR("loaded") : STR("lost")) + STR(", pointers dropped"));
                 reg_seed_unbind(s);
+                s.seed_due = false;   // a pending seed must not skip the REG_EMPTY_RETRY_MS wait after the new world
                 s.world_sys = rd ? wc.sys : 0;
             }
             reg_seed_abort(s);
@@ -986,7 +987,7 @@ namespace
             s.world_wait = true;
         }
         if (!world_bad && !s.world_wait) reg_target_stage(s);   // deletes (suspects) and targeted rocks: always, cheap
-        // seed triggers, no ship needed: first tick, 10 min refresh, the player's system changed, no alive rock (retry every 5 s),
+        // seed triggers, no ship needed: first tick, 10 min refresh, world loaded/reseed after a fault, no alive rock (retry every 5 s),
         // a mining ship in a system no pass covered (also restarts a running pass)
         if (now - s.trig_ms >= REG_TRIG_MS)
         {
@@ -1009,9 +1010,9 @@ namespace
             if (!s.seeding)
             {
                 if (s.seed_ms == 0 || now - s.seed_ms >= REG_SEED_REFRESH_MS) s.seed_due = true;
-                if ((s.seed_due || sys_new) && s.world_ok) { s.seed_due = false; reg_seed_begin(s, ships); }
+                if ((s.seed_due || sys_new) && s.world_ok && !s.world_wait) { s.seed_due = false; reg_seed_begin(s, ships); }
             }
-            else if (sys_new && s.world_ok)
+            else if (sys_new && s.world_ok && !s.world_wait)
             {
                 reg_seed_abort(s);
                 reg_seed_begin(s, ships);
