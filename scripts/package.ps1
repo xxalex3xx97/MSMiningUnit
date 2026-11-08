@@ -1,15 +1,14 @@
-# Build the private-preview release zip (mining only) and optionally the dev menu zip.
-# Usage: .\scripts\package.ps1 [-Version 0.2.1] [-DevMenu]
+# Build the private-preview release zip (mining only).
+# Usage: .\scripts\package.ps1 [-Version 0.2.1]
 # WHAT: stages the mining mod (DLL, Lua, 2 paks, docs) into dist\stage and zips it to dist\MSMiningUnit-<ver>-preview-for-developer.zip.
 # WHY: one reproducible zip for the developer; the game install is only READ (paks are copied, never written).
-# DEPENDS ON: the built MiningBenchMod.dll (build.ps1 output), the installed game Paks, mods\MiningUnitUI, mods\MSDevMenu, README.md, docs\.
+# DEPENDS ON: the built MiningBenchMod.dll (build.ps1 output), the installed game Paks, mods\MiningUnitUI, README.md, docs\.
 # USED BY: manual release step (see README "Private preview"). Output dist\ is git-ignored; never commit zips.
 param(
     [string]$Version = '0.2.1',
     [string]$Game = $(if ($env:MS_GAME_DIR) { $env:MS_GAME_DIR } else { 'F:\SteamLibrary\steamapps\common\Main Sequence Demo\Windows\MainSequence' }),
     [string]$Dll = $(if ($env:MS_MODS_ROOT) { "$env:MS_MODS_ROOT\build\RE-UE4SS\build\Game__Shipping__Win64\bin\MiningBenchMod.dll" } else { 'F:\MSDemoMods\build\RE-UE4SS\build\Game__Shipping__Win64\bin\MiningBenchMod.dll' }),
-    [string]$UiPakDir = (Join-Path (Split-Path -Parent $PSScriptRoot) 'ue\MiningUnitUI\build\out'),
-    [switch]$DevMenu
+    [string]$UiPakDir = (Join-Path (Split-Path -Parent $PSScriptRoot) 'ue\MiningUnitUI\build\out')
 )
 $ErrorActionPreference = 'Stop'
 $root  = Split-Path -Parent $PSScriptRoot
@@ -107,15 +106,3 @@ try {
 } finally { $za.Dispose() }
 Write-Host "wrote $zip"
 Get-FileHash -Algorithm SHA256 -LiteralPath $zip | ForEach-Object { Write-Host "SHA256 $($_.Hash)  $($_.Path)" }
-
-# ---- optional dev menu zip (separate mod, not in the release) ----
-if ($DevMenu) {
-    $dstage = Join-Path $dist 'stage-devmenu'
-    if (Test-Path -LiteralPath $dstage) { Remove-Item -LiteralPath $dstage -Recurse -Force }
-    Copy-Item -LiteralPath (Join-Path $root 'mods\MSDevMenu') -Destination (Join-Path $dstage "$ue4ss\MSDevMenu") -Recurse -Force
-    $dzip = Join-Path $dist "MSDevMenu-$Version.zip"
-    if (Test-Path -LiteralPath $dzip) { Remove-Item -LiteralPath $dzip -Force }
-    Compress-Archive -Path (Join-Path $dstage '*') -DestinationPath $dzip -CompressionLevel Optimal
-    Write-Host "wrote $dzip"
-    Get-FileHash -Algorithm SHA256 -LiteralPath $dzip | ForEach-Object { Write-Host "SHA256 $($_.Hash)  $($_.Path)" }
-}
