@@ -917,14 +917,16 @@ namespace
         m.sec_txt = sector_text(ship);   // the record must show the place, not the last attacked sample's
         m.dmg_txt = struct_prop_text(ship, STR("DamageState"));
         bool back = false;   // hazard back-out (SEEK / MINE): move away first, the dock trip after it
-        if (m.hazard)
+        // damage start (every flee): the ship's chunk and raw location; away direction = from the blocker to the ship (+X when unknown)
         {
-            why += STR(" no attacker");
-            // damage start: the ship's chunk and raw location; away direction = from the blocker to the ship (+X when unknown)
             int64_t ch[3] = {0, 0, 0}; double raw[3] = {0, 0, 0};
             m.hz_ok = sys_id(ship) > 0 && get_chunk(ship, ch) && get_loc(ship, raw);
             if (m.hz_ok) { m.hz_sys = sys_id(ship); std::copy(ch, ch + 3, m.hz_ch); std::copy(raw, raw + 3, m.hz_loc); }
             m.hz_dir[0] = 1.0; m.hz_dir[1] = 0.0; m.hz_dir[2] = 0.0;
+        }
+        if (m.hazard)
+        {
+            why += STR(" no attacker");
             // blocker = the rock nearest the ship (surface, within HAZARD_BLOCK_M); else the target
             double ns = 0.0;
             const int nid = nearest_rock_any_id(ship, ns, 0);
@@ -2145,7 +2147,7 @@ namespace
             if (m.hold_t < DOCK_SLOT_RETRY_S) return true;
             m.hold_t = 0.0;
         }
-        if (!readable) return true;
+        if (!readable) return false;   // no position to fly to: the caller's flee fallback keeps the ship moving
         {
             double off[3], tch_loc[3];
             int64_t tch[3];
@@ -2405,7 +2407,12 @@ namespace
                     m.hz_t += dt;
                     if (m.hz_t >= HAZARD_RETRY_S && !mv_active(sid) && !dock_job_on(sid)) { m.hz_t = 0.0; hazard_away(sid, m); }
                 }
-                else slot_ok = slot_flight(ship, sid, m, dt);
+                else
+                {
+                    slot_ok = slot_flight(ship, sid, m, dt);
+                    m.hz_t += dt;
+                    if (m.flee && flee_idle_move_due(slot_ok, m.hold_ph, m.hz_t, mv_active(sid), dock_job_on(sid))) { m.hz_t = 0.0; hazard_away(sid, m); }
+                }
                 if (m.flee && m.hold_ph == 2)   // a fleeing ship that reached its holding spot: the flee ends here (no dock slot taken)
                 {
                     net_leave_slot(sid);

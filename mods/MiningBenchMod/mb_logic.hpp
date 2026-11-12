@@ -589,6 +589,11 @@ namespace
     constexpr double HAZARD_DROP_FRESH_S = 2.0;  // a hull drop this recent counts as "still dropping"
     constexpr double HAZARD_RADIUS_M = 5000.0;   // move-away point: this far from the damage start (m); circling keeps the ship >= 2 km away
     constexpr double HAZARD_RETRY_S = 1.0;       // a refused or finished move-away is re-issued after this long (s)
+    // WHAT: a fleeing ship with no holding spot yet (slot_ok false), not yet holding (hold_ph != 2), no move/dock job, and the retry wait over must start a move-away.
+    inline bool flee_idle_move_due(bool slot_ok, int hold_ph, double hz_t, bool move_busy, bool dock_busy)
+    {
+        return !slot_ok && hold_ph != 2 && hz_t >= HAZARD_RETRY_S && !move_busy && !dock_busy;
+    }
     // WHAT: the move-away is due: 5 s or more since the flee began, a hull drop in the last 2 s, and no move or dock job runs.
     inline bool hazard_move_due(double flee_t, double drop_age, bool move_busy, bool dock_busy)
     {

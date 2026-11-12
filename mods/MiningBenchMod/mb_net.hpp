@@ -297,6 +297,30 @@ namespace
             UObject* dobj = find_by_id(STR("Dock"), d);
             if (!alive(dobj)) continue;
             existing.insert(d);
+            {
+                // a dock with no docked ship yet: learn its position from the dock object; with a stored position, log the object's position once (diagnostic only)
+                static std::set<int> dockpos_cmp_logged;
+                const auto kp = g_net_dockpos.find(d);
+                if (kp == g_net_dockpos.end() || !kp->second.known)
+                {
+                    net_learn_dockpos(d, dobj);   // dock never had a docked ship: read the Dock object's own position
+                    const auto np = g_net_dockpos.find(d);
+                    if (np != g_net_dockpos.end() && np->second.known)
+                        log_line(STR("DOCKPOS dock=") + std::to_wstring(d) + STR(" learned from the dock object sys=") + std::to_wstring(np->second.sys) +
+                                 STR(" ch=(") + std::to_wstring(np->second.ch[0]) + STR(",") + std::to_wstring(np->second.ch[1]) + STR(",") + std::to_wstring(np->second.ch[2]) + STR(")"));
+                }
+                else if (!dockpos_cmp_logged.count(d))
+                {
+                    dockpos_cmp_logged.insert(d);
+                    int64_t oc[3] = {0, 0, 0}; double ol[3] = {0, 0, 0};
+                    const bool ok = get_chunk(dobj, oc) && get_loc(dobj, ol);
+                    log_line(STR("DOCKPOS dock=") + std::to_wstring(d) + STR(" object ") +
+                             (ok ? STR("ch=(") + std::to_wstring(oc[0]) + STR(",") + std::to_wstring(oc[1]) + STR(",") + std::to_wstring(oc[2]) + STR(") loc0=") + std::to_wstring(static_cast<long long>(ol[0]))
+                                 : STR("n/a")) +
+                             STR(" stored (ship-learned) ch=(") + std::to_wstring(kp->second.ch[0]) + STR(",") + std::to_wstring(kp->second.ch[1]) + STR(",") + std::to_wstring(kp->second.ch[2]) +
+                             STR(") loc0=") + std::to_wstring(static_cast<long long>(kp->second.loc[0])));
+                }
+            }
             const std::string dname = net_clean(u8(dock_name(dobj)));
             if (dname.empty()) g_net_dock_names.erase(d); else g_net_dock_names[d] = dname;
         }
