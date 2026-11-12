@@ -1158,6 +1158,23 @@ static void t_path_waypoint()
     NEAR(so[0], 800.0, 1e-9); NEAR(so[1], 0.0, 1e-9); NEAR(so[2], 0.0, 1e-9);
 }
 
+// attacker distance from chunk + raw loc (65536 raw per m, 2048 m chunks); hit class needs any targeter or combat
+static void t_attack_dist_and_flee_class()
+{
+    const int64_t c0[3] = {0, 240, 0}, c1[3] = {0, 241, 0};
+    const double a[3] = {0, 0, 0}, b[3] = {20671200.0, 0, 0};
+    const double d = abs_dist_m(c0, a, c0, b, 65536.0, 2048.0);
+    CHECK(std::fabs(d - 315.4) < 0.1);
+    CHECK(d <= 5000.0);
+    CHECK(std::fabs(abs_dist_m(c0, a, c1, a, 65536.0, 2048.0) - 2048.0) < 1e-6);
+    CHECK(target_entry_near(d, 5000.0));
+    CHECK(!target_entry_near(60000.0, 5000.0));
+    CHECK(!hazard_flee_full(1, 0, false));
+    CHECK(!hazard_flee_full(0, 3, false));
+    CHECK(!hazard_flee_full(0, 0, true));
+    CHECK(hazard_flee_full(0, 0, false));
+}
+
 // GetShields double -> whole units; a shield drop from doubles triggers DMG_SHIELD
 static void t_flee_guard_shield_units()
 {
@@ -2110,7 +2127,7 @@ int main()
         {"net_clear_expired", t_net_clear_expired}, {"net_unload_first", t_net_unload_first}, {"dock_undock_first", t_dock_undock_first},
         {"combat_flee", t_combat_flee}, {"combat_log", t_combat_log},
         {"hazard_flee", t_hazard_flee}, {"targett_entry", t_targett_entry},
-        {"path_block", t_path_block}, {"path_perf", t_path_perf}, {"path_waypoint", t_path_waypoint}, {"shield_drop", t_shield_drop}, {"flee_guard_shield_units", t_flee_guard_shield_units}, {"flee_fallback_docks", t_flee_fallback_docks},{"fast_sample", t_fast_sample},
+        {"path_block", t_path_block}, {"path_perf", t_path_perf}, {"path_waypoint", t_path_waypoint}, {"shield_drop", t_shield_drop}, {"flee_guard_shield_units", t_flee_guard_shield_units}, {"flee_fallback_docks", t_flee_fallback_docks}, {"attack_dist_and_flee_class", t_attack_dist_and_flee_class}, {"fast_sample", t_fast_sample},
         {"rock_depleted", t_rock_depleted},
         {"reg_table", t_reg_table}, {"reg_events", t_reg_events}, {"reg_world_track", t_reg_world_track}, {"reg_within_nearest", t_reg_within_nearest}, {"reg_surface_block", t_reg_surface_block_radius},
         {"approach_throttle", t_approach_throttle}, {"bubble", t_bubble}, {"bubble_ladder", t_bubble_ladder}, {"bubble_scope", t_bubble_scope}, {"tune_geom", t_tune_geom}, {"flight_warp", t_flight_warp}, {"sweep_return_flee", t_sweep_return_flee}, {"path2_rules", t_path2_rules},

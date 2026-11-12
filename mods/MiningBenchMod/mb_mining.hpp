@@ -911,7 +911,7 @@ namespace
     //   the damage start is kept (move-away circle), and the rock being approached or mined is marked hazardous (g_hazard_rocks).
     void flee_now(UObject* ship, int sid, MineSt& m, std::wstring why, int32_t drop = 0)
     {
-        m.hazard = drop > 0 && hazard_flee(m.tgt_n);
+        m.hazard = drop > 0 && hazard_flee_full(m.tgt_n, m.tgt_far, m.combat_now);
         m.hz_drop = drop;
         m.hz_k = 0; m.hz_t = 0.0;
         m.sec_txt = sector_text(ship);   // the record must show the place, not the last attacked sample's
@@ -2809,6 +2809,8 @@ namespace
         const int32_t stride = inner ? inner->GetElementSize() : 0;
         double sp[3] = {0, 0, 0};
         const bool sp_ok = get_loc(ship, sp);
+        int64_t sc[3] = {0, 0, 0};
+        const bool sc_ok = get_chunk(ship, sc);
         c->total = clamp_tarray_num(arr->Num());
         UObject* so = get_obj_prop(ship, STR("Owner"));      // our owner / faction: an entry sharing either is not an attacker
         UObject* sf = get_obj_prop(ship, STR("Faction"));
@@ -2823,7 +2825,8 @@ namespace
             UObject* ef = live ? get_obj_prop(e, STR("Faction")) : nullptr;
             const bool same_side = (alive(eo) && eo == so) || (alive(ef) && ef == sf);
             double ep[3] = {0, 0, 0};
-            const double dm = (live && sp_ok && get_loc(e, ep)) ? dist3(sp, ep) / 100.0 : -1.0;   // metres; -1 = unreadable
+            int64_t ec[3] = {0, 0, 0};
+            const double dm = (live && sp_ok && sc_ok && get_loc(e, ep) && get_chunk(e, ec)) ? abs_dist_m(sc, sp, ec, ep, g_raw_per_m, DOCK_CHUNK_M) : -1.0;   // metres; -1 = unreadable (counts near)
             if (target_entry_hostile(live, own, same_side, objs)) { if (target_entry_near(dm, c->range_m)) c->hostile++; else c->far_n++; }
             if (i >= 8) continue;
             const std::wstring cls = live ? std::wstring(e->GetClassPrivate()->GetName()) : std::wstring(STR("unreadable ")) + (inner ? type_text(inner) : std::wstring(STR("?")));

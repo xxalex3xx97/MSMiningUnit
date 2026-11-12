@@ -555,6 +555,19 @@ namespace
     // ---------- hazard flee: hull drop with no hostile targeter ----------
     // WHAT: the flee is a hazard flee when the hull drop had no hostile targeter at the sample (the damage has no attacker).
     inline bool hazard_flee(int hostile_n) { return hostile_n <= 0; }
+    // WHAT: distance in metres between two objects from chunk (int64 x3) and raw local loc (x3, raw units); raw_per_m = g_raw_per_m, chunk_m = DOCK_CHUNK_M.
+    inline double abs_dist_m(const int64_t ca[3], const double la[3], const int64_t cb[3], const double lb[3], double raw_per_m, double chunk_m)
+    {
+        double s = 0.0;
+        for (int i = 0; i < 3; ++i)
+        {
+            const double d = (static_cast<double>(ca[i]) - static_cast<double>(cb[i])) * chunk_m + (la[i] - lb[i]) / raw_per_m;
+            s += d * d;
+        }
+        return std::sqrt(s);
+    }
+    // WHAT: hit with no attacker at all: no near hostile, no far hostile, IsShipInCombat false. Anything targeting the ship makes the hit an attack.
+    inline bool hazard_flee_full(int hostile_near, int hostile_far, bool combat) { return hostile_near <= 0 && hostile_far <= 0 && !combat; }
     constexpr double HAZARD_STUCK_MPS = 1.0;     // speed below this = not moving (m/s)
     constexpr size_t HAZARD_STUCK_N = 3;         // speed samples (1 s apart) below HAZARD_STUCK_MPS in a row = stuck
     // WHAT: last HAZARD_STUCK_N speed samples (oldest first) all below HAZARD_STUCK_MPS.
