@@ -33,6 +33,8 @@ namespace
         int hyp = 0;               // variant e: quaternion / yaw-sign combo in use
         double hyp_t = 0.0, err0 = -1.0;   // variant e: time in this combo, heading error when it started
         int ord = 0, ord_base = 0; // variant e: aim log counter; aligned ticks, then thrust start tick
+        bool custom = false;       // warp_real_to: arrival is the given raw point (arr_c), not arrival_of(sector)
+        int64_t arr_c[3] = {0, 0, 0};
     } g_wr;
     // WHAT: ships waiting for their undock before warp_real: ship id -> arg as warp_real_cmd got it. WHY: same as g_warp_wait.
     std::map<int, std::string> g_wr_wait;
@@ -73,7 +75,8 @@ namespace
         std::wstring err;
         int64_t arr[3] = {0, 0, 0};
         const int64_t dist = g_wr.dist > 0 ? g_wr.dist : 26214400;
-        if (!arrival_of(ship, g_wr.sys, g_wr.ch, dist, arr, err)) { log_line(std::wstring(STR("WARPREAL e arrival failed: ")) + err); wr_end(); return; }
+        if (g_wr.custom) { for (int i = 0; i < 3; ++i) arr[i] = g_wr.arr_c[i]; }
+        else if (!arrival_of(ship, g_wr.sys, g_wr.ch, dist, arr, err)) { log_line(std::wstring(STR("WARPREAL e arrival failed: ")) + err); wr_end(); return; }
         const bool ok = warp_send(g_wr.sid, g_wr.sys, g_wr.ch, arr, false, err, true);
         log_line(std::wstring(STR("WARPREAL e set-target command ")) + (ok ? STR("sent arrival ") + trio_text(arr) : err));
         if (!ok) { wr_end(); return; }
@@ -275,6 +278,31 @@ namespace
         wr_start(first);
         return STR("ok");
     }
+
+    // WHAT: real warp of ship sid to an arbitrary point (sys, chunk ch, raw arrival arr): same state machine as warp_real_cmd, no sector. "ok" when started, else "error: ...".
+    // WHY: a flee target (outside a base) is not a sector arrival point. The ship must be undocked (the caller flies instead when docked).
+    std::wstring warp_real_to(int sid, int sys, const int64_t ch[3], const int64_t arr[3])
+    {
+        if (!g_compat.usable(F_WARPREAL)) return STR("error: COMPAT warp disabled");
+        if (g_wr.var != 0) return STR("error: another warp running");
+        UObject* ship = find_by_id(STR("DMSPlayerShipObject"), sid);
+        if (!alive(ship)) return STR("error: ship not found");
+        g_wr = WarpReal{};
+        g_wr.sid = sid; g_wr.sys = sys; g_wr.custom = true;
+        for (int i = 0; i < 3; ++i) { g_wr.ch[i] = ch[i]; g_wr.arr_c[i] = arr[i]; }
+        int32_t f0 = -1, c0 = -1; std::wstring ce;
+        call_int(ship, STR("GetAvailableJumpFuel"), f0);
+        jump_cost(ship, sys, ch, c0, ce);
+        g_wr.fuel0 = f0;
+        log_line(STR("WARPREAL start custom ship=") + std::to_wstring(sid) + STR(" sys=") + std::to_wstring(sys) + STR(" chunk=") + trio_text(ch));
+        wr_start(5);
+        if (g_wr.var == 0) return STR("error: warp send refused");
+        g_wr.t = 25.0;   // flee warps time out sooner than the 60 s sector run
+        return STR("ok");
+    }
+    // WHAT: a real warp run is active for ship sid / for any ship. WHY: the flee holds still while it runs (no move job, no timers).
+    inline bool warp_real_running(int sid) { return g_wr.var != 0 && g_wr.sid == sid; }
+    inline bool warp_real_busy() { return g_wr.var != 0; }
 
     // WHAT: called every command poll (cmd_tick). Runs deferred undocks, then the active run: its steps, the result check
     //       (system + chunk = sector), the watch line every second, and the 60 s timeout.

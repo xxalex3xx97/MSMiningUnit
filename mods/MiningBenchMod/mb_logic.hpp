@@ -1082,9 +1082,7 @@ namespace
     constexpr double NET_SLOT_FIRST_M = 150.0;   // holding slot 1 is this far from the dock (m)
     constexpr double NET_SLOT_STEP_M = 100.0;    // next slot is this much further along the line (m)
     constexpr double NET_SLOT_MIN_GAP_M = 50.0;  // two slot points closer than this clash (m)
-    constexpr double FLEE_SLOT_MIN_M = 1000.0;      // a flee holds at least this far from the dock (clear of the station, m)
-    constexpr double FLEE_SLOT_MARGIN_M = 300.0;    // added to the farthest other dock of the same station (m)
-    constexpr double FLEE_STATION_MAX_M = 3000.0;   // docks farther than this belong to another station (m)
+    constexpr double FLEE_SLOT_MIN_M = 1000.0, FLEE_SLOT_MAX_M = 6000.0, FLEE_SLOT_MARGIN_M = 300.0, FLEE_STATION_MAX_M = 3000.0, STATION_GRID_M = 4.0;
 
     // what a waiting ship needs: cargo fill, fuel state, hull state, ore for this dock in cargo, distance to the dock (-1 unknown)
     struct NetReq { int cargo_pct = 0; bool fuel_low = false; bool has_dock_ore = false; double dist_m = -1; };
@@ -1258,12 +1256,30 @@ namespace
         const double m = first_m + (k - 1) * NET_SLOT_STEP_M;
         for (int i = 0; i < 3; ++i) out[i] = len > 0 ? dir[i] / len * m : 0.0;
     }
-    // WHAT: first holding distance (m) of a fleeing ship: clear of the station. Farthest other dock within FLEE_STATION_MAX_M (distances in m) + margin, at least FLEE_SLOT_MIN_M.
-    inline double flee_slot_first_m(const std::vector<double>& other_dock_dist_m)
+    // WHAT: station radius (m) from block grid positions (gx,gy,h) times grid_m: farthest block from the station origin. -1 when no blocks.
+    inline double station_extent_m(const std::vector<std::array<int, 3>>& blocks, double grid_m)
     {
-        double far = 0.0;
-        for (double d : other_dock_dist_m) if (d >= 0.0 && d <= FLEE_STATION_MAX_M && d > far) far = d;
-        return std::max(FLEE_SLOT_MIN_M, far + FLEE_SLOT_MARGIN_M);
+        double r = -1.0;
+        for (const auto& b : blocks)
+        {
+            const double d = std::sqrt(double(b[0]) * b[0] + double(b[1]) * b[1] + double(b[2]) * b[2]) * grid_m;
+            if (d > r) r = d;
+        }
+        return r;
+    }
+    // WHAT: hold distance of a fleeing ship from the station origin: known extent (>= 0) else farthest other dock <= FLEE_STATION_MAX_M; + margin; clamped to [MIN, MAX].
+    inline double flee_hold_dist_m(double extent_m, const std::vector<double>& other_dock_dist_m)
+    {
+        double base = extent_m;
+        if (base < 0.0) { base = 0.0; for (double d : other_dock_dist_m) if (d >= 0.0 && d <= FLEE_STATION_MAX_M && d > base) base = d; }
+        return std::min(FLEE_SLOT_MAX_M, std::max(FLEE_SLOT_MIN_M, base + FLEE_SLOT_MARGIN_M));
+    }
+    enum FleeMove { FLEE_FLY = 0, FLEE_REAL = 1 };
+    // WHAT: how a flee gets to the hold point. Real warp only when the flight is longer than warp_trip_km or in another system, and the real warp is usable, free, fuelled, and the ship is not docked.
+    inline FleeMove flee_move_kind(bool same_sys, double dist_m, int warp_trip_km, bool real_usable, bool warp_busy, bool fuel_ok, bool docked)
+    {
+        if (docked || !real_usable || warp_busy || !fuel_ok) return FLEE_FLY;
+        return (!same_sys || trip_warp_wanted(dist_m, warp_trip_km)) ? FLEE_REAL : FLEE_FLY;
     }
 
     // WHAT: chunk + raw loc moved by off_m metres (raw_per_m = raw per metre). A chunk is 134217728 raw (2048 m): the carry goes to the chunk, loc stays in 0..134217728.

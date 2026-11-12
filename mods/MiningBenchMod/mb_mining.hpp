@@ -78,6 +78,10 @@ namespace
         double dwait_shown = -1.0;             // dwait: the second the wait text was last written (-1 = write now)
         int hold_ph = 0;                       // dwait sub-phase: 0 none, 1 flying/warping to the holding slot, 2 holding there
         bool hold_warp = false;                // hold_ph 1: a warp (true) or a point flight (false)
+        bool hold_pt_ok = false;               // flee: hold point hold_ch/hold_loc computed for this flee
+        int64_t hold_ch[3] = {0, 0, 0};        // flee: hold point chunk and raw loc
+        double hold_loc[3] = {0, 0, 0};
+        bool hold_fly_only = false;            // flee: a real warp failed or ended short: fly the rest
         double hold_t = 0.0;                   // hold_ph 1: seconds since the flight/warp to the slot started
         int dl_n = 0;                          // dock time limit: undock/wait/redock rounds used (reset on normal finish, STOP ALL, Start)
         double dl_wait_t = 0.0;                // MS_DLWAIT: seconds waited after the undock
@@ -603,7 +607,7 @@ namespace
             if (mi->second.hold_warp) warp_cancel(sid);
             mv_cancel(sid);
         }
-        if (mi != g_mine.end()) { mi->second.hold_ph = 0; mi->second.hold_t = 0.0; mi->second.hold_warp = false; }
+        if (mi != g_mine.end()) { mi->second.hold_ph = 0; mi->second.hold_t = 0.0; mi->second.hold_warp = false; mi->second.hold_pt_ok = false; mi->second.hold_fly_only = false; }
         for (auto& kv : g_net_docks) net_slot_free(kv.second, sid);
         const auto si = g_net_ships.find(sid);
         if (si != g_net_ships.end()) { si->second.slot = 0; si->second.phase = 0; }
@@ -964,6 +968,7 @@ namespace
         m.hull = -1; m.sh = -1;
         mine_stop_work(ship, sid);   // cancels the approach job, Throttle 0
         m.flee = true; m.leave = false; m.flee_t = 0.0;
+        m.hold_pt_ok = false; m.hold_fly_only = false;   // a new flee picks its own hold point
         mlog(sid, STR("ERROR: ") + why + STR(", fleeing to dock"));
         g_flee_pick.insert(sid);   // dock pick purpose P_FLEE (mb_net.hpp)
         g_dock_pick.erase(sid);    // a flee never uses a manual Dock picker choice
@@ -2007,6 +2012,94 @@ namespace
     constexpr double DOCK_SLOT_WARP_WAIT_S = 15.0; // a slot warp not arrived after this long is tried again
     constexpr double DOCK_SLOT_RETRY_S = 5.0;      // a failed slot flight/warp start waits this long before the next try
 
+    // WHAT: reflection reads of the station blueprint (same walk as MSCore st_blueprint / st_read_blocks / st_transform, own copy).
+    FProperty* fl_field(UStruct* st, const TCHAR* name)
+    {
+        for (UStruct* u = st; u && u->GetName() != STR("Object"); u = u->GetSuperStruct())
+            for (FProperty* p : u->ForEachProperty()) if (p->GetName() == name) return p;
+        return nullptr;
+    }
+    bool fl_int(UStruct* st, const uint8_t* base, const TCHAR* name, int& v)
+    {
+        FProperty* p = fl_field(st, name);
+        if (!p || !CastField<FIntProperty>(p)) return false;
+        v = *reinterpret_cast<const int32_t*>(base + p->GetOffset_Internal());
+        return true;
+    }
+    const uint8_t* fl_struct(UStruct* st, const uint8_t* base, const TCHAR* name, UStruct*& out)
+    {
+        FProperty* p = fl_field(st, name);
+        auto* sp = p ? CastField<FStructProperty>(p) : nullptr;
+        if (!sp || !sp->GetStruct()) return nullptr;
+        out = sp->GetStruct();
+        return base + p->GetOffset_Internal();
+    }
+    struct StationExtCtx { int d = 0; int pid = 0; int nblocks = 0; bool origin_ok = false; int64_t* och = nullptr; double* oloc = nullptr; double ext = -1.0; };
+    // WHAT: body of station_extent_of_dock, runs under seh_run. Dock d -> ParentID -> StationObject -> Blueprint.Blocks -> grid triples -> station_extent_m.
+    void station_extent_work(void* p)
+    {
+        auto* c = static_cast<StationExtCtx*>(p);
+        UObject* dobj = find_by_id(STR("Dock"), c->d);
+        int32_t pid = 0;
+        if (!alive(dobj) || !get_int_prop(dobj, STR("ParentID"), pid) || pid <= 0) return;
+        c->pid = pid;
+        std::vector<UObject*> all;
+        if (!find_all_seh(STR("StationObject"), all)) return;
+        UObject* st = nullptr;
+        for (UObject* s : all) if (!st && alive(s) && s->GetName().rfind(STR("Default__"), 0) != 0 && obj_id(s) == pid) st = s;
+        if (!st) return;
+        const uint8_t* ob = reinterpret_cast<const uint8_t*>(st);
+        UStruct* et = nullptr;
+        const TArray<uint8_t>* ta = nullptr;
+        size_t es = 0;
+        for (UStruct* u = st->GetClassPrivate(); u && !ta && u->GetName() != STR("Object"); u = u->GetSuperStruct())
+            for (FProperty* p : u->ForEachProperty())
+            {
+                auto* sp = CastField<FStructProperty>(p);
+                if (ta || !sp || !sp->GetStruct() || p->GetName() != STR("Blueprint")) continue;
+                if (sp->GetStruct()->GetName().find(STR("BuildBlueprint")) == std::wstring::npos) continue;
+                const uint8_t* bb = ob + p->GetOffset_Internal();
+                FProperty* af = fl_field(sp->GetStruct(), STR("Blocks"));
+                auto* ap = af ? CastField<FArrayProperty>(af) : nullptr;
+                auto* ip = ap ? CastField<FStructProperty>(ap->GetInner()) : nullptr;
+                if (!ip || !ip->GetStruct()) return;
+                et = ip->GetStruct();
+                ta = reinterpret_cast<const TArray<uint8_t>*>(bb + af->GetOffset_Internal());
+                es = static_cast<size_t>(ap->GetInner()->GetElementSize());
+            }
+        if (!ta) return;
+        std::vector<std::array<int, 3>> blocks;
+        for (int i = 0; ta->GetData() && i < ta->Num(); ++i)
+        {
+            const uint8_t* e = ta->GetData() + static_cast<size_t>(i) * es;
+            int gx = 0, gy = 0, h = 0;
+            UStruct* tst = nullptr;
+            if (const uint8_t* t = fl_struct(et, e, STR("Transform"), tst))
+            {
+                UStruct* gl = nullptr;
+                if (const uint8_t* g = fl_struct(tst, t, STR("GridLocation"), gl)) { fl_int(gl, g, STR("X"), gx); fl_int(gl, g, STR("Y"), gy); }
+                fl_int(tst, t, STR("Height"), h);
+            }
+            blocks.push_back({gx, gy, h});
+        }
+        c->nblocks = static_cast<int>(blocks.size());
+        c->ext = station_extent_m(blocks, STATION_GRID_M);
+        c->origin_ok = get_chunk(st, c->och) && get_loc(st, c->oloc);
+    }
+    // WHAT: radius (m) of the station that owns dock d (station_extent_m), -1 when unreadable. origin_ok: the station object's chunk/loc were read into och/oloc.
+    // WHY: a flee hold distance scales with the base size. Runs under seh_run (a fault returns -1).
+    double station_extent_of_dock(int d, bool& origin_ok, int64_t och[3], double oloc[3], int* pid_out = nullptr, int* nblocks_out = nullptr)
+    {
+        StationExtCtx c;
+        c.d = d; c.och = och; c.oloc = oloc;
+        origin_ok = false;
+        if (!seh_run(station_extent_work, &c)) { log_line(STR("FLEE hold station read faulted dock=") + std::to_wstring(d)); return -1.0; }
+        origin_ok = c.origin_ok;
+        if (pid_out) *pid_out = c.pid;
+        if (nblocks_out) *nblocks_out = c.nblocks;
+        return c.ext;
+    }
+
     void dock_abs_m(const int64_t ch[3], const double loc[3], double out[3])
     {
         for (int i = 0; i < 3; ++i) out[i] = static_cast<double>(ch[i]) * DOCK_CHUNK_M + loc[i] / g_raw_per_m;
@@ -2079,10 +2172,9 @@ namespace
         const bool same = readable && sys == dp.sys;
         double dk[3];
         dock_abs_m(dp.ch, dp.loc, dk);
-        double first_m = NET_SLOT_FIRST_M;
-        if (m.flee)   // a flee holds clear of the station: past the farthest other dock of this station
+        if (m.flee && !m.hold_pt_ok)   // a flee's hold point: once per flee, outside the station, out from the station origin (or the dock)
         {
-            std::vector<double> od;
+            std::vector<double> od;   // other docks of this system: distance (m) from dock d
             for (const auto& kv : g_net_dockpos)
             {
                 if (kv.first == d || !kv.second.known || kv.second.sys != dp.sys) continue;
@@ -2090,7 +2182,31 @@ namespace
                 dock_abs_m(kv.second.ch, kv.second.loc, ob);
                 od.push_back(std::sqrt((ob[0] - dk[0]) * (ob[0] - dk[0]) + (ob[1] - dk[1]) * (ob[1] - dk[1]) + (ob[2] - dk[2]) * (ob[2] - dk[2])));
             }
-            first_m = flee_slot_first_m(od);
+            int64_t sch[3] = {0, 0, 0};
+            double sloc[3] = {0, 0, 0};
+            bool ook = false;
+            int spid = 0, nblk = 0;
+            const double ext = station_extent_of_dock(d, ook, sch, sloc, &spid, &nblk);
+            int64_t och[3] = {dp.ch[0], dp.ch[1], dp.ch[2]};
+            double oloc[3] = {dp.loc[0], dp.loc[1], dp.loc[2]};
+            if (ook) { std::copy(sch, sch + 3, och); std::copy(sloc, sloc + 3, oloc); }
+            const double hd = flee_hold_dist_m(ext, od) + (s.slot - 1) * NET_SLOT_STEP_M;
+            double dir[3] = {1.0, 0.0, 0.0};   // other system or unreadable ship: +X
+            if (same)
+            {
+                double oa[3], a[3];
+                dock_abs_m(och, oloc, oa);
+                dock_abs_m(ch, loc, a);
+                const double v[3] = {a[0] - oa[0], a[1] - oa[1], a[2] - oa[2]};
+                const double len = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+                if (len > 0.0) for (int i = 0; i < 3; ++i) dir[i] = v[i] / len;
+            }
+            double off[3];
+            for (int i = 0; i < 3; ++i) off[i] = dir[i] * hd;
+            dock_add_m(och, oloc, off, m.hold_ch, m.hold_loc);
+            m.hold_pt_ok = true;
+            log_line(STR("FLEE hold station=") + std::to_wstring(spid) + STR(" extent_m=") + std::to_wstring(ext) + STR(" blocks=") + std::to_wstring(nblk) +
+                     STR(" origin=") + (ook ? STR("station") : STR("dock")) + STR(" hold_m=") + std::to_wstring(hd) + STR(" ship=") + std::to_wstring(sid));
         }
         if (!dp.dir_known)
         {
@@ -2125,23 +2241,37 @@ namespace
         const std::wstring slot_no = std::to_wstring(s.slot);
         const std::wstring dname = widen(net_dock_label(d));
         const std::wstring who = widen(net_ship_label(sid));
+        // the hold target: the flee's hold point (m.hold_ch / m.hold_loc); a dock wait uses its slot on the dock line
+        auto target_of = [&](int64_t tch[3], double tch_loc[3]) {
+            if (m.flee) { std::copy(m.hold_ch, m.hold_ch + 3, tch); std::copy(m.hold_loc, m.hold_loc + 3, tch_loc); return; }
+            double off[3];
+            net_slot_pos(dp.dir, s.slot, off);
+            dock_add_m(dp.ch, dp.loc, off, tch, tch_loc);
+        };
+        // same system and within DOCK_SLOT_ARRIVE_M of the target
+        auto at_target = [&]() -> bool {
+            if (!same) return false;
+            int64_t tch[3] = {0, 0, 0};
+            double tch_loc[3] = {0, 0, 0};
+            target_of(tch, tch_loc);
+            double a[3], t[3];
+            dock_abs_m(ch, loc, a);
+            dock_abs_m(tch, tch_loc, t);
+            return std::sqrt((a[0] - t[0]) * (a[0] - t[0]) + (a[1] - t[1]) * (a[1] - t[1]) + (a[2] - t[2]) * (a[2] - t[2])) <= DOCK_SLOT_ARRIVE_M;
+        };
         if (m.hold_ph == 2) return true;   // holding
         if (m.hold_ph == 1)
         {
+            if (m.flee && m.hold_warp && warp_real_running(sid)) return true;   // a flee's real warp runs: no timers, no move job
             m.hold_t += dt;
             if (m.hold_warp)
             {
-                if (same)
+                if (at_target()) { slot_arrive(ship, sid, m, s, d); return true; }
+                if (m.flee)   // real warp over and not at the hold point: fly the rest
                 {
-                    double a[3], t[3];
-                    dock_abs_m(ch, loc, a);
-                    double off[3], tch_loc[3];
-                    int64_t tch[3];
-                    net_slot_pos(dp.dir, s.slot, off, first_m);
-                    dock_add_m(dp.ch, dp.loc, off, tch, tch_loc);
-                    dock_abs_m(tch, tch_loc, t);
-                    const double dist = std::sqrt((a[0] - t[0]) * (a[0] - t[0]) + (a[1] - t[1]) * (a[1] - t[1]) + (a[2] - t[2]) * (a[2] - t[2]));
-                    if (dist <= DOCK_SLOT_ARRIVE_M) { slot_arrive(ship, sid, m, s, d); return true; }
+                    m.hold_fly_only = true; m.hold_ph = 0; m.hold_t = 0.0; s.phase = 0;
+                    log_line(STR("FLEE hold real warp ended short ship=") + std::to_wstring(sid) + STR(", flying the rest"));
+                    return true;
                 }
                 if (m.hold_t < DOCK_SLOT_WARP_WAIT_S) return true;
                 m.hold_ph = 0; m.hold_t = DOCK_SLOT_RETRY_S / 2.0;   // not arrived in time: warp again after the retry wait
@@ -2150,6 +2280,12 @@ namespace
             }
             if (mv_active(sid) && m.hold_t < SWEEP_FLY_TIMEOUT_S) return true;
             if (mv_active(sid)) mv_cancel(sid);   // flight timed out: hold where it is
+            if (m.flee)   // a flee's point flight ended: hold only at the hold point, else fly the rest
+            {
+                if (at_target()) { slot_arrive(ship, sid, m, s, d); return true; }
+                m.hold_fly_only = true; m.hold_ph = 0; m.hold_t = 0.0; s.phase = 0;
+                return true;
+            }
             slot_arrive(ship, sid, m, s, d);
             return true;
         }
@@ -2161,10 +2297,65 @@ namespace
             m.hold_t = 0.0;
         }
         if (!readable) return false;   // no position to fly to: the caller's flee fallback keeps the ship moving
+        if (m.flee)
+        {
+            // flee: the hold point is a real warp (flee_move_kind) or a point flight; never the cheat teleport (warp_send)
+            int64_t tch[3] = {0, 0, 0};
+            double tch_loc[3] = {0, 0, 0};
+            target_of(tch, tch_loc);
+            double a[3], t[3];
+            dock_abs_m(ch, loc, a);
+            dock_abs_m(tch, tch_loc, t);
+            const double dist = std::sqrt((a[0] - t[0]) * (a[0] - t[0]) + (a[1] - t[1]) * (a[1] - t[1]) + (a[2] - t[2]) * (a[2] - t[2]));
+            FleeMove mk = FLEE_FLY;
+            if (!m.hold_fly_only)
+            {
+                int32_t drive = 0;
+                bool fuel_ok = false;
+                if (call_int(ship, STR("GetAvailableJumpFuel"), drive))
+                {
+                    if (same) fuel_ok = warp_fuel_ok(true, dist / DOCK_CHUNK_M, 0, drive);
+                    else { int32_t jc = 0; std::wstring jce; fuel_ok = jump_cost(ship, dp.sys, tch, jc, jce) && warp_fuel_ok(false, 0.0, jc, drive); }
+                }
+                mk = flee_move_kind(same, dist, eff_cfg(sid).warp_trip_km, g_compat.usable(F_WARPREAL), warp_real_busy(), fuel_ok, ship_docked(ship));
+            }
+            if (mk == FLEE_REAL)
+            {
+                chunk_hold_target(sid, dp.sys, tch);
+                const int64_t arr[3] = {static_cast<int64_t>(tch_loc[0]), static_cast<int64_t>(tch_loc[1]), static_cast<int64_t>(tch_loc[2])};
+                const std::wstring r = warp_real_to(sid, dp.sys, tch, arr);
+                if (r == STR("ok"))
+                {
+                    m.hold_ph = 1; m.hold_warp = true; m.hold_t = 0.0; s.phase = 1;
+                    mlog(sid, STR("Control: ") + who + STR(" real warp to the flee hold point near ") + dname);
+                    log_line(STR("CONTROL ship=") + std::to_wstring(sid) + STR(" flee real warp to hold point dock=") + std::to_wstring(d) + STR(" hold_m=") + std::to_wstring(dist));
+                    return true;
+                }
+                chunk_hold_target_clear(sid);
+                log_line(STR("CONTROL ship=") + std::to_wstring(sid) + STR(" flee real warp refused: ") + r + STR(" (flying)"));
+            }
+            if (same)
+            {
+                PtTarget pt;
+                pt.sys = dp.sys;
+                std::copy(tch, tch + 3, pt.ch);
+                std::copy(tch_loc, tch_loc + 3, pt.loc);
+                if (move_start(sid, "approach_rock", -1, nullptr, &pt) == STR("waiting"))
+                {
+                    m.hold_ph = 1; m.hold_warp = false; m.hold_t = 0.0; s.phase = 1;
+                    mlog(sid, STR("Control: ") + who + STR(" flying to the flee hold point near ") + dname);
+                    log_line(STR("CONTROL ship=") + std::to_wstring(sid) + STR(" flee flying to hold point dock=") + std::to_wstring(d) + STR(" dist_m=") + std::to_wstring(dist));
+                    return true;
+                }
+            }
+            m.hold_t = dt > 0.0 ? dt : 1.0;   // no flight or warp started (or other system without real warp): retry after the wait
+            log_line(STR("CONTROL ship=") + std::to_wstring(sid) + STR(" flee hold flight not started same=") + std::to_wstring(same ? 1 : 0));
+            return true;
+        }
         {
             double off[3], tch_loc[3];
             int64_t tch[3];
-            net_slot_pos(dp.dir, s.slot, off, first_m);
+            net_slot_pos(dp.dir, s.slot, off);
             dock_add_m(dp.ch, dp.loc, off, tch, tch_loc);
             double a[3], t[3];
             dock_abs_m(ch, loc, a);
@@ -2418,13 +2609,13 @@ namespace
                 if (m.flee && m.hazard)
                 {
                     m.hz_t += dt;
-                    if (m.hz_t >= HAZARD_RETRY_S && !mv_active(sid) && !dock_job_on(sid)) { m.hz_t = 0.0; hazard_away(sid, m); }
+                    if (m.hz_t >= HAZARD_RETRY_S && !mv_active(sid) && !dock_job_on(sid) && !warp_real_running(sid)) { m.hz_t = 0.0; hazard_away(sid, m); }
                 }
                 else
                 {
                     slot_ok = slot_flight(ship, sid, m, dt);
                     m.hz_t += dt;
-                    if (m.flee && flee_idle_move_due(slot_ok, m.hold_ph, m.hz_t, mv_active(sid), dock_job_on(sid))) { m.hz_t = 0.0; hazard_away(sid, m); }
+                    if (m.flee && flee_idle_move_due(slot_ok, m.hold_ph, m.hz_t, mv_active(sid), dock_job_on(sid) || warp_real_running(sid))) { m.hz_t = 0.0; hazard_away(sid, m); }
                 }
                 if (m.flee && m.hold_ph == 2)   // a fleeing ship that reached its holding spot: the flee ends here (no dock slot taken)
                 {
