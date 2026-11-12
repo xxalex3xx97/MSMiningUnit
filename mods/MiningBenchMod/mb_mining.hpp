@@ -2079,6 +2079,19 @@ namespace
         const bool same = readable && sys == dp.sys;
         double dk[3];
         dock_abs_m(dp.ch, dp.loc, dk);
+        double first_m = NET_SLOT_FIRST_M;
+        if (m.flee)   // a flee holds clear of the station: past the farthest other dock of this station
+        {
+            std::vector<double> od;
+            for (const auto& kv : g_net_dockpos)
+            {
+                if (kv.first == d || !kv.second.known || kv.second.sys != dp.sys) continue;
+                double ob[3];
+                dock_abs_m(kv.second.ch, kv.second.loc, ob);
+                od.push_back(std::sqrt((ob[0] - dk[0]) * (ob[0] - dk[0]) + (ob[1] - dk[1]) * (ob[1] - dk[1]) + (ob[2] - dk[2]) * (ob[2] - dk[2])));
+            }
+            first_m = flee_slot_first_m(od);
+        }
         if (!dp.dir_known)
         {
             double dir[3] = {1.0, 0.0, 0.0};   // other system: +X
@@ -2124,7 +2137,7 @@ namespace
                     dock_abs_m(ch, loc, a);
                     double off[3], tch_loc[3];
                     int64_t tch[3];
-                    net_slot_pos(dp.dir, s.slot, off);
+                    net_slot_pos(dp.dir, s.slot, off, first_m);
                     dock_add_m(dp.ch, dp.loc, off, tch, tch_loc);
                     dock_abs_m(tch, tch_loc, t);
                     const double dist = std::sqrt((a[0] - t[0]) * (a[0] - t[0]) + (a[1] - t[1]) * (a[1] - t[1]) + (a[2] - t[2]) * (a[2] - t[2]));
@@ -2151,7 +2164,7 @@ namespace
         {
             double off[3], tch_loc[3];
             int64_t tch[3];
-            net_slot_pos(dp.dir, s.slot, off);
+            net_slot_pos(dp.dir, s.slot, off, first_m);
             dock_add_m(dp.ch, dp.loc, off, tch, tch_loc);
             double a[3], t[3];
             dock_abs_m(ch, loc, a);

@@ -1082,11 +1082,14 @@ namespace
     constexpr double NET_SLOT_FIRST_M = 150.0;   // holding slot 1 is this far from the dock (m)
     constexpr double NET_SLOT_STEP_M = 100.0;    // next slot is this much further along the line (m)
     constexpr double NET_SLOT_MIN_GAP_M = 50.0;  // two slot points closer than this clash (m)
+    constexpr double FLEE_SLOT_MIN_M = 1000.0;      // a flee holds at least this far from the dock (clear of the station, m)
+    constexpr double FLEE_SLOT_MARGIN_M = 300.0;    // added to the farthest other dock of the same station (m)
+    constexpr double FLEE_STATION_MAX_M = 3000.0;   // docks farther than this belong to another station (m)
 
     // what a waiting ship needs: cargo fill, fuel state, hull state, ore for this dock in cargo, distance to the dock (-1 unknown)
     struct NetReq { int cargo_pct = 0; bool fuel_low = false; bool has_dock_ore = false; double dist_m = -1; };
     // dock position learned from a docked ship (mb_net.hpp fills it): system, chunk, local loc (raw units), line direction
-    struct DockPos { bool known = false; int sys = 0; int64_t ch[3] = {0, 0, 0}; double loc[3] = {0, 0, 0}; double dir[3] = {1, 0, 0}; bool dir_known = false; };
+    struct DockPos { bool known = false; int sys = 0; int64_t ch[3] = {0, 0, 0}; double loc[3] = {0, 0, 0}; double dir[3] = {1, 0, 0}; bool dir_known = false; bool from_object = false; };
     // slot_sid[k-1] = ship in holding slot k (0 free). line_slots = slot_sid.size(). Dock reservation = resv (no separate cleared field).
     struct NetDock { int id = 0; bool exists = true; int occ = 0; int resv = 0; Purpose why = P_NONE; double since = 0; bool full = false; double full_since = 0; double occ_since = 0; std::vector<int> queue; std::vector<int> slot_sid; int line_slots = 0; };
     struct NetShip { int sid = 0; Purpose intent = P_NONE; std::vector<int> wanted; int waits_dock = 0; int blocked_by = 0; long ticket = 0; double wait_since = 0; NetReason reason = NR_OK; bool granted = false;
@@ -1249,11 +1252,18 @@ namespace
     }
 
     // WHAT: offset (m) from the dock to holding slot k (1-based) along dir: 150 m for slot 1, +100 m per slot. dir need not be unit length.
-    inline void net_slot_pos(const double dir[3], int k, double out[3])
+    inline void net_slot_pos(const double dir[3], int k, double out[3], double first_m = NET_SLOT_FIRST_M)
     {
         const double len = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
-        const double m = NET_SLOT_FIRST_M + (k - 1) * NET_SLOT_STEP_M;
+        const double m = first_m + (k - 1) * NET_SLOT_STEP_M;
         for (int i = 0; i < 3; ++i) out[i] = len > 0 ? dir[i] / len * m : 0.0;
+    }
+    // WHAT: first holding distance (m) of a fleeing ship: clear of the station. Farthest other dock within FLEE_STATION_MAX_M (distances in m) + margin, at least FLEE_SLOT_MIN_M.
+    inline double flee_slot_first_m(const std::vector<double>& other_dock_dist_m)
+    {
+        double far = 0.0;
+        for (double d : other_dock_dist_m) if (d >= 0.0 && d <= FLEE_STATION_MAX_M && d > far) far = d;
+        return std::max(FLEE_SLOT_MIN_M, far + FLEE_SLOT_MARGIN_M);
     }
 
     // WHAT: chunk + raw loc moved by off_m metres (raw_per_m = raw per metre). A chunk is 134217728 raw (2048 m): the carry goes to the chunk, loc stays in 0..134217728.

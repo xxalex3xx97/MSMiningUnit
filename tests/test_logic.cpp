@@ -1158,6 +1158,22 @@ static void t_path_waypoint()
     NEAR(so[0], 800.0, 1e-9); NEAR(so[1], 0.0, 1e-9); NEAR(so[2], 0.0, 1e-9);
 }
 
+// flee holding spot: clear of the farthest other dock of the station; slot k steps 100 m further out
+static void t_flee_slot_clear()
+{
+    CHECK(flee_slot_first_m({}) == 1000.0);
+    CHECK(flee_slot_first_m({296.0}) == 1000.0);
+    CHECK(flee_slot_first_m({900.0, 120.0}) == 1200.0);
+    CHECK(flee_slot_first_m({5000.0, 100.0}) == 1000.0);
+    CHECK(flee_slot_first_m({-1.0}) == 1000.0);
+    const double dir[3] = {0.34, -0.94, 0.0};
+    double off1[3] = {0, 0, 0}, off2[3] = {0, 0, 0};
+    net_slot_pos(dir, 1, off1);
+    net_slot_pos(dir, 2, off2, 1000.0);
+    CHECK(std::fabs(std::sqrt(off1[0] * off1[0] + off1[1] * off1[1] + off1[2] * off1[2]) - 150.0) < 1e-6);
+    CHECK(std::fabs(std::sqrt(off2[0] * off2[0] + off2[1] * off2[1] + off2[2] * off2[2]) - 1100.0) < 1e-6);
+}
+
 // idle flee: start a move-away only when no holding spot, not holding, retry wait over, no move or dock job
 static void t_flee_idle_move()
 {
@@ -2138,7 +2154,7 @@ int main()
         {"net_clear_expired", t_net_clear_expired}, {"net_unload_first", t_net_unload_first}, {"dock_undock_first", t_dock_undock_first},
         {"combat_flee", t_combat_flee}, {"combat_log", t_combat_log},
         {"hazard_flee", t_hazard_flee}, {"targett_entry", t_targett_entry},
-        {"path_block", t_path_block}, {"path_perf", t_path_perf}, {"path_waypoint", t_path_waypoint}, {"shield_drop", t_shield_drop}, {"flee_guard_shield_units", t_flee_guard_shield_units}, {"flee_fallback_docks", t_flee_fallback_docks}, {"attack_dist_and_flee_class", t_attack_dist_and_flee_class}, {"flee_idle_move", t_flee_idle_move},{"fast_sample", t_fast_sample},
+        {"path_block", t_path_block}, {"path_perf", t_path_perf}, {"path_waypoint", t_path_waypoint}, {"shield_drop", t_shield_drop}, {"flee_guard_shield_units", t_flee_guard_shield_units}, {"flee_fallback_docks", t_flee_fallback_docks}, {"attack_dist_and_flee_class", t_attack_dist_and_flee_class}, {"flee_idle_move", t_flee_idle_move}, {"flee_slot_clear", t_flee_slot_clear}, {"fast_sample", t_fast_sample},
         {"rock_depleted", t_rock_depleted},
         {"reg_table", t_reg_table}, {"reg_events", t_reg_events}, {"reg_world_track", t_reg_world_track}, {"reg_within_nearest", t_reg_within_nearest}, {"reg_surface_block", t_reg_surface_block_radius},
         {"approach_throttle", t_approach_throttle}, {"bubble", t_bubble}, {"bubble_ladder", t_bubble_ladder}, {"bubble_scope", t_bubble_scope}, {"tune_geom", t_tune_geom}, {"flight_warp", t_flight_warp}, {"sweep_return_flee", t_sweep_return_flee}, {"path2_rules", t_path2_rules},

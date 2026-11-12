@@ -171,7 +171,7 @@ namespace
         double loc[3] = {0, 0, 0};
         if (sys <= 0 || !get_chunk(sh, ch) || !get_loc(sh, loc)) return;
         DockPos& p = g_net_dockpos[d];
-        p.known = true; p.sys = sys;
+        p.known = true; p.sys = sys; p.from_object = false;
         for (int i = 0; i < 3; ++i) { p.ch[i] = ch[i]; p.loc[i] = loc[i]; }
     }
 
@@ -299,30 +299,39 @@ namespace
             existing.insert(d);
             {
                 // a dock with no docked ship yet: learn its position from the dock object; with a stored position, log the object's position once (diagnostic only)
-                static std::set<int> dockpos_cmp_logged;
                 const auto kp = g_net_dockpos.find(d);
                 if (kp == g_net_dockpos.end() || !kp->second.known)
                 {
                     net_learn_dockpos(d, dobj);   // dock never had a docked ship: read the Dock object's own position
                     const auto np = g_net_dockpos.find(d);
                     if (np != g_net_dockpos.end() && np->second.known)
+                    {
+                        np->second.from_object = true;
                         log_line(STR("DOCKPOS dock=") + std::to_wstring(d) + STR(" learned from the dock object sys=") + std::to_wstring(np->second.sys) +
                                  STR(" ch=(") + std::to_wstring(np->second.ch[0]) + STR(",") + std::to_wstring(np->second.ch[1]) + STR(",") + std::to_wstring(np->second.ch[2]) + STR(")"));
-                }
-                else if (!dockpos_cmp_logged.count(d))
-                {
-                    dockpos_cmp_logged.insert(d);
-                    int64_t oc[3] = {0, 0, 0}; double ol[3] = {0, 0, 0};
-                    const bool ok = get_chunk(dobj, oc) && get_loc(dobj, ol);
-                    log_line(STR("DOCKPOS dock=") + std::to_wstring(d) + STR(" object ") +
-                             (ok ? STR("ch=(") + std::to_wstring(oc[0]) + STR(",") + std::to_wstring(oc[1]) + STR(",") + std::to_wstring(oc[2]) + STR(") loc0=") + std::to_wstring(static_cast<long long>(ol[0]))
-                                 : STR("n/a")) +
-                             STR(" stored (ship-learned) ch=(") + std::to_wstring(kp->second.ch[0]) + STR(",") + std::to_wstring(kp->second.ch[1]) + STR(",") + std::to_wstring(kp->second.ch[2]) +
-                             STR(") loc0=") + std::to_wstring(static_cast<long long>(kp->second.loc[0])));
+                    }
                 }
             }
             const std::string dname = net_clean(u8(dock_name(dobj)));
             if (dname.empty()) g_net_dock_names.erase(d); else g_net_dock_names[d] = dname;
+        }
+        {
+            // diagnostic, once per dock: the Dock object's position against the stored one (offset in m; stored=ship|object). Stored value is kept.
+            static std::set<int> dockpos_off_logged;
+            const double chunk_m = 2048.0;   // = DOCK_CHUNK_M (mb_mining.hpp, not visible here)
+            for (const auto& kv : g_net_dockpos)
+            {
+                const int d = kv.first;
+                if (!kv.second.known || dockpos_off_logged.count(d)) continue;
+                UObject* dobj2 = find_by_id(STR("Dock"), d);
+                if (!alive(dobj2)) continue;
+                int64_t oc[3] = {0, 0, 0}; double ol[3] = {0, 0, 0};
+                if (!get_chunk(dobj2, oc) || !get_loc(dobj2, ol)) continue;
+                dockpos_off_logged.insert(d);
+                const double off = abs_dist_m(oc, ol, kv.second.ch, kv.second.loc, g_raw_per_m, chunk_m);
+                log_line(STR("DOCKPOS dock=") + std::to_wstring(d) + STR(" object vs stored offset_m=") + std::to_wstring(off) +
+                         STR(" (stored=") + (kv.second.from_object ? STR("object") : STR("ship")) + STR(")"));
+            }
         }
         for (auto& kv : g_net_docks)
             if (kv.second.full && g_now - kv.second.full_since >= NET_FULL_S) kv.second.full = false;
