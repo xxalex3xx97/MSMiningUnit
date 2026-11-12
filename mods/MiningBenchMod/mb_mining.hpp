@@ -849,7 +849,8 @@ namespace
         {
             combat_log(STR("COMBAT flee arrived ship=") + std::to_wstring(sid) + STR(" docked after ") + std::to_wstring(static_cast<int>(m.flee_t)) + STR(" s, trip done"));
             m.flee = false; m.flee_t = -1.0; m.fin = false; m.err = true; m.st = MS_HALT;
-            mset(sid, m, STR("ERROR: hull damaged, fled, holding near dock, stopped"), STR("ERROR: ship was attacked, fled, holding near dock, stopped"));
+            g_flee_dock.erase(sid);
+            mset(sid, m, STR("ERROR: hull damaged, fled, docked, stopped"), STR("ERROR: ship was attacked, fled, docked, stopped"));
             return;
         }
         // unload chain: another dock trip while docked ores are still in cargo and it shrank; an ore with no dock left = HALT
@@ -970,6 +971,7 @@ namespace
         m.flee = true; m.leave = false; m.flee_t = 0.0;
         m.hold_pt_ok = false; m.hold_fly_only = false;   // a new flee picks its own hold point
         mlog(sid, STR("ERROR: ") + why + STR(", fleeing to dock"));
+        g_flee_dock.erase(sid);
         g_flee_pick.insert(sid);   // dock pick purpose P_FLEE (mb_net.hpp)
         g_dock_pick.erase(sid);    // a flee never uses a manual Dock picker choice
         if (back && hazard_away(sid, m, HAZARD_BACKOUT_M))
@@ -2617,12 +2619,11 @@ namespace
                     m.hz_t += dt;
                     if (m.flee && flee_idle_move_due(slot_ok, m.hold_ph, m.hz_t, mv_active(sid), dock_job_on(sid) || warp_real_running(sid))) { m.hz_t = 0.0; hazard_away(sid, m); }
                 }
-                if (m.flee && m.hold_ph == 2)   // a fleeing ship that reached its holding spot: the flee ends here (no dock slot taken)
+                if (m.flee && m.hold_ph == 2 && !g_flee_dock.count(sid))   // a fleeing ship that reached its holding spot: queue for a dock like a normal trip (job_start below), dock on the grant
                 {
-                    net_leave_slot(sid);
-                    m.dwait = false; m.flee = false; m.fin = false; m.err = true; g_flee_pick.erase(sid);
-                    m.st = MS_HALT;
-                    mset(sid, m, STR("ERROR: hull damaged, fled, holding near dock, stopped"), STR("ERROR: ship was attacked, fled, holding near dock, stopped"));
+                    g_flee_dock.insert(sid);
+                    m.dwait_t = 60.0;
+                    combat_log(STR("COMBAT flee holding ship=") + std::to_wstring(sid) + STR(", queueing for dock"));
                     return;
                 }
                 if (m.dwait_shown < 0.0 || m.dwait_t - m.dwait_shown >= 1.0)

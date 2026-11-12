@@ -203,7 +203,7 @@ namespace
             for (int i = 0; i < N_ORE; ++i) if (in_cargo[i] && !has_docks[i]) { v.reason = NR_NOT_CONFIGURED; subject = ORE_KEY[i]; break; }
             return v;
         }
-        const Purpose pur = g_flee_pick.count(sid) ? P_FLEE : P_UNLOAD;
+        const Purpose pur = g_flee_pick.count(sid) && !g_flee_dock.count(sid) ? P_FLEE : P_UNLOAD;
         const NetVerdict v = net_pick(g_net_docks, g_net_ships, g_net_ticket, sid, pur, net_req_of(sid, pur), cands, 0, g_now);
         if (v.k == NetVerdict::ERR) { subject = net_dock_label(cands.front()); return v; }
         if (pur == P_FLEE && v.k == NetVerdict::GO) combat_log(STR("COMBAT flee dock chosen ship=") + std::to_wstring(sid) + STR(" dock=") + widen(net_dock_label(v.dock)));

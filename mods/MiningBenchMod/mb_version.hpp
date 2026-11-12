@@ -10,7 +10,7 @@
 // WHY: anonymous namespace keeps the constant private to each .cpp that includes this header.
 namespace
 {
-    constexpr const char* kVersion = "0.2.12";
+    constexpr const char* kVersion = "0.2.13";
     // informational: exe file size of the build the contract table was tested on (compat self-test logs a difference, no gate)
     constexpr unsigned long long kKnownBuildSize = 149200896ULL;
 }

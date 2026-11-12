@@ -48,7 +48,8 @@ namespace
     // WHAT: name for a status / log text: the name, else the id (only when the name can't be read).
     std::string net_dock_label(int id) { const std::string n = net_name(g_net_dock_names, id); return n.empty() ? std::to_string(id) : n; }
     std::string net_ship_label(int sid) { const std::string n = net_name(g_net_ship_names, sid); return n.empty() ? std::to_string(sid) : n; }
-    std::set<int> g_flee_pick;            // ships whose dock trip is a hull flee (purpose P_FLEE until the job starts)
+    std::set<int> g_flee_dock;            // fleeing ships holding near the dock: their dock pick queues like a normal one (P_UNLOAD) and docks on the grant
+    std::set<int> g_flee_pick;           // ships whose dock trip is a hull flee (purpose P_FLEE until the job starts)
     std::map<int, std::string> g_dock_after_undock;   // ship -> dock command to start when its undock (first step) ends ok
 
     // WHAT: dock id the ship is docked at, 0 = not docked. Table occupancy first (net_tick: DockID or Dock object), then the ship's own DockID / Dock.
