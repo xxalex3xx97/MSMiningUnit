@@ -190,6 +190,11 @@ namespace
         std::vector<int> cands;
         if (fixed > 0) cands = {fixed};
         else for (int i : unload_cand(in_cargo, has_docks)) for (int d : c.ore_docks[i]) add_unique(cands, d);
+        if (fixed <= 0 && g_flee_pick.count(sid))
+        {
+            std::wstring rw;
+            cands = flee_fallback_docks(cands, std::vector<std::vector<int>>(c.ore_docks, c.ore_docks + N_ORE), refuel_candidates(c, rw));
+        }
         if (cands.empty())
         {
             // nothing to unload here: a cargo ore with no dock list is a real error (NOT_CONFIGURED), else the cargo has nothing to unload
@@ -383,7 +388,7 @@ namespace
             { const std::wstring u = undock_first(sid, ship, v.dock, cmd, seq); if (!u.empty()) return u; }
             if (v.k == NetVerdict::WAIT) { tlog(STR("unload dock busy, ship ") + std::to_wstring(sid) + STR(" waits")); return STR("waiting dock"); }
             dk = v.dock;
-            if (unl.empty()) return STR("error: no ore lists this dock");
+            if (unl.empty() && !g_flee_pick.count(sid)) return STR("error: no ore lists this dock");
         }
         // 4b. checks dock_order_issue would fail on: a job that would fail must not warp
         if (!int_array(ship, STR("OrderIDs"))) return STR("error: OrderIDs unreadable");

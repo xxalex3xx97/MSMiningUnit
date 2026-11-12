@@ -956,7 +956,7 @@ namespace
                 log_line(STR("rock ") + std::to_wstring(m.rock) + STR(" marked hazardous: target, no other rock within ") + std::to_wstring(static_cast<long long>(HAZARD_BLOCK_M)) + STR(" m") + hit);
             }
             if (!marked) log_line(STR("HAZARD ship=") + std::to_wstring(sid) + STR(" no rock marked (state ") + mine_state_name(m.st) + STR(", rock ") + std::to_wstring(m.rock) + STR(")"));
-            back = m.hz_ok && (m.st == MS_SEEK || m.st == MS_MINE);
+            back = false;   // back-out was 1500 m of slow flight under fire; the dock trip warps or flies away anyway (hazard_away and step 1c kept, unused)
         }
         combat_record(sid, m, STR("FLEE ") + why, false);
         m.hull = -1; m.sh = -1;

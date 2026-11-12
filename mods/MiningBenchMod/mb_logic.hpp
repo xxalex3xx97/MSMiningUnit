@@ -596,6 +596,17 @@ namespace
     inline bool shield_dropped(int32_t baseline, int32_t s) { return s >= 0 && hull_dropped(baseline, s); }
     // WHAT: whole shield units from the GetShields double. Negative / NaN = -1 (unreadable). Floors, so regeneration never looks like a drop; clamps to INT32_MAX.
     inline int32_t shield_whole(double v) { if (!(v >= 0.0)) return -1; if (v > 2147483647.0) return 2147483647; return static_cast<int32_t>(v); }
+    // WHAT: flee dock candidates. With cargo the cargo candidates stay; with empty cargo (no ore lists match) every ore dock list, then refuel docks, in order, no duplicates.
+    inline std::vector<int> flee_fallback_docks(std::vector<int> cargo_cands,
+            const std::vector<std::vector<int>>& ore_docks, const std::vector<int>& refuel)
+    {
+        if (!cargo_cands.empty()) return cargo_cands;
+        std::vector<int> out;
+        auto add = [&](int d) { if (std::find(out.begin(), out.end(), d) == out.end()) out.push_back(d); };
+        for (const auto& v : ore_docks) for (int d : v) add(d);
+        for (int d : refuel) add(d);
+        return out;
+    }
     enum DmgKind { DMG_NONE = 0, DMG_HULL = 1, DMG_SHIELD = 2 };
     // WHAT: which damage a sample shows: hull first, then shield. A docked ship never counts (the drop is not a hit in space).
     inline DmgKind damage_drop_kind(int32_t hull_base, int32_t h, int32_t sh_base, int32_t s, bool docked)
