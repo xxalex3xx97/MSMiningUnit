@@ -2336,6 +2336,20 @@ namespace
                 chunk_hold_target_clear(sid);
                 log_line(STR("CONTROL ship=") + std::to_wstring(sid) + STR(" flee real warp refused: ") + r + STR(" (flying)"));
             }
+            if (m.hold_fly_only && dist > 20000.0)   // real warp failed and the hold point is far: a 45 m/s flight under fire kills the ship, so jump with the instant warp
+            {
+                chunk_hold_target(sid, dp.sys, tch);
+                const int64_t arr[3] = {static_cast<int64_t>(tch_loc[0]), static_cast<int64_t>(tch_loc[1]), static_cast<int64_t>(tch_loc[2])};
+                std::wstring e;
+                if (warp_send(sid, dp.sys, tch, arr, false, e))
+                {
+                    m.hold_ph = 1; m.hold_warp = true; m.hold_t = 0.0; s.phase = 1;
+                    log_line(STR("CONTROL ship=") + std::to_wstring(sid) + STR(" flee real warp failed, instant warp to hold point dist_m=") + std::to_wstring(dist));
+                    return true;
+                }
+                chunk_hold_target_clear(sid);
+                log_line(STR("CONTROL ship=") + std::to_wstring(sid) + STR(" flee instant warp failed: ") + e);
+            }
             if (same)
             {
                 PtTarget pt;

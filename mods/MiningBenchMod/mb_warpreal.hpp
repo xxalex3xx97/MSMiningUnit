@@ -358,6 +358,15 @@ namespace
             g_wr.var = 0;
             return;
         }
+        if (g_wr.var == 5 && g_wr.stage == 3 && g_wr.t > 0.0)   // thrust done but no jump target and no charge: the jump never started (cleared under fire), fail now, not after 25 s
+        {
+            bool jts = true;
+            int32_t a = -1, j = -1;
+            get_bool_prop(ship, STR("bJumpTargetSet"), jts);
+            get_int_prop(ship, STR("JumpAnimProgress"), a);
+            get_int_prop(ship, STR("JumpProgress"), j);
+            if (!jts && a <= 0 && j <= 0) { log_line(STR("WARPREAL e jump never started, failing")); g_wr.t = 0.0; }
+        }
         if (g_wr.t > 0.0) return;
         log_line(std::wstring(STR("WARPREAL variant=")) + kVn[g_wr.var] + STR(" timeout match=no"));
         wr_fuel_after(ship);
