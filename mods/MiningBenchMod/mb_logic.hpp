@@ -555,6 +555,19 @@ namespace
     // ---------- hazard flee: hull drop with no hostile targeter ----------
     // WHAT: the flee is a hazard flee when the hull drop had no hostile targeter at the sample (the damage has no attacker).
     inline bool hazard_flee(int hostile_n) { return hostile_n <= 0; }
+    // WHAT: distance in metres between two objects from chunk (int64 x3) and raw local loc (x3, raw units); raw_per_m = g_raw_per_m, chunk_m = DOCK_CHUNK_M.
+    inline double abs_dist_m(const int64_t ca[3], const double la[3], const int64_t cb[3], const double lb[3], double raw_per_m, double chunk_m)
+    {
+        double s = 0.0;
+        for (int i = 0; i < 3; ++i)
+        {
+            const double d = (static_cast<double>(ca[i]) - static_cast<double>(cb[i])) * chunk_m + (la[i] - lb[i]) / raw_per_m;
+            s += d * d;
+        }
+        return std::sqrt(s);
+    }
+    // WHAT: hit with no attacker at all: no near hostile, no far hostile, IsShipInCombat false. Anything targeting the ship makes the hit an attack.
+    inline bool hazard_flee_full(int hostile_near, int hostile_far, bool combat) { return hostile_near <= 0 && hostile_far <= 0 && !combat; }
     constexpr double HAZARD_STUCK_MPS = 1.0;     // speed below this = not moving (m/s)
     constexpr size_t HAZARD_STUCK_N = 3;         // speed samples (1 s apart) below HAZARD_STUCK_MPS in a row = stuck
     // WHAT: last HAZARD_STUCK_N speed samples (oldest first) all below HAZARD_STUCK_MPS.
@@ -576,6 +589,11 @@ namespace
     constexpr double HAZARD_DROP_FRESH_S = 2.0;  // a hull drop this recent counts as "still dropping"
     constexpr double HAZARD_RADIUS_M = 5000.0;   // move-away point: this far from the damage start (m); circling keeps the ship >= 2 km away
     constexpr double HAZARD_RETRY_S = 1.0;       // a refused or finished move-away is re-issued after this long (s)
+    // WHAT: a fleeing ship with no holding spot yet (slot_ok false), not yet holding (hold_ph != 2), no move/dock job, and the retry wait over must start a move-away.
+    inline bool flee_idle_move_due(bool slot_ok, int hold_ph, double hz_t, bool move_busy, bool dock_busy)
+    {
+        return !slot_ok && hold_ph != 2 && hz_t >= HAZARD_RETRY_S && !move_busy && !dock_busy;
+    }
     // WHAT: the move-away is due: 5 s or more since the flee began, a hull drop in the last 2 s, and no move or dock job runs.
     inline bool hazard_move_due(double flee_t, double drop_age, bool move_busy, bool dock_busy)
     {
@@ -594,6 +612,19 @@ namespace
     // WHAT: shield lost since the last sample. baseline < 0 or s < 0 (unreadable) = never a drop. A rise (regeneration) is never a drop.
     // WHY: the baseline is the last sample, so regeneration just raises it and the next loss is measured from there.
     inline bool shield_dropped(int32_t baseline, int32_t s) { return s >= 0 && hull_dropped(baseline, s); }
+    // WHAT: whole shield units from the GetShields double. Negative / NaN = -1 (unreadable). Floors, so regeneration never looks like a drop; clamps to INT32_MAX.
+    inline int32_t shield_whole(double v) { if (!(v >= 0.0)) return -1; if (v > 2147483647.0) return 2147483647; return static_cast<int32_t>(v); }
+    // WHAT: flee dock candidates. With cargo the cargo candidates stay; with empty cargo (no ore lists match) every ore dock list, then refuel docks, in order, no duplicates.
+    inline std::vector<int> flee_fallback_docks(std::vector<int> cargo_cands,
+            const std::vector<std::vector<int>>& ore_docks, const std::vector<int>& refuel)
+    {
+        if (!cargo_cands.empty()) return cargo_cands;
+        std::vector<int> out;
+        auto add = [&](int d) { if (std::find(out.begin(), out.end(), d) == out.end()) out.push_back(d); };
+        for (const auto& v : ore_docks) for (int d : v) add(d);
+        for (int d : refuel) add(d);
+        return out;
+    }
     enum DmgKind { DMG_NONE = 0, DMG_HULL = 1, DMG_SHIELD = 2 };
     // WHAT: which damage a sample shows: hull first, then shield. A docked ship never counts (the drop is not a hit in space).
     inline DmgKind damage_drop_kind(int32_t hull_base, int32_t h, int32_t sh_base, int32_t s, bool docked)
@@ -1051,11 +1082,12 @@ namespace
     constexpr double NET_SLOT_FIRST_M = 150.0;   // holding slot 1 is this far from the dock (m)
     constexpr double NET_SLOT_STEP_M = 100.0;    // next slot is this much further along the line (m)
     constexpr double NET_SLOT_MIN_GAP_M = 50.0;  // two slot points closer than this clash (m)
+    constexpr double FLEE_SLOT_MIN_M = 1000.0, FLEE_SLOT_MAX_M = 6000.0, FLEE_SLOT_MARGIN_M = 300.0, FLEE_STATION_MAX_M = 3000.0, STATION_GRID_M = 4.0;
 
     // what a waiting ship needs: cargo fill, fuel state, hull state, ore for this dock in cargo, distance to the dock (-1 unknown)
     struct NetReq { int cargo_pct = 0; bool fuel_low = false; bool has_dock_ore = false; double dist_m = -1; };
     // dock position learned from a docked ship (mb_net.hpp fills it): system, chunk, local loc (raw units), line direction
-    struct DockPos { bool known = false; int sys = 0; int64_t ch[3] = {0, 0, 0}; double loc[3] = {0, 0, 0}; double dir[3] = {1, 0, 0}; bool dir_known = false; };
+    struct DockPos { bool known = false; int sys = 0; int64_t ch[3] = {0, 0, 0}; double loc[3] = {0, 0, 0}; double dir[3] = {1, 0, 0}; bool dir_known = false; bool from_object = false; };
     // slot_sid[k-1] = ship in holding slot k (0 free). line_slots = slot_sid.size(). Dock reservation = resv (no separate cleared field).
     struct NetDock { int id = 0; bool exists = true; int occ = 0; int resv = 0; Purpose why = P_NONE; double since = 0; bool full = false; double full_since = 0; double occ_since = 0; std::vector<int> queue; std::vector<int> slot_sid; int line_slots = 0; };
     struct NetShip { int sid = 0; Purpose intent = P_NONE; std::vector<int> wanted; int waits_dock = 0; int blocked_by = 0; long ticket = 0; double wait_since = 0; NetReason reason = NR_OK; bool granted = false;
@@ -1218,11 +1250,36 @@ namespace
     }
 
     // WHAT: offset (m) from the dock to holding slot k (1-based) along dir: 150 m for slot 1, +100 m per slot. dir need not be unit length.
-    inline void net_slot_pos(const double dir[3], int k, double out[3])
+    inline void net_slot_pos(const double dir[3], int k, double out[3], double first_m = NET_SLOT_FIRST_M)
     {
         const double len = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
-        const double m = NET_SLOT_FIRST_M + (k - 1) * NET_SLOT_STEP_M;
+        const double m = first_m + (k - 1) * NET_SLOT_STEP_M;
         for (int i = 0; i < 3; ++i) out[i] = len > 0 ? dir[i] / len * m : 0.0;
+    }
+    // WHAT: station radius (m) from block grid positions (gx,gy,h) times grid_m: farthest block from the station origin. -1 when no blocks.
+    inline double station_extent_m(const std::vector<std::array<int, 3>>& blocks, double grid_m)
+    {
+        double r = -1.0;
+        for (const auto& b : blocks)
+        {
+            const double d = std::sqrt(double(b[0]) * b[0] + double(b[1]) * b[1] + double(b[2]) * b[2]) * grid_m;
+            if (d > r) r = d;
+        }
+        return r;
+    }
+    // WHAT: hold distance of a fleeing ship from the station origin: known extent (>= 0) else farthest other dock <= FLEE_STATION_MAX_M; + margin; clamped to [MIN, MAX].
+    inline double flee_hold_dist_m(double extent_m, const std::vector<double>& other_dock_dist_m)
+    {
+        double base = extent_m;
+        if (base < 0.0) { base = 0.0; for (double d : other_dock_dist_m) if (d >= 0.0 && d <= FLEE_STATION_MAX_M && d > base) base = d; }
+        return std::min(FLEE_SLOT_MAX_M, std::max(FLEE_SLOT_MIN_M, base + FLEE_SLOT_MARGIN_M));
+    }
+    enum FleeMove { FLEE_FLY = 0, FLEE_REAL = 1 };
+    // WHAT: how a flee gets to the hold point. Real warp only when the flight is longer than warp_trip_km or in another system, and the real warp is usable, free, fuelled, and the ship is not docked.
+    inline FleeMove flee_move_kind(bool same_sys, double dist_m, int warp_trip_km, bool real_usable, bool warp_busy, bool fuel_ok, bool docked)
+    {
+        if (docked || !real_usable || warp_busy || !fuel_ok) return FLEE_FLY;
+        return (!same_sys || trip_warp_wanted(dist_m, warp_trip_km)) ? FLEE_REAL : FLEE_FLY;
     }
 
     // WHAT: chunk + raw loc moved by off_m metres (raw_per_m = raw per metre). A chunk is 134217728 raw (2048 m): the carry goes to the chunk, loc stays in 0..134217728.

@@ -1158,6 +1158,87 @@ static void t_path_waypoint()
     NEAR(so[0], 800.0, 1e-9); NEAR(so[1], 0.0, 1e-9); NEAR(so[2], 0.0, 1e-9);
 }
 
+// flee hold distance from base size, flee move kind (real warp vs flight), slot offset length
+static void t_flee_real_warp_hold()
+{
+    CHECK(station_extent_m({}, 4.0) < 0.0);
+    CHECK(std::fabs(station_extent_m({{3, 4, 0}, {0, 0, 0}}, 4.0) - 20.0) < 1e-9);
+    CHECK(std::fabs(station_extent_m({{0, 0, 0}, {300, 400, 0}}, 4.0) - 2000.0) < 1e-9);
+    CHECK(flee_hold_dist_m(20.0, {}) == 1000.0);
+    CHECK(flee_hold_dist_m(2000.0, {}) == 2300.0);
+    CHECK(flee_hold_dist_m(50000.0, {}) == 6000.0);
+    CHECK(flee_hold_dist_m(-1.0, {900.0}) == 1200.0);
+    CHECK(flee_hold_dist_m(-1.0, {5000.0}) == 1000.0);
+    CHECK(flee_move_kind(true, 239000.0, 5, true, false, true, false) == FLEE_REAL);
+    CHECK(flee_move_kind(true, 3000.0, 5, true, false, true, false) == FLEE_FLY);
+    CHECK(flee_move_kind(true, 239000.0, 5, false, false, true, false) == FLEE_FLY);
+    CHECK(flee_move_kind(true, 239000.0, 5, true, true, true, false) == FLEE_FLY);
+    CHECK(flee_move_kind(true, 239000.0, 5, true, false, false, false) == FLEE_FLY);
+    CHECK(flee_move_kind(true, 239000.0, 5, true, false, true, true) == FLEE_FLY);
+    CHECK(flee_move_kind(false, 0.0, 5, true, false, true, false) == FLEE_REAL);
+    CHECK(flee_move_kind(true, 239000.0, 0, true, false, true, false) == FLEE_FLY);
+    const double dir[3] = {0.34, -0.94, 0.0};
+    double off1[3] = {0, 0, 0}, off2[3] = {0, 0, 0};
+    net_slot_pos(dir, 1, off1);
+    net_slot_pos(dir, 2, off2, 1000.0);
+    CHECK(std::fabs(std::sqrt(off1[0] * off1[0] + off1[1] * off1[1] + off1[2] * off1[2]) - 150.0) < 1e-6);
+    CHECK(std::fabs(std::sqrt(off2[0] * off2[0] + off2[1] * off2[1] + off2[2] * off2[2]) - 1100.0) < 1e-6);
+}
+
+// idle flee: start a move-away only when no holding spot, not holding, retry wait over, no move or dock job
+static void t_flee_idle_move()
+{
+    CHECK(flee_idle_move_due(false, 0, 1.0, false, false));
+    CHECK(!flee_idle_move_due(true, 0, 1.0, false, false));
+    CHECK(!flee_idle_move_due(false, 2, 5.0, false, false));
+    CHECK(!flee_idle_move_due(false, 0, 0.4, false, false));
+    CHECK(!flee_idle_move_due(false, 0, 2.0, true, false));
+    CHECK(!flee_idle_move_due(false, 0, 2.0, false, true));
+}
+
+// attacker distance from chunk + raw loc (65536 raw per m, 2048 m chunks); hit class needs any targeter or combat
+static void t_attack_dist_and_flee_class()
+{
+    const int64_t c0[3] = {0, 240, 0}, c1[3] = {0, 241, 0};
+    const double a[3] = {0, 0, 0}, b[3] = {20671200.0, 0, 0};
+    const double d = abs_dist_m(c0, a, c0, b, 65536.0, 2048.0);
+    CHECK(std::fabs(d - 315.4) < 0.1);
+    CHECK(d <= 5000.0);
+    CHECK(std::fabs(abs_dist_m(c0, a, c1, a, 65536.0, 2048.0) - 2048.0) < 1e-6);
+    CHECK(target_entry_near(d, 5000.0));
+    CHECK(!target_entry_near(60000.0, 5000.0));
+    CHECK(!hazard_flee_full(1, 0, false));
+    CHECK(!hazard_flee_full(0, 3, false));
+    CHECK(!hazard_flee_full(0, 0, true));
+    CHECK(hazard_flee_full(0, 0, false));
+}
+
+// GetShields double -> whole units; a shield drop from doubles triggers DMG_SHIELD
+static void t_flee_guard_shield_units()
+{
+    CHECK(shield_whole(-1.0) == -1);
+    CHECK(shield_whole(0.0) == 0);
+    CHECK(shield_whole(59.9) == 59);
+    CHECK(shield_whole(60.0) == 60);
+    CHECK(shield_whole(1e12) == 2147483647);
+    CHECK(shield_whole(std::nan("")) == -1);
+    CHECK(!shield_dropped(shield_whole(59.2), shield_whole(59.9)));   // regeneration inside one unit
+    CHECK(damage_drop_kind(500, 500, shield_whole(40.0), shield_whole(25.5), false) == DMG_SHIELD);
+}
+
+// flee dock list: cargo candidates win; empty cargo falls back to ore docks, then refuel docks, unique
+static void t_flee_fallback_docks()
+{
+    const std::vector<int> r1 = flee_fallback_docks({5}, {{7}, {8}}, {9});
+    CHECK(r1 == std::vector<int>({5}));
+    const std::vector<int> r2 = flee_fallback_docks({}, {{7, 8}, {8, 6}}, {9, 7});
+    CHECK(r2 == std::vector<int>({7, 8, 6, 9}));
+    const std::vector<int> r3 = flee_fallback_docks({}, {{}, {}}, {});
+    CHECK(r3.empty());
+    const std::vector<int> r4 = flee_fallback_docks({}, {{}, {}}, {3});
+    CHECK(r4 == std::vector<int>({3}));
+}
+
 // shield and hull drop with regeneration: a rise is never a drop; the baseline follows each sample
 static void t_shield_drop()
 {
@@ -2084,7 +2165,7 @@ int main()
         {"net_clear_expired", t_net_clear_expired}, {"net_unload_first", t_net_unload_first}, {"dock_undock_first", t_dock_undock_first},
         {"combat_flee", t_combat_flee}, {"combat_log", t_combat_log},
         {"hazard_flee", t_hazard_flee}, {"targett_entry", t_targett_entry},
-        {"path_block", t_path_block}, {"path_perf", t_path_perf}, {"path_waypoint", t_path_waypoint}, {"shield_drop", t_shield_drop}, {"fast_sample", t_fast_sample},
+        {"path_block", t_path_block}, {"path_perf", t_path_perf}, {"path_waypoint", t_path_waypoint}, {"shield_drop", t_shield_drop}, {"flee_guard_shield_units", t_flee_guard_shield_units}, {"flee_fallback_docks", t_flee_fallback_docks}, {"attack_dist_and_flee_class", t_attack_dist_and_flee_class}, {"flee_idle_move", t_flee_idle_move}, {"flee_real_warp_hold", t_flee_real_warp_hold},{"fast_sample", t_fast_sample},
         {"rock_depleted", t_rock_depleted},
         {"reg_table", t_reg_table}, {"reg_events", t_reg_events}, {"reg_world_track", t_reg_world_track}, {"reg_within_nearest", t_reg_within_nearest}, {"reg_surface_block", t_reg_surface_block_radius},
         {"approach_throttle", t_approach_throttle}, {"bubble", t_bubble}, {"bubble_ladder", t_bubble_ladder}, {"bubble_scope", t_bubble_scope}, {"tune_geom", t_tune_geom}, {"flight_warp", t_flight_warp}, {"sweep_return_flee", t_sweep_return_flee}, {"path2_rules", t_path2_rules},

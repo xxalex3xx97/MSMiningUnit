@@ -490,6 +490,19 @@ namespace
         return true;
     }
 
+    // WHAT: calls a getter that returns a double (e.g. GetShields); false when missing.
+    bool call_double(UObject* o, const TCHAR* fname, double& out)
+    {
+        if (!alive(o)) return false;
+        UFunction* fn = o->GetFunctionByNameInChain(fname);
+        FProperty* rp = fn ? fn->GetReturnProperty() : nullptr;
+        if (!rp || !CastField<FDoubleProperty>(rp)) return false;
+        std::vector<uint8_t> buf(fn->GetParmsSize() + 16, 0);
+        o->ProcessEvent(fn, buf.data());
+        out = *reinterpret_cast<double*>(buf.data() + rp->GetOffset_Internal());
+        return true;
+    }
+
     // WHAT: reads Quat {W,X,Y,Z} (each a PNum Value) into unitless doubles, dividing by 65536. False when missing.
     // WHY: the rotation math needs unit quaternions; the raw values are fixed point.
     bool quat4(UObject* o, double q[4])

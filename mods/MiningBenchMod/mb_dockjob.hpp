@@ -190,6 +190,11 @@ namespace
         std::vector<int> cands;
         if (fixed > 0) cands = {fixed};
         else for (int i : unload_cand(in_cargo, has_docks)) for (int d : c.ore_docks[i]) add_unique(cands, d);
+        if (fixed <= 0 && g_flee_pick.count(sid))
+        {
+            std::wstring rw;
+            cands = flee_fallback_docks(cands, std::vector<std::vector<int>>(c.ore_docks, c.ore_docks + N_ORE), refuel_candidates(c, rw));
+        }
         if (cands.empty())
         {
             // nothing to unload here: a cargo ore with no dock list is a real error (NOT_CONFIGURED), else the cargo has nothing to unload
@@ -198,7 +203,7 @@ namespace
             for (int i = 0; i < N_ORE; ++i) if (in_cargo[i] && !has_docks[i]) { v.reason = NR_NOT_CONFIGURED; subject = ORE_KEY[i]; break; }
             return v;
         }
-        const Purpose pur = g_flee_pick.count(sid) ? P_FLEE : P_UNLOAD;
+        const Purpose pur = g_flee_pick.count(sid) && !g_flee_dock.count(sid) ? P_FLEE : P_UNLOAD;
         const NetVerdict v = net_pick(g_net_docks, g_net_ships, g_net_ticket, sid, pur, net_req_of(sid, pur), cands, 0, g_now);
         if (v.k == NetVerdict::ERR) { subject = net_dock_label(cands.front()); return v; }
         if (pur == P_FLEE && v.k == NetVerdict::GO) combat_log(STR("COMBAT flee dock chosen ship=") + std::to_wstring(sid) + STR(" dock=") + widen(net_dock_label(v.dock)));
@@ -383,7 +388,7 @@ namespace
             { const std::wstring u = undock_first(sid, ship, v.dock, cmd, seq); if (!u.empty()) return u; }
             if (v.k == NetVerdict::WAIT) { tlog(STR("unload dock busy, ship ") + std::to_wstring(sid) + STR(" waits")); return STR("waiting dock"); }
             dk = v.dock;
-            if (unl.empty()) return STR("error: no ore lists this dock");
+            if (unl.empty() && !g_flee_pick.count(sid)) return STR("error: no ore lists this dock");
         }
         // 4b. checks dock_order_issue would fail on: a job that would fail must not warp
         if (!int_array(ship, STR("OrderIDs"))) return STR("error: OrderIDs unreadable");
