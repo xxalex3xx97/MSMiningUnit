@@ -1158,6 +1158,19 @@ static void t_path_waypoint()
     NEAR(so[0], 800.0, 1e-9); NEAR(so[1], 0.0, 1e-9); NEAR(so[2], 0.0, 1e-9);
 }
 
+// GetShields double -> whole units; a shield drop from doubles triggers DMG_SHIELD
+static void t_flee_guard_shield_units()
+{
+    CHECK(shield_whole(-1.0) == -1);
+    CHECK(shield_whole(0.0) == 0);
+    CHECK(shield_whole(59.9) == 59);
+    CHECK(shield_whole(60.0) == 60);
+    CHECK(shield_whole(1e12) == 2147483647);
+    CHECK(shield_whole(std::nan("")) == -1);
+    CHECK(!shield_dropped(shield_whole(59.2), shield_whole(59.9)));   // regeneration inside one unit
+    CHECK(damage_drop_kind(500, 500, shield_whole(40.0), shield_whole(25.5), false) == DMG_SHIELD);
+}
+
 // shield and hull drop with regeneration: a rise is never a drop; the baseline follows each sample
 static void t_shield_drop()
 {
@@ -2084,7 +2097,7 @@ int main()
         {"net_clear_expired", t_net_clear_expired}, {"net_unload_first", t_net_unload_first}, {"dock_undock_first", t_dock_undock_first},
         {"combat_flee", t_combat_flee}, {"combat_log", t_combat_log},
         {"hazard_flee", t_hazard_flee}, {"targett_entry", t_targett_entry},
-        {"path_block", t_path_block}, {"path_perf", t_path_perf}, {"path_waypoint", t_path_waypoint}, {"shield_drop", t_shield_drop}, {"fast_sample", t_fast_sample},
+        {"path_block", t_path_block}, {"path_perf", t_path_perf}, {"path_waypoint", t_path_waypoint}, {"shield_drop", t_shield_drop}, {"flee_guard_shield_units", t_flee_guard_shield_units}, {"fast_sample", t_fast_sample},
         {"rock_depleted", t_rock_depleted},
         {"reg_table", t_reg_table}, {"reg_events", t_reg_events}, {"reg_world_track", t_reg_world_track}, {"reg_within_nearest", t_reg_within_nearest}, {"reg_surface_block", t_reg_surface_block_radius},
         {"approach_throttle", t_approach_throttle}, {"bubble", t_bubble}, {"bubble_ladder", t_bubble_ladder}, {"bubble_scope", t_bubble_scope}, {"tune_geom", t_tune_geom}, {"flight_warp", t_flight_warp}, {"sweep_return_flee", t_sweep_return_flee}, {"path2_rules", t_path2_rules},

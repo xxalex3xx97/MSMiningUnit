@@ -964,6 +964,7 @@ namespace
         m.flee = true; m.leave = false; m.flee_t = 0.0;
         mlog(sid, STR("ERROR: ") + why + STR(", fleeing to dock"));
         g_flee_pick.insert(sid);   // dock pick purpose P_FLEE (mb_net.hpp)
+        g_dock_pick.erase(sid);    // a flee never uses a manual Dock picker choice
         if (back && hazard_away(sid, m, HAZARD_BACKOUT_M))
         {
             m.backout = true; m.flee_why = why;   // step_pre starts the dock trip when the back-out move ends
@@ -999,10 +1000,10 @@ namespace
     // WHY: the shield value is the only early sign of a hit on a shielded ship (the hull does not move until the shield is gone).
     int32_t shield_now(UObject* ship)
     {
-        int32_t s = -1;
-        if (get_int_prop(ship, STR("Shields"), s)) return s;
+        double d = 0.0;
+        if (call_double(ship, STR("GetShields"), d)) return shield_whole(d);
         static bool warned = false;
-        if (!warned) { warned = true; log_line(STR("MINE shield unreadable: Shields is not an IntProperty on DMSPlayerShipObject")); }
+        if (!warned) { warned = true; log_line(STR("MINE shield unreadable: GetShields missing on DMSPlayerShipObject")); }
         return -1;
     }
 
@@ -1034,8 +1035,8 @@ namespace
             m.leave = true;   // UNDOCK / TRIP / HOLD: let them end, then park
         }
         else m.leave = false;
-        // 1b. hull hit while flying / mining / warping: stop work, dock trip (flee), trip_end halts with the red ERROR
-        if (m.st == MS_SEEK || m.st == MS_MINE || m.st == MS_WARP || m.st == MS_COLLECT || m.st == MS_SWEEP)
+        // 1b. hull hit while flying / mining / warping: stop work, dock trip (flee), trip_end halts with the red ERROR. Not while a flee runs (its back-out move would be cancelled).
+        if (!m.flee && (m.st == MS_SEEK || m.st == MS_MINE || m.st == MS_WARP || m.st == MS_COLLECT || m.st == MS_SWEEP))
         {
             int32_t h = 0;
             if (get_int_prop(ship, STR("Health"), h))
@@ -2968,8 +2969,7 @@ namespace
         {
             int32_t mx = 0;
             if (get_int_prop(ship, STR("MaxHealth"), mx)) m.hull_max = mx;
-            int32_t smx = 0;
-            if (get_int_prop(ship, STR("MaxShields"), smx)) m.sh_max = smx;
+            { double d = 0.0; if (call_double(ship, STR("GetMaxShields"), d)) m.sh_max = shield_whole(d); }
             m.dmg_txt = struct_prop_text(ship, STR("DamageState"));
         }
         const int32_t s = shield_now(ship);   // -1 unreadable: never a drop
