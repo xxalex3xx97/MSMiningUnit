@@ -89,6 +89,10 @@ namespace
     struct StDestroy { bool active = false; int id = 0; double t = 0.0, next = 0.0; bool diag = false; };
     StDestroy g_sd;
 
+    // WHAT: ids of stations this session destroyed. stations_write skips them.
+    // WHY: the destroyed StationObject can stay findable (not yet garbage collected) and would keep showing in the Dev Menu list.
+    std::set<int> g_gone;
+
     // WHAT: writes DevStationResult.txt = "<id>|<state>|<text>" (state running/done/error). The Lua tab shows the text.
     void station_result(int id, const char* state, const std::wstring& text)
     {
@@ -134,7 +138,7 @@ namespace
         {
             if (!alive(o) || o->GetName().rfind(STR("Default__"), 0) == 0) continue;
             const int id = obj_id(o);
-            if (id <= 0) continue;
+            if (id <= 0 || g_gone.count(id)) continue;
             const std::wstring cls = o->GetClassPrivate()->GetName();
             std::wstring name = obj_display(o);
             if (name.empty()) name = cls;
@@ -214,210 +218,72 @@ namespace
         return n;
     }
 
-    // WHAT: adds the collected items to the cargo of the player's ships: the piloted ship first, then every other ship that has an Inventory,
-    //       Inventory.AddItems per item kind with the amount still left. Returns the units that went in.
-    // WHY: a new crate cannot be created from a mod (the sim creates them). One ship hold took only 6519 of 21600 units, so the rest goes to the other ships;
-    //      what still does not fit is lost (logged).
-    int64_t station_stash_to_ships(std::vector<StashItem>& acc)
+    // WHAT: sends SelfDestructInput (the game's own station self destruct) to the station: CreateInputSelfDestruct on the class default object,
+    //       then AddInputCommand(station id, cmd). false with err set when a function is missing.
+    // WHY: once the machines are removed (refunded) the game itself deletes the station. Factory params are zero-filled; their names are logged once.
+    bool station_self_destruct(int id, std::wstring& err)
     {
-        std::vector<UObject*> ships;
-        const int cur = current_ship_id();
-        if (cur > 0) if (UObject* c = find_by_id(STR("DMSPlayerShipObject"), cur)) if (alive(c)) ships.push_back(c);
-        std::vector<UObject*> all;
-        UObjectGlobals::FindAllOf(STR("DMSPlayerShipObject"), all);
-        for (UObject* o : all) if (alive(o) && std::find(ships.begin(), ships.end(), o) == ships.end()) ships.push_back(o);
-        int64_t put_total = 0;
-        for (UObject* ship : ships)
-        {
-            UObject* inv = get_obj_prop(ship, STR("Inventory"));
-            UFunction* add = alive(inv) ? inv->GetFunctionByNameInChain(STR("AddItems")) : nullptr;
-            if (!add) continue;
-            int64_t here = 0;
-            for (auto& si : acc)
-            {
-                if (si.amount <= 0 || si.raw.size() < static_cast<size_t>(si.off_amount) + 4) continue;
-                std::vector<uint8_t> raw = si.raw;
-                const int32_t want = static_cast<int32_t>(std::min<int64_t>(si.amount, 2000000000));
-                memcpy(raw.data() + si.off_amount, &want, 4);
-                std::vector<uint8_t> b(add->GetParmsSize() + 16, 0);
-                if (!put(add, b, STR("ItemsToAdd"), raw.data(), raw.size())) continue;
-                inv->ProcessEvent(add, b.data());
-                int32_t rv = 0;
-                if (FProperty* rp = add->FindProperty(FName(STR("ReturnValue"), FNAME_Add))) rv = *reinterpret_cast<int32_t*>(b.data() + rp->GetOffset_Internal());
-                si.amount -= rv; here += rv;
-            }
-            put_total += here;
-            log_line(STR("DEVSTATION stash ship ") + std::to_wstring(obj_id(ship)) + STR(" took ") + std::to_wstring(here));
-        }
-        int64_t lost = 0;
-        for (auto& si : acc) lost += std::max<int64_t>(si.amount, 0);
-        log_line(STR("DEVSTATION stash total added=") + std::to_wstring(put_total) + STR(" lost=") + std::to_wstring(lost));
-        return put_total;
+        auto* cls = UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/MainSequence.SelfDestructInput"));
+        UObject* cdo = cls ? cls->GetClassDefaultObject() : nullptr;
+        UFunction* fn = alive(cdo) ? cdo->GetFunctionByNameInChain(STR("CreateInputSelfDestruct")) : nullptr;
+        if (!fn) { err = STR("CreateInputSelfDestruct not found"); return false; }
+        std::wstring sig;
+        for (FProperty* pp : fn->ForEachProperty()) sig += pp->GetName() + STR(":") + type_text(pp) + STR(" ");
+        log_line(STR("DEVSTATION CreateInputSelfDestruct params: ") + sig);
+        std::vector<uint8_t> buf(fn->GetParmsSize() + 16, 0);
+        cdo->ProcessEvent(fn, buf.data());
+        FProperty* rp = fn->GetReturnProperty();
+        UObject* cmd = rp ? *reinterpret_cast<UObject**>(buf.data() + rp->GetOffset_Internal()) : nullptr;
+        if (!alive(cmd)) { err = STR("CreateInputSelfDestruct returned no command"); return false; }
+        return add_input(id, cmd, err);
     }
 
-    // WHAT: one destroy pass. Machines first (a block with machines attached cannot be removed), then the construction objects,
-    //       then the platforms; after 20 s with nothing sent, or still present, a mass disassemble of the station id itself.
-    //       Returns true when the station object is gone.
-    // WHY: the first run showed PlatformIDs = 0 on every player station: the parts live in MachineIDs / ConstructionObjectIDs.
-    //      INFERRED that disassembly is a queued task, so the pass repeats (station_destroy_tick) until the station disappears.
+    // WHAT: one destroy pass. Phase 1: remove the machines one by one with AddDisassembleCommand (the game's deconstruct, it refunds the cost and
+    //       the contents into the player inventory); bPlayerDisassembly is forced true first (the only refusal gate), docks go last.
+    //       Phase 2 (MachineIDs empty): self destruct the station once (station_self_destruct). Returns true when the station object is gone.
+    // WHY: user request 2026-11-14: remove machines for the refund, then use the game's self destruct instead of mass disassemble / item stashing.
     bool station_step()
     {
         UObject* st = find_by_id(STR("StationObject"), g_sd.id);
         if (!alive(st)) return true;
         const std::vector<int> machines = station_ids(st, STR("MachineIDs"));
-        const std::vector<int> cons = station_ids(st, STR("ConstructionObjectIDs"));
-        const std::vector<int> plats = station_ids(st, STR("PlatformIDs"));
-        const std::vector<int>* pick = !machines.empty() ? &machines : (!cons.empty() ? &cons : &plats);
-        std::wstring err, first;
-        int sent = 0, fail = 0;
-        if (!pick->empty() && !g_sd.diag)
+        std::wstring err;
+        if (machines.empty())
         {
-            // once: what are the machines that did not go away? class histogram + inventory id of a sample of each class
+            if (g_sd.diag) return false;   // self destruct already sent, waiting for the station to vanish
             g_sd.diag = true;
-            std::set<int> want(pick->begin(), pick->end());
-            std::map<std::wstring, int> count;
-            std::map<std::wstring, std::wstring> sample;
-            std::vector<UObject*> all;
-            UObjectGlobals::FindAllOf(STR("SaveableObject"), all);
-            for (UObject* o : all)
-            {
-                if (!alive(o)) continue;
-                const int oid = obj_id(o);
-                if (!want.count(oid)) continue;
-                const std::wstring cn = o->GetClassPrivate()->GetName();
-                if (++count[cn] == 1)
-                {
-                    int32_t inv = 0, parent = 0;
-                    get_int_prop(o, STR("InventoryID"), inv);
-                    get_int_prop(o, STR("ParentID"), parent);
-                    sample[cn] = STR("id=") + std::to_wstring(oid) + STR(" InventoryID=") + std::to_wstring(inv) + STR(" ParentID=") + std::to_wstring(parent);
-                }
-            }
-            for (auto& kv : count) log_line(STR("DEVSTATION remaining class ") + kv.first + STR(" x") + std::to_wstring(kv.second) + STR(" sample ") + sample[kv.first]);
-            // per class: ask the game itself (CanPlayerDisassemble), and look into the sample's inventory object (array sizes)
-            std::map<int, UObject*> byid;
-            for (UObject* o : all) if (alive(o)) byid[obj_id(o)] = o;
-            // ---- STASH PROBE (log only, nothing is changed here): what could be moved into one crate at the player ----
-            {
-                std::map<std::wstring, int> sig_done;
-                UObject* sample_inv = nullptr;
-                UObject* crate = nullptr;
-                int n_inv = 0, n_elem = 0;
-                std::set<std::wstring> distinct;
-                for (int id : *pick)
-                {
-                    auto it = byid.find(id);
-                    if (it == byid.end() || !alive(it->second)) continue;
-                    int32_t iid = 0;
-                    if (!get_int_prop(it->second, STR("InventoryID"), iid) || iid <= 0) continue;
-                    auto iv = byid.find(iid);
-                    if (iv == byid.end() || !alive(iv->second)) continue;
-                    if (!crate && it->second->GetClassPrivate()->GetName() == STR("BP_ItemCrateObject_C")) crate = it->second;
-                    ++n_inv;
-                    if (!sample_inv) sample_inv = iv->second;
-                    FProperty* tp = iv->second->GetPropertyByNameInChain(STR("ItemTotals"));
-                    auto* ap = tp ? CastField<FArrayProperty>(tp) : nullptr;
-                    auto* ta = ap ? iv->second->GetValuePtrByPropertyNameInChain<TArray<uint8_t>>(STR("ItemTotals")) : nullptr;
-                    if (!ap || !ta) continue;
-                    auto* sp = CastField<FStructProperty>(ap->GetInner());
-                    for (int i = 0; sp && i < ta->Num(); ++i)
-                    {
-                        ++n_elem;
-                        const uint8_t* e = reinterpret_cast<uint8_t*>(ta->GetData()) + static_cast<size_t>(i) * ap->GetInner()->GetElementSize();
-                        if (distinct.size() < 6) distinct.insert(dump_struct(e, sp->GetStruct()));
-                    }
-                }
-                log_line(STR("DEVSTATION stash: machines_with_inventory=") + std::to_wstring(n_inv) + STR(" ItemTotals_elements=") + std::to_wstring(n_elem));
-                for (auto& d : distinct) log_line(STR("DEVSTATION stash element: ") + d);
-                if (sample_inv)
-                    for (const TCHAR* fn : {STR("SetInventorySize"), STR("AddItems"), STR("RemoveItems"), STR("AddItemsToSlot")})
-                        if (UFunction* f = sample_inv->GetFunctionByNameInChain(fn))
-                        {
-                            std::wstring sig = std::wstring(fn) + STR("(");
-                            for (FProperty* pp : f->ForEachProperty()) sig += pp->GetName() + STR(":") + type_text(pp) + STR(" ");
-                            log_line(STR("DEVSTATION stash signature ") + sig + STR(")"));
-                        }
-                if (crate)
-                {
-                    log_line(STR("DEVSTATION stash crate id=") + std::to_wstring(obj_id(crate)) + STR(" Location=") + pvec_text(crate, STR("Location")) + STR(" ChunkLocation=") + pvec_text(crate, STR("ChunkLocation")));
-                    station_class_dump(crate);
-                }
-                if (UObject* po = first_of(STR("DMSPlayerObject")))
-                {
-                    log_line(STR("DEVSTATION stash player object id=") + std::to_wstring(obj_id(po)) + STR(" Location=") + pvec_text(po, STR("Location")) + STR(" ChunkLocation=") + pvec_text(po, STR("ChunkLocation")) + STR(" CurrentChunk=") + pvec_text(po, STR("CurrentChunk")));
-                    station_class_dump(po);
-                }
-                if (UObject* ch = first_of(STR("DMSCharacter")))
-                    log_line(STR("DEVSTATION stash character LocalLocation=") + pvec_text(ch, STR("LocalLocation")) + STR(" PredictedLocation=") + pvec_text(ch, STR("PredictedLocation")));
-            }
-            int cleared = 0, with_inv = 0;
-            std::vector<StashItem> acc;
-            for (int id : *pick)
-            {
-                auto it = byid.find(id);
-                if (it == byid.end() || !alive(it->second)) continue;
-                int32_t iid = 0;
-                if (!get_int_prop(it->second, STR("InventoryID"), iid) || iid <= 0) continue;
-                auto iv = byid.find(iid);
-                if (iv == byid.end()) continue;
-                ++with_inv;
-                cleared += station_drain_inventory(iv->second, acc);
-            }
-            log_line(STR("DEVSTATION drained inventories: machines_with_inventory=") + std::to_wstring(with_inv) + STR(" stacks_removed=") + std::to_wstring(cleared) + STR(" item_kinds=") + std::to_wstring(acc.size()));
-            station_stash_to_ships(acc);
-            std::set<std::wstring> seen;
-            for (int id : *pick)
-            {
-                auto it = byid.find(id);
-                if (it == byid.end() || !alive(it->second)) continue;
-                UObject* o = it->second;
-                const std::wstring cn = o->GetClassPrivate()->GetName();
-                if (!seen.insert(cn).second) continue;
-                std::wstring can = STR("?");
-                if (UFunction* f = o->GetFunctionByNameInChain(STR("CanPlayerDisassemble")))
-                {
-                    std::vector<uint8_t> b(f->GetParmsSize() + 16, 0);
-                    o->ProcessEvent(f, b.data());
-                    if (FProperty* rp = f->FindProperty(FName(STR("ReturnValue"), FNAME_Add))) can = b[rp->GetOffset_Internal()] ? STR("true") : STR("false");
-                }
-                bool bpd = false; get_bool_prop(o, STR("bPlayerDisassembly"), bpd);
-                int32_t inv = 0; get_int_prop(o, STR("InventoryID"), inv);
-                std::wstring invinfo;
-                auto iv = byid.find(inv);
-                if (inv > 0 && iv != byid.end() && alive(iv->second))
-                {
-                    UObject* io = iv->second;
-                    station_class_dump(io);
-                    invinfo = STR(" inv_class=") + io->GetClassPrivate()->GetName() + STR(" arrays:");
-                    for (UStruct* sc = io->GetClassPrivate(); sc && sc->GetName() != STR("Object"); sc = sc->GetSuperStruct())
-                        for (FProperty* pp : sc->ForEachProperty())
-                            if (CastField<FArrayProperty>(pp))
-                            {
-                                auto* ta = io->GetValuePtrByPropertyNameInChain<TArray<uint8_t>>(pp->GetName().c_str());
-                                invinfo += STR(" ") + pp->GetName() + STR("=") + std::to_wstring(ta ? ta->Num() : -1);
-                            }
-                }
-                log_line(STR("DEVSTATION probe ") + cn + STR(" CanPlayerDisassemble=") + can + STR(" bPlayerDisassembly=") + (bpd ? STR("1") : STR("0")) + invinfo);
-            }
+            const bool ok = station_self_destruct(g_sd.id, err);
+            log_line(STR("DEVSTATION self destruct station=") + std::to_wstring(g_sd.id) + (ok ? STR(" sent") : STR(" failed: ") + err));
+            if (!ok) { g_sd.active = false; station_result(g_sd.id, "error", err); }
+            else station_result(g_sd.id, "running", STR("machines removed, self destruct sent"));
+            return false;
         }
-        for (int id : *pick)
+        std::set<int> want(machines.begin(), machines.end());
+        std::vector<UObject*> all;
+        UObjectGlobals::FindAllOf(STR("MachineObject"), all);
+        std::vector<UObject*> plain, docks;
+        for (UObject* o : all)
         {
-            if (sent + fail < 3) first += std::to_wstring(id) + STR(" ");
-            if (station_disassemble(id, err, false)) ++sent; else ++fail;
+            if (!alive(o) || !want.count(obj_id(o))) continue;
+            (o->GetClassPrivate()->GetName().find(STR("Dock")) != std::wstring::npos ? docks : plain).push_back(o);
         }
-        if (pick->empty() || g_sd.t > 20.0)
+        const std::vector<UObject*>& pick = plain.empty() ? docks : plain;
+        int sent = 0, fail = 0;
+        for (UObject* o : pick)
         {
-            if (station_disassemble(g_sd.id, err, true)) ++sent; else ++fail;   // mass disassemble of the whole station
+            bool can = false;
+            get_bool_prop(o, STR("bPlayerDisassembly"), can);
+            if (!can) set_bool_prop(o, STR("bPlayerDisassembly"), true);
+            if (station_disassemble(obj_id(o), err, false)) ++sent; else ++fail;
         }
         log_line(STR("DEVSTATION step station=") + std::to_wstring(g_sd.id) + STR(" t=") + std::to_wstring(static_cast<int>(g_sd.t)) +
-                 STR("s machines=") + std::to_wstring(machines.size()) + STR(" construction=") + std::to_wstring(cons.size()) +
-                 STR(" platforms=") + std::to_wstring(plats.size()) + STR(" first_ids=") + first +
-                 STR(" commands_sent=") + std::to_wstring(sent) + STR(" failed=") + std::to_wstring(fail) + (err.empty() ? std::wstring() : STR(" err=") + err));
+                 STR("s machines=") + std::to_wstring(machines.size()) + STR(" sent=") + std::to_wstring(sent) + STR(" failed=") + std::to_wstring(fail) +
+                 (err.empty() ? std::wstring() : STR(" err=") + err));
         if (fail > 0 && sent == 0) { g_sd.active = false; station_result(g_sd.id, "error", err); }
         return false;
     }
 
-    // WHAT: runs from cmd_tick every 0.25 s (dt = poll step). Every 2 s it does a pass until the station is gone or 30 s passed. Rewrites the list file at the end.
+    // WHAT: runs from cmd_tick every 0.25 s (dt = poll step). Every 2 s it does a pass until the station is gone or 60 s passed. Rewrites the list file at the end.
     void station_destroy_tick(double dt)
     {
         if (!g_sd.active) return;
@@ -425,14 +291,14 @@ namespace
         g_sd.next -= dt;
         if (g_sd.next > 0.0) return;
         g_sd.next = 2.0;
-        if (g_sd.t > 30.0)
+        if (g_sd.t > 60.0)
         {
             g_sd.active = false;
-            log_line(STR("DEVSTATION timeout station=") + std::to_wstring(g_sd.id) + STR(" still present after 30 s"));
+            log_line(STR("DEVSTATION timeout station=") + std::to_wstring(g_sd.id) + STR(" still present after 60 s"));
             {
                 UObject* left = find_by_id(STR("StationObject"), g_sd.id);
                 const size_t n = alive(left) ? station_ids(left, STR("MachineIDs")).size() : 0;
-                station_result(g_sd.id, "error", STR("30 s: items moved to your ships, ") + std::to_wstring(n) + STR(" parts still stand - remove them by hand"));
+                station_result(g_sd.id, "error", STR("60 s: ") + std::to_wstring(n) + STR(" machines still stand - remove them by hand"));
             }
             stations_write();
             return;
@@ -441,6 +307,7 @@ namespace
         {
             g_sd.active = false;
             log_line(STR("DEVSTATION done station=") + std::to_wstring(g_sd.id) + STR(" gone after ") + std::to_wstring(static_cast<int>(g_sd.t)) + STR(" s"));
+            g_gone.insert(g_sd.id);
             station_result(g_sd.id, "done", STR("station destroyed"));
             stations_write();
         }
@@ -468,6 +335,22 @@ namespace
         return STR("ok destroy started station=") + std::to_wstring(id);
     }
 
+    // WHAT: "dev_clear_inv": removes every item from the player's own inventory (DMSPlayerObject.Inventory) through the game's RemoveItems
+    //       (station_drain_inventory). Station and ship cargo are untouched. Refuses when the inventory or RemoveItems is unreadable.
+    // WHY: Dev Menu Cheats "Clear my inventory". DEV CHEAT, local sim write like the drain (not an input command, not co-op safe).
+    std::wstring dev_clear_inv()
+    {
+        UObject* po = first_of(STR("DMSPlayerObject"));
+        UObject* inv = alive(po) ? get_obj_prop(po, STR("Inventory")) : nullptr;
+        if (!alive(inv)) { log_line(STR("DEVCLEAR refused: player inventory not found")); return STR("error: player inventory not found"); }
+        std::vector<StashItem> acc;
+        const int n = station_drain_inventory(inv, acc);
+        int64_t units = 0;
+        for (auto& si : acc) units += si.amount;
+        log_line(STR("DEVCLEAR player inventory: stacks_removed=") + std::to_wstring(n) + STR(" item_kinds=") + std::to_wstring(acc.size()) + STR(" units=") + std::to_wstring(units));
+        return STR("ok cleared stacks=") + std::to_wstring(n);
+    }
+
     // WHAT: dispatch one dev command. handled = true when the command is a dev command (result in the return value);
     //       false = not a dev command, the caller goes on with its own list.
     // WHY: keeps the dev commands out of run_cmd; the lines below are the former run_cmd lines, unchanged.
@@ -488,6 +371,7 @@ namespace
         if (cmd == "chunkhold:release_all") { chunk_hold_release_all(); return STR("ok chunk holds released (see CHUNKHOLD log)"); }   // Dev Menu "Release all chunk holds" (mb_chunkhold.hpp)
         if (cmd == "reg_dump" || cmd.rfind("reg_query:", 0) == 0 || cmd.rfind("reg_check:", 0) == 0) return registry_dev(sid, cmd);   // rock registry (mb_registry.hpp)
         if (cmd.rfind("bubble_status:", 0) == 0 || cmd.rfind("bubble_sim:", 0) == 0) return bubble_dev(cmd);   // bubble reflex, read-only (mb_bubble.hpp)
+        if (cmd == "dev_clear_inv") return dev_clear_inv();
         if (cmd == "dev_stations") return STR("ok stations=") + std::to_wstring(stations_write());
         if (cmd.rfind("dev_destroy_station:", 0) == 0) return station_destroy_start(cmd.substr(20));
         handled = false;
