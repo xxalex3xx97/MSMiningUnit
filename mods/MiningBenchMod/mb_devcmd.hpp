@@ -89,6 +89,10 @@ namespace
     struct StDestroy { bool active = false; int id = 0; double t = 0.0, next = 0.0; bool diag = false; };
     StDestroy g_sd;
 
+    // WHAT: ids of stations this session destroyed. stations_write skips them.
+    // WHY: the destroyed StationObject can stay findable (not yet garbage collected) and would keep showing in the Dev Menu list.
+    std::set<int> g_gone;
+
     // WHAT: writes DevStationResult.txt = "<id>|<state>|<text>" (state running/done/error). The Lua tab shows the text.
     void station_result(int id, const char* state, const std::wstring& text)
     {
@@ -134,7 +138,7 @@ namespace
         {
             if (!alive(o) || o->GetName().rfind(STR("Default__"), 0) == 0) continue;
             const int id = obj_id(o);
-            if (id <= 0) continue;
+            if (id <= 0 || g_gone.count(id)) continue;
             const std::wstring cls = o->GetClassPrivate()->GetName();
             std::wstring name = obj_display(o);
             if (name.empty()) name = cls;
@@ -303,6 +307,7 @@ namespace
         {
             g_sd.active = false;
             log_line(STR("DEVSTATION done station=") + std::to_wstring(g_sd.id) + STR(" gone after ") + std::to_wstring(static_cast<int>(g_sd.t)) + STR(" s"));
+            g_gone.insert(g_sd.id);
             station_result(g_sd.id, "done", STR("station destroyed"));
             stations_write();
         }
