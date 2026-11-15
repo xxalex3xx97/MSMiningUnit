@@ -9,7 +9,7 @@ const fs = require('fs');
 const path = require('path');
 
 const ROOT = process.env.MS_MODS_ROOT || 'F:\\MSDemoMods';  // repo root, holds legacy\ (vanilla source)
-const L = ROOT + '\\legacy\\MainSequence\\Content';
+const L = (process.env.MS_VANILLA_ROOT || ROOT) + '\\legacy\\MainSequence\\Content';  // MS_VANILLA_ROOT: dir holding legacy\ (new vanilla)
 const W = ROOT + '\\mods\\MiningUnitBlockPak';
 const OUT = path.join(W, 'src', 'MainSequence', 'Content');
 const BLK = path.join('Blueprints', 'BuildingBlocks');
