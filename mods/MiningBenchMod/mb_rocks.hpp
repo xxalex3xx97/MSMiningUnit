@@ -446,15 +446,117 @@ namespace
     // WHY: the game's distances and aim axes come from the actor. The ship object's own Location is chunk-relative.
     struct ActFrame { double loc[3] = {0, 0, 0}, fw[3] = {1, 0, 0}, R[3] = {0, 1, 0}, U[3] = {0, 0, 1}; };
 
-    // WHAT: fill f with the ship actor frame. false when the actor or one of its vector calls is unreadable.
+    // WHAT: why the last act_frame() call failed (empty = it succeeded). Names the step that failed.
+    // WHY: "ship actor unreadable" alone did not say whether the Actor prop, the alive check or which vector call broke.
+    std::wstring g_af_why;
+
+    bool get_chunk(UObject* o, int64_t c[3]);   // mb_warp.hpp (same unnamed namespace, included later)
+
+    // WHAT: object-to-actor axis calibration. ok = learned from one ship that had an actor; qmode / ax as in qcal_pick.
+    // WHY: needed so the object-based frame (act_frame_obj) points the same way as the actor frame. Default ax = +X, +Y, +Z.
+    struct QCal { bool ok = false; int qmode = 0; int ax[3] = {0, 2, 4}; };
+    QCal g_qcal;
+
+    // WHAT: chunk size in m for the object frame (same value as DOCK_CHUNK_M in mb_mining.hpp, which is included later).
+    // WHY: world loc = chunk * AF_CHUNK_M + local Location / g_raw_per_m.
+    constexpr double AF_CHUNK_M = 2048.0;
+
+    // WHAT: ship OBJECT world position (uu) = (chunk * 2048 + local Location / g_raw_per_m) * 100. false when chunk or Location is unreadable.
+    // WHY: the object has no actor; its Location is chunk-relative (rocks banner). UNVERIFIED frame: act_calib_learn logs locdiff to check it.
+    bool obj_loc_uu(UObject* ship, double out[3])
+    {
+        int64_t ch[3];
+        double raw[3];
+        if (!get_chunk(ship, ch) || !get_loc(ship, raw)) return false;
+        for (int i = 0; i < 3; ++i) out[i] = (static_cast<double>(ch[i]) * AF_CHUNK_M + raw[i] / g_raw_per_m) * MV_UU_PER_M;
+        return true;
+    }
+
+    // WHAT: fill f from the ship OBJECT (no actor): loc from obj_loc_uu, axes from Quat through the calibrated map.
+    // WHY: a far ship has no actor but still needs an aim frame. Fails with g_af_why set when chunk / loc / Quat or the calibration is missing.
+    bool act_frame_obj(UObject* ship, ActFrame& f)
+    {
+        double q[4];
+        if (!obj_loc_uu(ship, f.loc) || !quat4(ship, q)) { g_af_why = STR("obj fallback: chunk/loc/Quat unreadable"); return false; }
+        if (!g_qcal.ok) { g_af_why = STR("axes not calibrated (needs one ship with an actor)"); return false; }
+        qcal_apply(q, g_qcal.qmode, g_qcal.ax, f.fw, f.R, f.U);
+        g_af_why.clear();
+        return true;
+    }
+
+    // WHAT: when the actor frame is good, learn the object-to-actor axis map from this ship (logs when it changes) and, once per ship id, the object-vs-actor location gap.
+    // WHY: the object frame is only as good as this check. locdiff near 0 = the chunk/loc frame is right.
+    void act_calib_learn(UObject* ship, const ActFrame& f)
+    {
+        double q[4];
+        if (quat4(ship, q))
+        {
+            int qm = 0, ax[3] = {0, 2, 4};
+            if (qcal_pick(q, f.fw, f.R, f.U, qm, ax) && (!g_qcal.ok || qm != g_qcal.qmode || !std::equal(ax, ax + 3, g_qcal.ax)))
+            {
+                g_qcal.ok = true; g_qcal.qmode = qm; std::copy(ax, ax + 3, g_qcal.ax);
+                log_line(STR("ACTFRAME calibrated qmode=") + std::to_wstring(qm) + STR(" ax=") + std::to_wstring(ax[0]) + STR(",") +
+                         std::to_wstring(ax[1]) + STR(",") + std::to_wstring(ax[2]));
+            }
+        }
+        const int32_t sid = obj_id(ship);   // ship id = the "ID" property (as everywhere else)
+        static std::set<int32_t> logged;
+        if (!logged.insert(sid).second) return;
+        double ol[3];
+        if (!obj_loc_uu(ship, ol)) return;
+        const double d[3] = {ol[0] - f.loc[0], ol[1] - f.loc[1], ol[2] - f.loc[2]};
+        log_line(STR("ACTFRAME locdiff ship=") + std::to_wstring(sid) + STR(" uu=") + std::to_wstring(norm3(d)));
+    }
+
+    // WHAT: fill f with the ship actor frame. If the actor is null or dead, falls back to the ship object frame (act_frame_obj).
+    //       false when the actor and the fallback are both unreadable (g_af_why names both steps).
     // WHY: all aim maths (aim_calc, act_aim, speed monitor) start from this one frame.
     bool act_frame(UObject* ship, ActFrame& f)
     {
+        auto from_obj = [&](const std::wstring& actor_why) {
+            if (act_frame_obj(ship, f)) return true;
+            g_af_why = actor_why + STR(" | ") + g_af_why;
+            return false;
+        };
         UObject* sa = obj_prop(ship, STR("Actor"));
-        if (!alive(sa)) return false;
+        if (!sa)
+        {
+            FProperty* ap = ship ? ship->GetPropertyByNameInChain(STR("Actor")) : nullptr;
+            const std::wstring actor_why = STR("Actor ") + std::wstring(!ap ? STR("prop missing") : prop_is(ship, STR("Actor"), STR("ObjectProperty")) ? STR("value null") : STR("not ObjectProperty")) +
+                       STR(" class=") + (ship && ship->GetClassPrivate() ? ship->GetClassPrivate()->GetName() : std::wstring(STR("?")));
+            return from_obj(actor_why);
+        }
+        if (!alive(sa)) return from_obj(STR("Actor not alive"));
         std::wstring why;
-        return actor_vec_call(sa, STR("K2_GetActorLocation"), f.loc, why) && actor_vec_call(sa, STR("GetActorForwardVector"), f.fw, why) &&
-               actor_vec_call(sa, STR("GetActorRightVector"), f.R, why) && actor_vec_call(sa, STR("GetActorUpVector"), f.U, why);
+        auto step = [&](const TCHAR* fn, double* out) {
+            if (actor_vec_call(sa, fn, out, why)) return true;
+            g_af_why = std::wstring(fn) + STR(": ") + why;
+            return false;
+        };
+        if (!step(STR("K2_GetActorLocation"), f.loc) || !step(STR("GetActorForwardVector"), f.fw) ||
+            !step(STR("GetActorRightVector"), f.R) || !step(STR("GetActorUpVector"), f.U)) return false;
+        g_af_why.clear();
+        act_calib_learn(ship, f);
+        return true;
+    }
+
+    // WHAT: appends the act_frame failure reason (if any) to the "ship actor unreadable" text.
+    std::wstring act_fail_text()
+    {
+        std::wstring s = STR("ship actor unreadable");
+        if (!g_af_why.empty()) s += STR(" (") + g_af_why + STR(")");
+        return s;
+    }
+
+    // WHAT: logs one "act_frame fail" line per ship id (first failure only).
+    // WHY: shows the step that failed without flooding the log every tick.
+    void act_fail_log_once(int sid, const std::wstring& chunk = std::wstring())
+    {
+        static std::set<int> logged;
+        if (!logged.insert(sid).second) return;
+        std::wstring line = STR("MINE ship=") + std::to_wstring(sid) + STR(" act_frame fail: ") + g_af_why;
+        if (!chunk.empty()) line += STR(" chunk=") + chunk;
+        log_line(line);
     }
 
     // WHAT: aim numbers of one rock against the ship frame.
@@ -556,7 +658,7 @@ namespace
         UObject* item = find_item(eff_cfg(sid).resource, why);
         if (!alive(item)) return nullptr;
         ActFrame f;
-        if (!act_frame(ship, f)) { why = STR("ship actor unreadable"); return nullptr; }
+        if (!act_frame(ship, f)) { act_fail_log_once(sid); why = act_fail_text(); return nullptr; }
         ActAim r;
         return nearest_item_actor(sid, f, item, r);
     }

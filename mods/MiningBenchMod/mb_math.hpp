@@ -72,4 +72,71 @@ namespace
         rotvec(dq, rv);
         return std::sqrt(dot3(rv, rv)) * 180.0 / MV_PI;
     }
+
+    // WHAT: o = v rotated by unit quaternion q ({W,X,Y,Z}): t = 2 * (qv x v), o = v + w * t + qv x t.
+    // WHY: maps a ship-object axis into world space for the object-based aim frame in mb_rocks.hpp.
+    void quat_rot(const double q[4], const double v[3], double o[3])
+    {
+        const double qv[3] = {q[1], q[2], q[3]};
+        double c[3], t[3], c2[3];
+        cross3(qv, v, c);
+        for (int i = 0; i < 3; ++i) t[i] = 2.0 * c[i];
+        cross3(qv, t, c2);
+        for (int i = 0; i < 3; ++i) o[i] = v[i] + q[0] * t[i] + c2[i];
+    }
+
+    // WHAT: unit axis for idx 0..5 = +X, -X, +Y, -Y, +Z, -Z (ship object local axes).
+    // WHY: the calibration tries these six candidates against the actor axes.
+    void qcal_axis(int idx, double v[3])
+    {
+        v[0] = v[1] = v[2] = 0.0;
+        v[idx / 2] = (idx % 2) ? -1.0 : 1.0;
+    }
+
+    // WHAT: world direction of object axis idx under quaternion q; qmode 1 uses conj(q) instead.
+    // WHY: the game may store the rotation either way round; qcal_pick finds which one matches the actor.
+    void qcal_out(const double q[4], int qmode, int idx, double o[3])
+    {
+        double qc[4], v[3];
+        if (qmode) qconj(q, qc); else std::copy(q, q + 4, qc);
+        qcal_axis(idx, v);
+        quat_rot(qc, v, o);
+    }
+
+    // WHAT: find the axis map (qmode, ax[3]) so that the object axes ax[0..2] under q match the actor fw / R / U (dot >= 0.98 each).
+    //       true only when exactly one qmode matches. ax[] is the object axis index for fw, R, U.
+    // WHY: the object-to-actor axis convention is not known up front; one ship with an actor teaches it.
+    bool qcal_pick(const double q[4], const double fw[3], const double R[3], const double U[3], int& qmode, int ax[3])
+    {
+        const double* tgt[3] = {fw, R, U};
+        int hits = 0;
+        for (int qm = 0; qm < 2; ++qm)
+        {
+            int cand[3] = {0, 0, 0};
+            bool ok = true;
+            for (int k = 0; k < 3 && ok; ++k)
+            {
+                double best = -2.0;
+                for (int idx = 0; idx < 6; ++idx)
+                {
+                    double o[3];
+                    qcal_out(q, qm, idx, o);
+                    const double d = dot3(o, tgt[k]);
+                    if (d > best) { best = d; cand[k] = idx; }
+                }
+                ok = best >= 0.98;
+            }
+            if (ok) { ++hits; qmode = qm; std::copy(cand, cand + 3, ax); }
+        }
+        return hits == 1;
+    }
+
+    // WHAT: writes the world axes of object axes ax[0..2] under q (qmode as in qcal_out) to fw / R / U.
+    // WHY: the object-based aim frame in mb_rocks.hpp uses this once the map is calibrated.
+    void qcal_apply(const double q[4], int qmode, const int ax[3], double fw[3], double R[3], double U[3])
+    {
+        qcal_out(q, qmode, ax[0], fw);
+        qcal_out(q, qmode, ax[1], R);
+        qcal_out(q, qmode, ax[2], U);
+    }
 }

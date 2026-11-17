@@ -20,7 +20,7 @@ namespace
 {
     std::wstring run_cmd(int seq, int sid, const std::string& cmd);   // defined in mb_testcmd.hpp
     // chunk hold (mb_chunkhold.hpp, defined after this file)
-    void chunk_hold_update(int sid, UObject* ship);   // SEEK/MINE, arrival, CHECK nothing-in-range (undocked): set the ship's cube
+    void chunk_hold_update(int sid, UObject* ship, bool own_only = false);   // SEEK/MINE, arrival, CHECK nothing-in-range (undocked): set the ship's cube
     void chunk_hold_release(int sid);                 // drop the ship's cube (no-op when none)
     void chunk_hold_target_clear(int sid);                          // back to the ship's own chunk
     void chunk_hold_target(int sid, int sys, const int64_t c[3]);   // centre the ship's cube on this chunk instead of the ship's own (cleared by chunk_hold_release)
@@ -1133,7 +1133,12 @@ namespace
             return;
         }
         ActFrame f;
-        if (!act_frame(ship, f)) { m.st = MS_OFF; m.chk_t = 0.0; mset(sid, m, STR("ship actor unreadable")); return; }
+        if (!act_frame(ship, f))
+        {
+            // undocked ship outside the player's zone: its chunk may not be streamed (actor null). Hold that one chunk; the next check retries.
+            if (!ship_docked(ship)) chunk_hold_update(sid, ship, true);
+            act_fail_log_once(sid, m.chunk_txt); m.st = MS_OFF; m.chk_t = 0.0; mset(sid, m, act_fail_text()); return;
+        }
         std::copy(f.loc, f.loc + 3, m.anchor);
         const double rad = mine_radius_m(c);
         const bool in_range = rock_in_range(sid, m.anchor, item, rad, nullptr, &m.noy_skip);   // one scan for all the checks below
