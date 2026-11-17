@@ -65,7 +65,13 @@ end
 W.bind({ onClick = onClick, clear = clearClicks })
 
 -- block interact: the game opens its own widget for BPO_MiningMod_C; hide it and open ours for that ship
-RegisterHook("/Script/MainSequence.DMSPlayerController:ToggleWidget", function() end, function(self, a1, a2, a3, a4, a5)
+-- a renamed/removed game function must not kill the keybinds below: log one line and go on (ponytail: no MSCore.hook here, this mod has no MSCore Lua state)
+local function safeHook(name, path, pre, post)
+  local okh, err = pcall(RegisterHook, path, pre, post)
+  if not okh then print(TAG .. "hook " .. name .. " off: " .. tostring(err) .. "\n") end
+  return okh
+end
+safeHook("block_interact", "/Script/MainSequence.DMSPlayerController:ToggleWidget", function() end, function(self, a1, a2, a3, a4, a5)
     pcall(function()
       local ctl = unw(self)
       local args = { unw(a1), unw(a2), unw(a3), unw(a4), unw(a5) }
