@@ -29,7 +29,7 @@
 
 namespace
 {
-    constexpr int64_t CH_NEAR_CH = 5;                   // no hold when the ship is this many chunks or less from the player (same system)
+    constexpr int64_t CH_NEAR_CH = 5;                   // ship this many chunks or less from the player (outside CH_PLAYER_ZONE): hold only its own chunk, beyond: the cube
     constexpr int64_t CH_PLAYER_ZONE = 2;               // the player's own loaded set: PlayerCachedChunkLocation +- this (ChunkLoadingDistance)
     constexpr size_t CH_MAX_CHUNKS = 150;               // cap on distinct held chunks (all ships together)
     constexpr ULONGLONG CH_SETTLE_MS = 4000;            // belt counters wait this long after a set (ms)
@@ -59,6 +59,7 @@ namespace
         std::vector<ChKey> keys;
         ULONGLONG set_ms = 0;
         bool forced[2] = {false, false};
+        bool one = false;   // only the ship's own chunk (actor read), not the 27-chunk cube
     };
 
     struct ChState
@@ -325,25 +326,32 @@ namespace
 
     void chunk_hold_target_clear(int sid) { g_ch_target.erase(sid); }
 
-    void chunk_hold_update(int sid, UObject* ship)
+    void chunk_hold_update(int sid, UObject* ship, bool own_only)
     {
-        if (g_ch.disabled || !g_compat.usable(F_CHUNKHOLD) || !alive(ship)) return;
-        if (ch_player_flies(ship)) { chunk_hold_release(sid); return; }
+        const std::wstring sd = std::to_wstring(sid);
+        if (g_ch.disabled || !g_compat.usable(F_CHUNKHOLD) || !alive(ship)) { ch_log_throttled(STR("CHUNKHOLD skip ship=") + sd + STR(": disabled/unusable/dead")); return; }
+        if (ch_player_flies(ship)) { chunk_hold_release(sid); ch_log_throttled(STR("CHUNKHOLD skip ship=") + sd + STR(": player flies it")); return; }
         int sys = 0;
         int64_t sch[3] = {0, 0, 0};
-        if (!ship_pos(ship, sys, sch)) return;
+        if (!ship_pos(ship, sys, sch)) { ch_log_throttled(STR("CHUNKHOLD skip ship=") + sd + STR(": ship_pos unreadable sys=") + std::to_wstring(sys)); return; }
         const auto tgt = g_ch_target.find(sid);
         const bool has_tgt = tgt != g_ch_target.end();
         if (has_tgt) { sys = tgt->second.sys; for (int i = 0; i < 3; ++i) sch[i] = tgt->second.c[i]; }
         int psys = 0;
         int64_t pch[3] = {0, 0, 0};
-        if (!ch_player(psys, pch)) return;
+        if (!ch_player(psys, pch)) { ch_log_throttled(STR("CHUNKHOLD skip ship=") + sd + STR(": player chunk unreadable")); return; }
         ch_drain();
-        if (!has_tgt && sys == psys && chunk_cheb(sch, pch) <= CH_NEAR_CH) { chunk_hold_release(sid); return; }   // the player's own streaming covers it
-        if (!ch_ready()) return;
+        // inside the player's zone: its own streaming covers the ship. Up to CH_NEAR_CH chunks out: hold only the ship's own chunk (actor read), not the cube.
+        if (!has_tgt && sys == psys && chunk_cheb(sch, pch) > CH_PLAYER_ZONE && chunk_cheb(sch, pch) <= CH_NEAR_CH) own_only = true;
+        if (!has_tgt && sys == psys && chunk_cheb(sch, pch) <= CH_PLAYER_ZONE)
+        {
+            chunk_hold_release(sid);
+            return;
+        }
+        if (!ch_ready()) { ch_log_throttled(STR("CHUNKHOLD skip ship=") + sd + STR(": not ready")); return; }
         const int32_t c[3] = {static_cast<int32_t>(sch[0]), static_cast<int32_t>(sch[1]), static_cast<int32_t>(sch[2])};
         const auto old = g_ch.ships.find(sid);
-        if (old != g_ch.ships.end() && old->second.sys == sys && old->second.c[0] == c[0] && old->second.c[1] == c[1] && old->second.c[2] == c[2]) return;
+        if (old != g_ch.ships.end() && old->second.sys == sys && old->second.c[0] == c[0] && old->second.c[1] == c[1] && old->second.c[2] == c[2] && old->second.one == own_only) return;
         UObject* S = find_by_id(STR("SolarSystem"), sys);
         if (!alive(S)) { ch_log_throttled(STR("CHUNKHOLD no SolarSystem object for sys=") + std::to_wstring(sys) + STR(" ship=") + std::to_wstring(sid)); return; }
         std::vector<ChEntry> v;
@@ -352,9 +360,10 @@ namespace
         // the cube: 27 chunks, only those with a Chunk object; the player's own zone is never set
         std::vector<ChKey> want;
         int no_obj = 0, zone = 0;
-        for (int dz = -1; dz <= 1; ++dz)
-            for (int dy = -1; dy <= 1; ++dy)
-                for (int dx = -1; dx <= 1; ++dx)
+        const int rr = own_only ? 0 : 1;   // own_only: the ship's chunk alone
+        for (int dz = -rr; dz <= rr; ++dz)
+            for (int dy = -rr; dy <= rr; ++dy)
+                for (int dx = -rr; dx <= rr; ++dx)
                 {
                     ChKey key;
                     key.sys = sys;
@@ -383,6 +392,7 @@ namespace
         // set the new cube first (a chunk another ship already holds only gets one more reference)
         ChRec rec;
         rec.sys = sys;
+        rec.one = own_only;
         for (int i = 0; i < 3; ++i) rec.c[i] = c[i];
         int set_n = 0, shared = 0;
         for (const ChKey& key : want)

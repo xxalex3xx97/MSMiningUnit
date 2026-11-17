@@ -20,7 +20,7 @@ namespace
 {
     std::wstring run_cmd(int seq, int sid, const std::string& cmd);   // defined in mb_testcmd.hpp
     // chunk hold (mb_chunkhold.hpp, defined after this file)
-    void chunk_hold_update(int sid, UObject* ship);   // SEEK/MINE, arrival, CHECK nothing-in-range (undocked): set the ship's cube
+    void chunk_hold_update(int sid, UObject* ship, bool own_only = false);   // SEEK/MINE, arrival, CHECK nothing-in-range (undocked): set the ship's cube
     void chunk_hold_release(int sid);                 // drop the ship's cube (no-op when none)
     void chunk_hold_target_clear(int sid);                          // back to the ship's own chunk
     void chunk_hold_target(int sid, int sys, const int64_t c[3]);   // centre the ship's cube on this chunk instead of the ship's own (cleared by chunk_hold_release)
@@ -309,6 +309,21 @@ namespace
     // WHAT: rock ids a ship skips for its current visit: the rock's approach was blocked and it was given up (path_guard). Per ship; cleared by Stop and Start.
     std::map<int, std::set<int>> g_path_skip;
 
+    // WHAT: rock ids held by other working ships (pin g_sel_rocks, plus m.rock in SEEK/MINE). WHY: two ships must not take one rock.
+    void rock_claims_of_others(int sid, std::set<int>& out)
+    {
+        for (const auto& kv : g_mine)
+        {
+            if (kv.first == sid) continue;
+            const MineSt& o = kv.second;
+            const bool work = o.st == MS_SEEK || o.st == MS_MINE || o.st == MS_COLLECT;
+            if (!rock_claim_live(work, o.flee)) continue;
+            const int p = sel_rock_of(kv.first);
+            if (p > 0) out.insert(p);
+            if ((o.st == MS_SEEK || o.st == MS_MINE) && o.rock > 0) out.insert(o.rock);
+        }
+    }
+
     // nearest rock holding `item` measured from the anchor (not the ship); nullptr when none or outside the radius
     // skip_ids: no-yield rock ids left out (MineSt::noy_skip); g_hazard_rocks and this ship's g_path_skip are always left out too
     UObject* rock_in_range(int sid, const double anchor[3], UObject* item, double rad_m, UObject* skip = nullptr, const std::set<int>* skip_ids = nullptr)
@@ -320,11 +335,14 @@ namespace
         std::set<int> merged;
         const auto ps = g_path_skip.find(sid);
         const bool path_any = ps != g_path_skip.end() && !ps->second.empty();
-        if (!g_hazard_rocks.empty() || !g_depleted_rocks.empty() || path_any)
+        std::set<int> claims;
+        rock_claims_of_others(sid, claims);
+        if (!g_hazard_rocks.empty() || !g_depleted_rocks.empty() || path_any || !claims.empty())
         {
             if (skip_ids) merged = *skip_ids;
             merged.insert(g_hazard_rocks.begin(), g_hazard_rocks.end());
             merged.insert(g_depleted_rocks.begin(), g_depleted_rocks.end());
+            merged.insert(claims.begin(), claims.end());
             if (path_any) merged.insert(ps->second.begin(), ps->second.end());
             skip_ids = &merged;
         }
@@ -905,6 +923,7 @@ namespace
     }
 
     bool hazard_away(int sid, MineSt& m, double radius_m = HAZARD_RADIUS_M);   // defined after dock_job_on
+    void safety_net_hit(int sid);   // defined after mine_cmd
     void dock_add_m(const int64_t ch0[3], const double loc0[3], const double off_m[3], int64_t ch[3], double loc[3]);   // defined below
     // WHAT: chunks and sector ids of one far-flight decision (WARPFLIGHT log). sec 0 = unknown (open space).
     struct WarpInfo { int64_t sch[3] = {0, 0, 0}, dch[3] = {0, 0, 0}; int ssec = 0, dsec = 0; };
@@ -982,6 +1001,7 @@ namespace
         }
         trip_begin(ship, sid, m, why, "dock_mining");
         if (m.st == MS_HALT) { m.err = true; m.flee = false; m.flee_t = -1.0; }
+        if (m.hazard) safety_net_hit(sid);
     }
 
     // WHAT: the target trigger of step_pre: flee when the target sample says so (flee_on_target, streak or combat, not latched). true = flee started.
@@ -1133,7 +1153,12 @@ namespace
             return;
         }
         ActFrame f;
-        if (!act_frame(ship, f)) { m.st = MS_OFF; m.chk_t = 0.0; mset(sid, m, STR("ship actor unreadable")); return; }
+        if (!act_frame(ship, f))
+        {
+            // undocked ship outside the player's zone: its chunk may not be streamed (actor null). Hold that one chunk; the next check retries.
+            if (!ship_docked(ship)) chunk_hold_update(sid, ship, true);
+            act_fail_log_once(sid, m.chunk_txt); m.st = MS_OFF; m.chk_t = 0.0; mset(sid, m, act_fail_text()); return;
+        }
         std::copy(f.loc, f.loc + 3, m.anchor);
         const double rad = mine_radius_m(c);
         const bool in_range = rock_in_range(sid, m.anchor, item, rad, nullptr, &m.noy_skip);   // one scan for all the checks below
@@ -1219,6 +1244,7 @@ namespace
         skip.insert(g_depleted_rocks.begin(), g_depleted_rocks.end());
         const auto psk = g_path_skip.find(sid);
         if (psk != g_path_skip.end()) skip.insert(psk->second.begin(), psk->second.end());
+        rock_claims_of_others(sid, skip);
         const RockReg& t = reg_st().tab;
         std::vector<std::pair<double, size_t>> cand;
         t.nearest_n(sys, item, ps, m.abandon, &skip, PATH_PICK_M, PATH_CANDIDATES, cand);
@@ -3696,6 +3722,42 @@ namespace
         return STR("ok ") + std::to_wstring(n) + STR(" ships");
     }
 
+    // WHAT: safety net. Hull/shield hit with no attacker: stop every other running bench ship (STOP ALL), the hit ship flees to dock (flee_now) and ends halted as today,
+    //       SAFETY_WAIT_S after the hit (counted from the hit ship starting to flee) every other ship that was running is started again with mine_cmd (own config).
+    struct SafetyNet { bool on = false; double t = 0.0, now = 0.0; int hit = 0; std::vector<int> ids; std::vector<double> hist; };
+    SafetyNet g_safety;
+    void safety_net_hit(int sid)
+    {
+        if (g_safety.on) return;   // a second hit while waiting is covered by the same restart
+        if (!safety_allowed(g_safety.hist, g_safety.now))
+        { log_line(STR("SAFETY ship=") + std::to_wstring(sid) + STR(" hit again too often, no safety stop (normal flee only)")); return; }
+        std::vector<int> ids;
+        for (int s : g_bench_ids) { auto it = g_mine.find(s); if (it != g_mine.end() && it->second.run) ids.push_back(s); }
+        if (ids.empty()) return;
+        g_safety.hist.push_back(g_safety.now);
+        for (int s : ids) if (s != sid) run_cmd(-1, s, "stop_all");
+        g_safety.on = true; g_safety.t = 0.0; g_safety.hit = sid; g_safety.ids = ids;
+        log_line(STR("SAFETY hull hit no attacker ship=") + std::to_wstring(sid) + STR(": stopped ") + std::to_wstring(ids.size() - (std::find(ids.begin(), ids.end(), sid) != ids.end() ? 1 : 0)) + STR(" other ships, restart others in 10 s"));
+    }
+    void safety_net_tick(double dt)
+    {
+        g_safety.now += dt;
+        if (!g_safety.on) return;
+        g_safety.t += dt;
+        if (!safety_restart_due(g_safety.t)) return;
+        g_safety.on = false;
+        for (int s : g_safety.ids)
+        {
+            if (s == g_safety.hit) continue;   // the hit ship keeps its flee to dock
+            auto it = g_mine.find(s);
+            if (it == g_mine.end()) continue;
+            MineSt& m = it->second;
+            const bool idle = m.st == MS_HALT || m.st == MS_OFF;
+            if (m.run || !idle) { log_line(STR("SAFETY ship=") + std::to_wstring(s) + STR(" not restarted (changed meanwhile)")); continue; }
+            log_line(STR("SAFETY ship=") + std::to_wstring(s) + STR(" restart: ") + mine_cmd(s, true));
+        }
+    }
+
 
     // WHAT: "Warp to belt" button: warps the ship to the sector of its belt setting (AUTO = closest sector with the current row's ore).
     //       Refused while the loop runs. Returns "ok ..." or "error: ...".
@@ -3805,6 +3867,7 @@ namespace
             try { if (!seh_run(mine_step_fn, &sc)) mine_fault(sid, m, g_seh, step); }
             catch (...) { m.st = MS_HALT; m.result = STR("exception in mining step"); log_line(STR("MINE ship=") + std::to_wstring(sid) + STR(" exception")); }
         }
+        safety_net_tick(dt);
         g_mine_status_acc += dt;
         if (g_mine_status_acc >= 1.0)
         {

@@ -284,8 +284,8 @@ namespace
 
         for (const CompatRow& r : g_compat.rows)
             if (!r.ok) out(STR("COMPAT ") + widen(feature_name(r.f)) + STR(" disabled: ") + widen(r.what) + STR(": ") + widen(r.why));
-        out(STR("COMPAT summary:\n") + widen(g_compat.summary()));
         g_compat.done = true;
+        out(STR("COMPAT summary:\n") + widen(g_compat.summary()));
         g_compat_text = u8(txt);
         try { write_atomic(get_dll_dir() / "MiningCompat.txt", g_compat_text); } catch (...) {}
         return true;

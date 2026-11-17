@@ -475,6 +475,9 @@ static void t_loop_guards()
     // no-yield skip after 3 visits, rock lost HALT at 5, idle poll HALT at 12, dwait cap at 900 s, fuel floor
     CHECK(!noy_skip_now(2));
     CHECK(noy_skip_now(3));
+    CHECK(rock_claim_live(true, false));
+    CHECK(!rock_claim_live(true, true));
+    CHECK(!rock_claim_live(false, false));
     CHECK(!rock_lost_halt(4));
     CHECK(rock_lost_halt(5));
     CHECK(!idle_poll_halt(11));
@@ -1211,6 +1214,16 @@ static void t_attack_dist_and_flee_class()
     CHECK(!hazard_flee_full(0, 3, false));
     CHECK(!hazard_flee_full(0, 0, true));
     CHECK(hazard_flee_full(0, 0, false));
+}
+
+static void t_safety_net()
+{
+    CHECK(safety_allowed({}, 100.0));
+    CHECK(safety_allowed({10.0, 20.0}, 100.0));
+    CHECK(!safety_allowed({10.0, 20.0, 30.0}, 100.0));
+    CHECK(safety_allowed({10.0, 20.0, 30.0}, 400.0));   // all older than 300 s
+    CHECK(!safety_restart_due(9.9));
+    CHECK(safety_restart_due(10.0));
 }
 
 // GetShields double -> whole units; a shield drop from doubles triggers DMG_SHIELD
@@ -2165,7 +2178,7 @@ int main()
         {"net_clear_expired", t_net_clear_expired}, {"net_unload_first", t_net_unload_first}, {"dock_undock_first", t_dock_undock_first},
         {"combat_flee", t_combat_flee}, {"combat_log", t_combat_log},
         {"hazard_flee", t_hazard_flee}, {"targett_entry", t_targett_entry},
-        {"path_block", t_path_block}, {"path_perf", t_path_perf}, {"path_waypoint", t_path_waypoint}, {"shield_drop", t_shield_drop}, {"flee_guard_shield_units", t_flee_guard_shield_units}, {"flee_fallback_docks", t_flee_fallback_docks}, {"attack_dist_and_flee_class", t_attack_dist_and_flee_class}, {"flee_idle_move", t_flee_idle_move}, {"flee_real_warp_hold", t_flee_real_warp_hold},{"fast_sample", t_fast_sample},
+        {"path_block", t_path_block}, {"path_perf", t_path_perf}, {"path_waypoint", t_path_waypoint}, {"shield_drop", t_shield_drop}, {"safety_net", t_safety_net}, {"flee_guard_shield_units", t_flee_guard_shield_units}, {"flee_fallback_docks", t_flee_fallback_docks}, {"attack_dist_and_flee_class", t_attack_dist_and_flee_class}, {"flee_idle_move", t_flee_idle_move}, {"flee_real_warp_hold", t_flee_real_warp_hold},{"fast_sample", t_fast_sample},
         {"rock_depleted", t_rock_depleted},
         {"reg_table", t_reg_table}, {"reg_events", t_reg_events}, {"reg_world_track", t_reg_world_track}, {"reg_within_nearest", t_reg_within_nearest}, {"reg_surface_block", t_reg_surface_block_radius},
         {"approach_throttle", t_approach_throttle}, {"bubble", t_bubble}, {"bubble_ladder", t_bubble_ladder}, {"bubble_scope", t_bubble_scope}, {"tune_geom", t_tune_geom}, {"flight_warp", t_flight_warp}, {"sweep_return_flee", t_sweep_return_flee}, {"path2_rules", t_path2_rules},
