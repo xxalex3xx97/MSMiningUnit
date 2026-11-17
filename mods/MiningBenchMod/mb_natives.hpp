@@ -13,7 +13,7 @@
 
 namespace
 {
-    // Patterns of the three natives in the tested exe (build size 149200896). Each must match exactly once.
+    // Patterns of the three natives in the tested exe (build size 149299200). Each must match exactly once.
     constexpr const char* NAT_PAT_SYSTEM = "48 83 EC 28 4C 8B 49 28 4D 85 C9 75 07 33 C0 48 83 C4 28 C3 41 8B 41 48";   // rva 0x425f2e0 len 24 unique fnv1a64_64=0x18b8bd3d3c7fc926
     constexpr const char* NAT_PAT_SETLEVEL = "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 20 48 8B F2 41 8B E8 48 8B F9";   // rva 0x42512e0 len 29 unique fnv1a64_64=0x7d4bca3907526cab
     constexpr const char* NAT_PAT_APPLY = "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 48 8B F2 48 8B F9 48 8B CE 45 33 C0";   // rva 0x424cbc0 len 27 unique fnv1a64_64=0x5eb122869739815d

@@ -12,5 +12,5 @@ namespace
 {
     constexpr const char* kVersion = "0.2.16";
     // informational: exe file size of the build the contract table was tested on (compat self-test logs a difference, no gate)
-    constexpr unsigned long long kKnownBuildSize = 149200896ULL;
+    constexpr unsigned long long kKnownBuildSize = 149299200ULL;
 }
