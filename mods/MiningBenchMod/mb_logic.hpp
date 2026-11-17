@@ -568,6 +568,18 @@ namespace
     }
     // WHAT: hit with no attacker at all: no near hostile, no far hostile, IsShipInCombat false. Anything targeting the ship makes the hit an attack.
     inline bool hazard_flee_full(int hostile_near, int hostile_far, bool combat) { return hostile_near <= 0 && hostile_far <= 0 && !combat; }
+    constexpr double SAFETY_WAIT_S = 10.0;      // restart this long after the safety stop (s)
+    constexpr int SAFETY_MAX_N = 3;             // safety stops allowed per window
+    constexpr double SAFETY_WINDOW_S = 300.0;   // window (s)
+    // WHAT: a safety stop is allowed when fewer than SAFETY_MAX_N happened in the last SAFETY_WINDOW_S (hist = times of past stops, now = same clock).
+    inline bool safety_allowed(const std::vector<double>& hist, double now)
+    {
+        int n = 0;
+        for (double h : hist) if (now - h < SAFETY_WINDOW_S) ++n;
+        return n < SAFETY_MAX_N;
+    }
+    // WHAT: the other ships restart when waited >= SAFETY_WAIT_S (counted from the hit ship starting to flee).
+    inline bool safety_restart_due(double waited) { return waited >= SAFETY_WAIT_S; }
     constexpr double HAZARD_STUCK_MPS = 1.0;     // speed below this = not moving (m/s)
     constexpr size_t HAZARD_STUCK_N = 3;         // speed samples (1 s apart) below HAZARD_STUCK_MPS in a row = stuck
     // WHAT: last HAZARD_STUCK_N speed samples (oldest first) all below HAZARD_STUCK_MPS.

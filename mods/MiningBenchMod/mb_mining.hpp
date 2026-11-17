@@ -923,6 +923,7 @@ namespace
     }
 
     bool hazard_away(int sid, MineSt& m, double radius_m = HAZARD_RADIUS_M);   // defined after dock_job_on
+    void safety_net_hit(int sid);   // defined after mine_cmd
     void dock_add_m(const int64_t ch0[3], const double loc0[3], const double off_m[3], int64_t ch[3], double loc[3]);   // defined below
     // WHAT: chunks and sector ids of one far-flight decision (WARPFLIGHT log). sec 0 = unknown (open space).
     struct WarpInfo { int64_t sch[3] = {0, 0, 0}, dch[3] = {0, 0, 0}; int ssec = 0, dsec = 0; };
@@ -1000,6 +1001,7 @@ namespace
         }
         trip_begin(ship, sid, m, why, "dock_mining");
         if (m.st == MS_HALT) { m.err = true; m.flee = false; m.flee_t = -1.0; }
+        if (m.hazard) safety_net_hit(sid);
     }
 
     // WHAT: the target trigger of step_pre: flee when the target sample says so (flee_on_target, streak or combat, not latched). true = flee started.
@@ -3720,6 +3722,42 @@ namespace
         return STR("ok ") + std::to_wstring(n) + STR(" ships");
     }
 
+    // WHAT: safety net. Hull/shield hit with no attacker: stop every other running bench ship (STOP ALL), the hit ship flees to dock (flee_now) and ends halted as today,
+    //       SAFETY_WAIT_S after the hit (counted from the hit ship starting to flee) every other ship that was running is started again with mine_cmd (own config).
+    struct SafetyNet { bool on = false; double t = 0.0, now = 0.0; int hit = 0; std::vector<int> ids; std::vector<double> hist; };
+    SafetyNet g_safety;
+    void safety_net_hit(int sid)
+    {
+        if (g_safety.on) return;   // a second hit while waiting is covered by the same restart
+        if (!safety_allowed(g_safety.hist, g_safety.now))
+        { log_line(STR("SAFETY ship=") + std::to_wstring(sid) + STR(" hit again too often, no safety stop (normal flee only)")); return; }
+        std::vector<int> ids;
+        for (int s : g_bench_ids) { auto it = g_mine.find(s); if (it != g_mine.end() && it->second.run) ids.push_back(s); }
+        if (ids.empty()) return;
+        g_safety.hist.push_back(g_safety.now);
+        for (int s : ids) if (s != sid) run_cmd(-1, s, "stop_all");
+        g_safety.on = true; g_safety.t = 0.0; g_safety.hit = sid; g_safety.ids = ids;
+        log_line(STR("SAFETY hull hit no attacker ship=") + std::to_wstring(sid) + STR(": stopped ") + std::to_wstring(ids.size() - (std::find(ids.begin(), ids.end(), sid) != ids.end() ? 1 : 0)) + STR(" other ships, restart others in 10 s"));
+    }
+    void safety_net_tick(double dt)
+    {
+        g_safety.now += dt;
+        if (!g_safety.on) return;
+        g_safety.t += dt;
+        if (!safety_restart_due(g_safety.t)) return;
+        g_safety.on = false;
+        for (int s : g_safety.ids)
+        {
+            if (s == g_safety.hit) continue;   // the hit ship keeps its flee to dock
+            auto it = g_mine.find(s);
+            if (it == g_mine.end()) continue;
+            MineSt& m = it->second;
+            const bool idle = m.st == MS_HALT || m.st == MS_OFF;
+            if (m.run || !idle) { log_line(STR("SAFETY ship=") + std::to_wstring(s) + STR(" not restarted (changed meanwhile)")); continue; }
+            log_line(STR("SAFETY ship=") + std::to_wstring(s) + STR(" restart: ") + mine_cmd(s, true));
+        }
+    }
+
 
     // WHAT: "Warp to belt" button: warps the ship to the sector of its belt setting (AUTO = closest sector with the current row's ore).
     //       Refused while the loop runs. Returns "ok ..." or "error: ...".
@@ -3829,6 +3867,7 @@ namespace
             try { if (!seh_run(mine_step_fn, &sc)) mine_fault(sid, m, g_seh, step); }
             catch (...) { m.st = MS_HALT; m.result = STR("exception in mining step"); log_line(STR("MINE ship=") + std::to_wstring(sid) + STR(" exception")); }
         }
+        safety_net_tick(dt);
         g_mine_status_acc += dt;
         if (g_mine_status_acc >= 1.0)
         {
