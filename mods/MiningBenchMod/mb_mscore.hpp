@@ -60,6 +60,9 @@ namespace
         int (*sectors)(MsSector*, int) = nullptr;
         int (*pin_ensure)() = nullptr;
         int (*pinned)() = nullptr;
+        int (*chunk_hold2)(int, int, const long long*, int, wchar_t*, int) = nullptr;
+        int (*chunk_release)(int) = nullptr;
+        int (*chunk_ready)(wchar_t*, int) = nullptr;
     };
     MsApi g_ms;
 
@@ -98,6 +101,9 @@ namespace
             m.sectors = reinterpret_cast<int (*)(MsSector*, int)>(GetProcAddress(h, "MSCore_sectors"));
             m.pin_ensure = reinterpret_cast<int (*)()>(GetProcAddress(h, "MSCore_pin_ensure"));
             m.pinned = reinterpret_cast<int (*)()>(GetProcAddress(h, "MSCore_pinned"));
+            m.chunk_hold2 = reinterpret_cast<int (*)(int, int, const long long*, int, wchar_t*, int)>(GetProcAddress(h, "MSCore_chunk_hold2"));
+            m.chunk_release = reinterpret_cast<int (*)(int)>(GetProcAddress(h, "MSCore_chunk_release"));
+            m.chunk_ready = reinterpret_cast<int (*)(wchar_t*, int)>(GetProcAddress(h, "MSCore_chunk_ready"));
         }
         const bool full = m.api && m.add_input && m.view_send && m.throttle && m.find_item && m.find_dock && m.new_order &&
                           m.update_order && m.delete_order && m.autopilot && m.skip_to && m.filter_send && m.filters_read &&
@@ -112,6 +118,18 @@ namespace
         }
         g_ms = m;
         if (!logged) { logged = true; log_line(std::wstring(STR("MSCORE loaded: ")) + path.wstring()); }
+        return true;
+    }
+
+    // WHAT: true when MSCore has the chunk hold exports (0.8.7+). Not part of ms_load's API 2 check: an older MSCore keeps the mod running with chunk hold off.
+    bool ms_chunk_ok(std::wstring& why)
+    {
+        if (!ms_load(why)) return false;
+        if (!g_ms.chunk_hold2 || !g_ms.chunk_release || !g_ms.chunk_ready)
+        {
+            why = L"MSCore too old for chunk hold (needs 0.8.7 or newer)";
+            return false;
+        }
         return true;
     }
 

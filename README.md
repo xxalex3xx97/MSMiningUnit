@@ -36,7 +36,7 @@ Use **MSCoreManager.exe** from [MSCore](https://github.com/xxalex3xx97/MSCore/re
 
 **What it hooks and touches.**
 - One `AddInputCommand` pre-hook, used to read map pin commands (`mb_pin.hpp`). Released on unload.
-- Native chunk-load calls (keeps far bench ships' chunks loaded). The three functions are found by byte-pattern scan, exactly one match each; otherwise chunk hold stays off (`mb_natives.hpp`, `mb_chunkhold.hpp`).
+- Chunk hold (keeps far bench ships' chunks loaded): the chunk-load calls are made by MSCore 0.8.7 or newer (`MSCore_chunk_hold2`); the mod only sends its ship cubes there (`mb_chunkhold.hpp`, `mb_mscore.hpp`). Older MSCore: chunk hold stays off.
 - Reflection reads of game objects (ship health, cargo, docks, orders, sector data). Writes go through the game's own functions or input commands.
 - Files next to the DLL: `MiningBench.ini` (settings), `MiningCmd.txt` (command channel), `MiningStatus*.txt` / `MiningLog.txt` (UI data), `MiningCompat.txt` (compat report).
 
@@ -91,7 +91,7 @@ Build and asset scripts read these environment variables. Unset = the built-in f
 | `build.ps1` | compile the DLL (`-Install` copies it into the game; game must be closed) |
 | `docs/` | `ASSETS.md` (art origin and license), `DevReference.html` (developer reference, not in the zip) |
 
-Include order (dependency order, `dllmain.cpp`): `mb_version, mb_common, mb_pattern, mb_compat, mb_config, mb_ue, mb_mscore, mb_math, mb_docks, mb_ships, mb_weapons, mb_orders, mb_filters, mb_cmdstate, mb_rocks, mb_steer, mb_net, mb_dockjob, mb_pin, mb_warp, mb_warpreal, mb_belt, mb_mining, mb_natives, mb_chunkhold, mb_devcmd, mb_testcmd, mb_compat_run`.
+Include order (dependency order, `dllmain.cpp`): `mb_version, mb_common, mb_pattern, mb_compat, mb_config, mb_ue, mb_mscore, mb_math, mb_docks, mb_ships, mb_weapons, mb_orders, mb_filters, mb_cmdstate, mb_rocks, mb_steer, mb_net, mb_dockjob, mb_pin, mb_warp, mb_warpreal, mb_belt, mb_mining, mb_chunkhold, mb_devcmd, mb_testcmd, mb_compat_run`.
 
 ## Build and test
 Needs VS2022 BuildTools and a RE-UE4SS checkout at `<repo>\build\RE-UE4SS` (not in git).
@@ -111,9 +111,8 @@ A full game restart is needed for any DLL change.
 
 ## After a game update
 - Before: a patched game could move the chunk-hold natives, rename a property or change a command's type id, and the mod could crash or write the wrong field.
-- Now: the natives are found by byte pattern (exactly 1 match each, else chunk hold is off). The command type id at +0x28 is validated. The contract table (every game name the mod reads) is checked once per session; each feature shows OK or DISABLED. Every tick step runs under SEH; 5 faults in a row -> SAFE MODE (ships stopped, holds released, mod idle until restart).
+- Now: the chunk-hold natives live in MSCore (0.8.7+; the mod checks its exports, else chunk hold is off). The command type id at +0x28 is validated. The contract table (every game name the mod reads) is checked once per session; each feature shows OK or DISABLED. Every tick step runs under SEH; 5 faults in a row -> SAFE MODE (ships stopped, holds released, mod idle until restart).
 - Limits: a same-name, same-type change in behaviour is not detected; the natives are confirmed only by the chunk-hold canary; not tested in a patched game.
 - Check: search `COMPAT` in UE4SS.log or `MiningCompat.txt` in the mod folder. All OK = nothing to do. A DISABLED feature = that part is off, the game runs. SAFE MODE = restart the game.
 - `kill_switch=1` in `MiningBench.ini` stops the mod completely (hot reload); `0` resumes.
 - Tested build exe size 149200896 (informational only, logged as `COMPAT build size=`).
-- Developer: `python tools\compat_dump.py gen <exe> system=0x... setlevel=0x... apply=0x...` then paste the patterns into `mb_natives.hpp` and run `python tools\compat_dump.py verify <exe> mods\MiningBenchMod\mb_natives.hpp` (expect 1/1/1).
