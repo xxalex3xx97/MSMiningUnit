@@ -475,6 +475,9 @@ static void t_loop_guards()
     // no-yield skip after 3 visits, rock lost HALT at 5, idle poll HALT at 12, dwait cap at 900 s, fuel floor
     CHECK(!noy_skip_now(2));
     CHECK(noy_skip_now(3));
+    CHECK(rock_claim_live(true, false));
+    CHECK(!rock_claim_live(true, true));
+    CHECK(!rock_claim_live(false, false));
     CHECK(!rock_lost_halt(4));
     CHECK(rock_lost_halt(5));
     CHECK(!idle_poll_halt(11));

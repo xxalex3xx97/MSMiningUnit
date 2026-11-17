@@ -309,6 +309,21 @@ namespace
     // WHAT: rock ids a ship skips for its current visit: the rock's approach was blocked and it was given up (path_guard). Per ship; cleared by Stop and Start.
     std::map<int, std::set<int>> g_path_skip;
 
+    // WHAT: rock ids held by other working ships (pin g_sel_rocks, plus m.rock in SEEK/MINE). WHY: two ships must not take one rock.
+    void rock_claims_of_others(int sid, std::set<int>& out)
+    {
+        for (const auto& kv : g_mine)
+        {
+            if (kv.first == sid) continue;
+            const MineSt& o = kv.second;
+            const bool work = o.st == MS_SEEK || o.st == MS_MINE || o.st == MS_COLLECT;
+            if (!rock_claim_live(work, o.flee)) continue;
+            const int p = sel_rock_of(kv.first);
+            if (p > 0) out.insert(p);
+            if ((o.st == MS_SEEK || o.st == MS_MINE) && o.rock > 0) out.insert(o.rock);
+        }
+    }
+
     // nearest rock holding `item` measured from the anchor (not the ship); nullptr when none or outside the radius
     // skip_ids: no-yield rock ids left out (MineSt::noy_skip); g_hazard_rocks and this ship's g_path_skip are always left out too
     UObject* rock_in_range(int sid, const double anchor[3], UObject* item, double rad_m, UObject* skip = nullptr, const std::set<int>* skip_ids = nullptr)
@@ -320,11 +335,14 @@ namespace
         std::set<int> merged;
         const auto ps = g_path_skip.find(sid);
         const bool path_any = ps != g_path_skip.end() && !ps->second.empty();
-        if (!g_hazard_rocks.empty() || !g_depleted_rocks.empty() || path_any)
+        std::set<int> claims;
+        rock_claims_of_others(sid, claims);
+        if (!g_hazard_rocks.empty() || !g_depleted_rocks.empty() || path_any || !claims.empty())
         {
             if (skip_ids) merged = *skip_ids;
             merged.insert(g_hazard_rocks.begin(), g_hazard_rocks.end());
             merged.insert(g_depleted_rocks.begin(), g_depleted_rocks.end());
+            merged.insert(claims.begin(), claims.end());
             if (path_any) merged.insert(ps->second.begin(), ps->second.end());
             skip_ids = &merged;
         }
@@ -1224,6 +1242,7 @@ namespace
         skip.insert(g_depleted_rocks.begin(), g_depleted_rocks.end());
         const auto psk = g_path_skip.find(sid);
         if (psk != g_path_skip.end()) skip.insert(psk->second.begin(), psk->second.end());
+        rock_claims_of_others(sid, skip);
         const RockReg& t = reg_st().tab;
         std::vector<std::pair<double, size_t>> cand;
         t.nearest_n(sys, item, ps, m.abandon, &skip, PATH_PICK_M, PATH_CANDIDATES, cand);

@@ -1489,6 +1489,9 @@ namespace
     constexpr int NOY_SKIP_VISITS = 3;
     inline bool noy_skip_now(int visits) { return visits >= NOY_SKIP_VISITS; }
 
+    // WHAT: another ship's rock pin counts as a claim only while that ship works (SEEK/MINE/COLLECT) and is not fleeing.
+    inline bool rock_claim_live(bool working_state, bool fleeing) { return working_state && !fleeing; }
+
     // WHAT: depleted rock: the rock gave ore on this visit (got_this_rock > 0), then no ore gained for DEPLETE_S with the laser on and the cargo not full.
     // WHY: a spent rock keeps its actor (HUD marker) for 30+ s; the ship sat on it. Before the first ore the no-yield watchdog still applies.
     constexpr double DEPLETE_S = 5.0;
