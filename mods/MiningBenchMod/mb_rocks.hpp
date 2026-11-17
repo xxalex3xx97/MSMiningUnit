@@ -489,7 +489,7 @@ namespace
     void act_calib_learn(UObject* ship, const ActFrame& f)
     {
         double q[4];
-        if (quat4(ship, q))
+        if (!g_qcal.ok && quat4(ship, q))   // learned once: no per-tick Quat lookup, no flip-flop between ships
         {
             int qm = 0, ax[3] = {0, 2, 4};
             if (qcal_pick(q, f.fw, f.R, f.U, qm, ax) && (!g_qcal.ok || qm != g_qcal.qmode || !std::equal(ax, ax + 3, g_qcal.ax)))

@@ -1153,10 +1153,10 @@ namespace
             return;
         }
         ActFrame f;
+        // undocked ship outside the player's zone: its chunk may not be streamed (actor null, act_frame then uses the stale object frame). Hold that one chunk.
+        if (!obj_prop(ship, STR("Actor")) && !ship_docked(ship)) chunk_hold_update(sid, ship, true);
         if (!act_frame(ship, f))
         {
-            // undocked ship outside the player's zone: its chunk may not be streamed (actor null). Hold that one chunk; the next check retries.
-            if (!ship_docked(ship)) chunk_hold_update(sid, ship, true);
             act_fail_log_once(sid, m.chunk_txt); m.st = MS_OFF; m.chk_t = 0.0; mset(sid, m, act_fail_text()); return;
         }
         std::copy(f.loc, f.loc + 3, m.anchor);
@@ -3731,13 +3731,13 @@ namespace
         if (g_safety.on) return;   // a second hit while waiting is covered by the same restart
         if (!safety_allowed(g_safety.hist, g_safety.now))
         { log_line(STR("SAFETY ship=") + std::to_wstring(sid) + STR(" hit again too often, no safety stop (normal flee only)")); return; }
-        std::vector<int> ids;
-        for (int s : g_bench_ids) { auto it = g_mine.find(s); if (it != g_mine.end() && it->second.run) ids.push_back(s); }
-        if (ids.empty()) return;
+        std::vector<int> ids;   // the OTHER running ships; one fleeing a real attacker (flee) is left alone
+        for (int s : g_bench_ids) { auto it = g_mine.find(s); if (s != sid && it != g_mine.end() && it->second.run && !it->second.flee) ids.push_back(s); }
+        if (ids.empty()) return;   // nobody else to stop: normal flee only, no round counted
         g_safety.hist.push_back(g_safety.now);
-        for (int s : ids) if (s != sid) run_cmd(-1, s, "stop_all");
-        g_safety.on = true; g_safety.t = 0.0; g_safety.hit = sid; g_safety.ids = ids;
-        log_line(STR("SAFETY hull hit no attacker ship=") + std::to_wstring(sid) + STR(": stopped ") + std::to_wstring(ids.size() - (std::find(ids.begin(), ids.end(), sid) != ids.end() ? 1 : 0)) + STR(" other ships, restart others in 10 s"));
+        g_safety.on = true; g_safety.t = 0.0; g_safety.hit = sid; g_safety.ids = ids;   // set before the stops: a faulting stop must not lose the restart
+        for (int s : ids) run_cmd(-1, s, "stop_all");
+        log_line(STR("SAFETY hull hit no attacker ship=") + std::to_wstring(sid) + STR(": stopped ") + std::to_wstring(ids.size()) + STR(" other ships, restart others in 10 s"));
     }
     void safety_net_tick(double dt)
     {
