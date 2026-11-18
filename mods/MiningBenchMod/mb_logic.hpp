@@ -1063,15 +1063,15 @@ namespace
         return seq != last;
     }
 
-    // WHAT: Dev Menu Stations tab: a station is destroyable only if its class is the plain player class. INFERRED from legacy assets (NPC stations are BP_AllyStationObject_C, BP_AbandonedStationObject_01_C, BPO_TradingOutpost_01_C).
-    bool station_destroyable(const std::string& cls) { return cls == "BP_StationObject_C"; }
+    // WHAT: Dev Menu Stations tab: a station is destroyable only if its class is the MSCore player station class (logical "player_station"; empty = MSCore too old, nothing destroyable). INFERRED from legacy assets (NPC stations are BP_AllyStationObject_C, BP_AbandonedStationObject_01_C, BPO_TradingOutpost_01_C).
+    bool station_destroyable(const std::string& cls, const std::string& player_cls) { return !player_cls.empty() && cls == player_cls; }
 
     // WHAT: one DevStations.txt row: id|name|class|platforms|destroyable(1/0). '|', CR and LF in name/class become spaces.
-    std::string station_row(int id, std::string name, std::string cls, int platforms)
+    std::string station_row(int id, std::string name, std::string cls, int platforms, const std::string& player_cls)
     {
         for (char& c : name) if (c == '|' || c == '\r' || c == '\n') c = ' ';
         for (char& c : cls) if (c == '|' || c == '\r' || c == '\n') c = ' ';
-        return std::to_string(id) + "|" + name + "|" + cls + "|" + std::to_string(platforms) + "|" + (station_destroyable(cls) ? "1" : "0");
+        return std::to_string(id) + "|" + name + "|" + cls + "|" + std::to_string(platforms) + "|" + (station_destroyable(cls, player_cls) ? "1" : "0");
     }
 
     // WHAT: station id from the text after "dev_destroy_station:". Digits only, 1..9 chars, > 0. Else 0.

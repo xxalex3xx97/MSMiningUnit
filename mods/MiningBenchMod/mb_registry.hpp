@@ -1,6 +1,6 @@
 // FILE: mods/MiningBenchMod/mb_registry.hpp
 // WHAT: game side of the rock registry. Seeds the RockReg table (mb_registry_logic.hpp) from the save objects
-//       (SmallResourceAsteroidObject), nearest first; caches the table to disk; reads radius lazily, resolves loaded actors for rocks near
+//       (class "asteroid"), nearest first; caches the table to disk; reads radius lazily, resolves loaded actors for rocks near
 //       ships, validates save objects near ships, runs the self-check (registry position vs actor K2_GetActorLocation), stats and a
 //       MiningRegistry.txt dump.
 // WHY: rocks never move or shrink, so position and radius are read once per rock; the save data holds every rock, loaded or not.
@@ -10,7 +10,7 @@
 // DELETES: the engine delete listener (rock_drain_dead -> reg_on_dead) only clears the loaded actor handle and marks the rock suspect.
 //       A rock is killed only when its SAVE object is gone (checked: suspects, targeted rocks, rocks within REG_NEAR_M of a ship).
 //       WHY: the game streams actors in and out; a streamed-out actor is a delete but the rock still exists.
-// PASS (one FindAllOf of SmallResourceAsteroidObject, then slices; the find is the only world-wide call):
+// PASS (one FindAllOf of class "asteroid", then slices; the find is the only world-wide call):
 //       1 bind: obj_id + bAlive per save (cheap). A save whose id is in the table is bound (save pointer kept); the others are 'need'.
 //       2 sample (only after a cache load): REG_CACHE_SAMPLE_N nearest + as many random cache rocks are read and compared (reg_cache_verdict).
 //       3 classify: system + chunk of each 'need' save -> ring (chunks from the nearest ship of its system at pass start).
@@ -299,7 +299,7 @@ namespace
         }
     }
 
-    // WHAT: starts a pass: the cache is loaded (first pass only), one FindAllOf of SmallResourceAsteroidObject (all systems), the zones of the
+    // WHAT: starts a pass: the cache is loaded (first pass only), one FindAllOf of class "asteroid" (all systems), the zones of the
     //       ships are set up. The saves are then processed in slices (reg_seed_slice).
     void reg_seed_begin(RegState& s, const std::vector<RegShip>& ships)
     {
@@ -314,11 +314,12 @@ namespace
         LARGE_INTEGER a;
         QueryPerformanceCounter(&a);
         std::vector<UObject*> v;
-        const bool found = find_all_seh(STR("SmallResourceAsteroidObject"), v);
+        const std::wstring acls = ms_cls("asteroid");
+        const bool found = !acls.empty() && find_all_seh(acls.c_str(), v);
         const double find_ms = perf_ms_since(a);
         if (!found)
         {
-            log_line(STR("REG seed: FindAllOf faulted: ") + seh_describe(g_seh));
+            log_line(acls.empty() ? std::wstring(STR("REG seed: asteroid class unavailable (MSCore too old, needs 0.8.10)")) : std::wstring(STR("REG seed: FindAllOf faulted: ")) + seh_describe(g_seh));
             return;
         }
         s.seed_list.swap(v);
