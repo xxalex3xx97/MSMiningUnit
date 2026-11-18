@@ -5,6 +5,14 @@
 local TAG = "[MiningUnitUI] "
 local SRC = debug.getinfo(1, "S").source:match("^@(.*[/\\])")  -- this script's dir (Mods/MiningUnitUI/Scripts/)
 local W = dofile((SRC or "ue4ss/Mods/MiningUnitUI/Scripts/") .. "wbp_loader.lua")
+-- window names live in MSCore (mscore_wbp widgets contract). Old/missing MSCore: those features are off, nothing crashes.
+local SRCF = ((SRC or ""):gsub("\\", "/"))
+package.path = SRCF .. "../../MSCore/Scripts/?.lua;" .. package.path
+local okW, WBP = pcall(require, "mscore_wbp")
+if not (okW and type(WBP) == "table" and type(WBP.widget) == "function") then
+  WBP = nil
+  print(TAG .. "MSCore too old (needs 0.8.9): fleet ship icons and window-name filter are off\n")
+end
 
 local function ok(o) if o == nil or type(o) ~= "userdata" then return false end local s, v = pcall(function() return o:IsValid() end) return s and v == true end
 local function nm(o) if not ok(o) then return "?" end local s, v = pcall(function() return o:GetFName():ToString() end) return s and v or "?" end
@@ -62,7 +70,7 @@ local function clearClicks()
         pcall(ExecuteWithDelay, 100, function() pcall(ExecuteInGameThread, hookRemove) end)
     end
 end
-W.bind({ onClick = onClick, clear = clearClicks })
+W.bind({ onClick = onClick, clear = clearClicks, wbp = WBP })
 
 -- block interact: the game opens its own widget for BPO_MiningMod_C; hide it and open ours for that ship
 -- a renamed/removed game function must not kill the keybinds below: log one line and go on (ponytail: no MSCore.hook here, this mod has no MSCore Lua state)
@@ -80,8 +88,8 @@ safeHook("block_interact", "/Script/MainSequence.DMSPlayerController:ToggleWidge
       for i = 1, 5 do
         local x = args[i]
         if ok(x) then
-          local c, n = cn(x), nm(x)
-          if not widget and c:sub(-2) == "_C" and c ~= "WidgetBlueprintGeneratedClass" and n:find("^WBP_") then widget = x end
+          local c = cn(x)
+          if not widget and WBP and WBP.is_window(x) then widget = x end
           if not machine and c:find("^BPO_") then machine = x end
         end
       end

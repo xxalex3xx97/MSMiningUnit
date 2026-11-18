@@ -1595,12 +1595,11 @@ local function shipDists()  -- ship id -> metres (K2_GetActorLocation difference
   return out
 end
 local function fmtDist(m) if m >= 1000 then return string.format("%.1f km", m / 1000) end return string.format("%.0f m", m) end
-local ENTRY_CLS = "/Game/Blueprints/Widgets/Display/WBP_FleetShipEntry.WBP_FleetShipEntry_C"
 local function holoTex(e)
   local s, t = pcall(function() local r = e.ShipHologram.Brush.ResourceObject; return r and r:IsValid() and r or nil end)
   return s and t or nil
 end
-local function shipIcons()  -- ship id -> hologram texture. Own off-screen WBP_FleetShipEntry per ship + SetShip (game builds the screenshot texture), no Ships panel needed
+local function shipIcons()  -- ship id -> hologram texture. Own off-screen fleet entry widget per ship + SetShip (game builds the screenshot texture), no Ships panel needed
   -- ponytail: FindAllOf every 3 s crashed UE4SS once (auto_construct_object, null) right after a warp: reuse the last result for 30 s while every texture is still valid
   if S.holoOut then   -- holograms are built once per window
     local good = true
@@ -1608,7 +1607,8 @@ local function shipIcons()  -- ship id -> hologram texture. Own off-screen WBP_F
     if good then return S.holoOut end
   end
   local out = {}
-  local sc, cls = pcall(StaticFindObject, ENTRY_CLS)
+  local cls = BIND and BIND.wbp and BIND.wbp.widget("fleet_ship_entry")
+  local sc = cls ~= nil
   local sf, ships = pcall(FindAllOf, "DMSPlayerShipObject")
   S.holo = S.holo or {}
   local seen = {}

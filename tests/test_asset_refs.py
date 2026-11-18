@@ -14,7 +14,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 UE = os.path.join(ROOT, "ue", "MiningUnitUI")
 OWN = "/Game/MiningUnitUI/"
-LUA_ALLOWED = (OWN, "/Game/Blueprints/Widgets/Display/WBP_FleetShipEntry")
+LUA_ALLOWED = (OWN,)
 GAME_RE = re.compile(r"/Game/[A-Za-z0-9_./-]+")
 GAME_RE_B = re.compile(rb"/Game/[A-Za-z0-9_./-]+")
 
