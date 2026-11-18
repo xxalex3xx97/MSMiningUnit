@@ -566,6 +566,21 @@ local function dockTags()
   end
   return out
 end
+-- DockTags.txt (C++ mb_docktags.hpp): "<dock id>|<ore keys comma>|<misc 0/1>|<autofilter 0/1>". Returns ore key (= u.ini) -> ids of docks tagged for it (locked rows). [MISC] docks are never ore-tagged.
+local function taggedDocks()
+  local by = {}
+  for _, l in ipairs(rdcached(M.DATA .. "DockTags.txt") or {}) do
+    local p = split(l)
+    local id = trim(p[1] or "")
+    if id ~= "" and trim(p[3] or "") ~= "1" then
+      for k0 in (p[2] or ""):gmatch("[^,]+") do
+        local k = trim(k0)
+        by[k] = by[k] or {}; by[k][#by[k] + 1] = id
+      end
+    end
+  end
+  return by
+end
 local function loadDocks()
   local tags = dockTags()
   local out = {}
@@ -700,21 +715,33 @@ local function dynList(sp)
 end
 local udSave, dynDocks   -- defined below
 -- Dock list = dynList of WBP_DockRow (Btn_Sel + Txt_Sel + Btn_Del). getList() = current ids table (S.rd / S.ud[x] are replaced on reload: never hold one).
-function dynDocks(name, getList, save, title, docks, cardName)
-  dynList{ key = name, anchor = cardName or ("Pnl_" .. name .. "Card"), box = "Dyn_" .. name, n = #getList(),
+-- rows = tagged ids first (locked: no select, no delete), then manual ids not tagged. getLocked() (optional) = array of tagged ids. getList() = manual ids (what gets saved).
+function dynDocks(name, getList, save, title, docks, cardName, getLocked)
+  local function rows()
+    local out, isLk = {}, {}
+    for _, id in ipairs(getLocked and getLocked() or {}) do isLk[id] = true; out[#out + 1] = { id = id } end
+    for mi, id in ipairs(getList()) do if not isLk[id] then out[#out + 1] = { id = id, mi = mi } end end
+    return out
+  end
+  dynList{ key = name, anchor = cardName or ("Pnl_" .. name .. "Card"), box = "Dyn_" .. name, n = #rows(),
     bind = function(_, find, idx)
       if not (BIND and BIND.onClick) then return end
       local bs, bd = find("Btn_Sel"), find("Btn_Del")
       if bs then BIND.onClick(bs, function()
-        local i = idx(); if not i then return end
-        modalSelect{ title = title, options = S.docks or {}, id = getList()[i], onPick = function(id) getList()[i] = id; save() end }
+        local i = idx(); local r = i and rows()[i]
+        if not (r and r.mi) then return end   -- tagged row: locked until the dock is renamed
+        modalSelect{ title = title, options = S.docks or {}, id = r.id, onPick = function(id) getList()[r.mi] = id; save() end }
       end) end
-      if bd then BIND.onClick(bd, function() local i = idx(); if i then table.remove(getList(), i); save() end end) end
+      if bd then BIND.onClick(bd, function()
+        local i = idx(); local r = i and rows()[i]
+        if r and r.mi then table.remove(getList(), r.mi); save() end
+      end) end
     end,
     paint = function(_, find, i)
-      local id = getList()[i]; local cur = id
+      local r = rows()[i]; local id = r and r.id; local cur = id
       for _, o in ipairs(docks) do if o.id == id then cur = o.text end end
       local t = find("Txt_Sel"); if t then try("dock text", function() t:SetText(FText(cur or "")) end) end
+      local bd = find("Btn_Del"); if bd then setVis(bd, (r and r.mi) and 0 or 1) end   -- 0 visible, 1 collapsed
     end }
 end
 -- Ship tab dock lists. S.ud[<ini>] = unload dock ids of the ore, S.rd = refuel dock ids (this ship; All ships = first ship of the set).
@@ -722,10 +749,11 @@ end
 local function udRender()
   if not S.ud then return end
   local docks, nodock = S.docks or {}, 0
+  local tagged = taggedDocks()
   for _, u in ipairs(UD_ORES) do
     setVis(w("Pnl_UDockCard_" .. u.k), 0)
-    dynDocks("UDock_" .. u.k, function() return S.ud and S.ud[u.ini] or {} end, udSave, "Unload dock", docks, "Pnl_UDockCard_" .. u.k)
-    if #S.ud[u.ini] == 0 then nodock = nodock + 1 end
+    dynDocks("UDock_" .. u.k, function() return S.ud and S.ud[u.ini] or {} end, udSave, "Unload dock", docks, "Pnl_UDockCard_" .. u.k, function() return tagged[u.ini] or {} end)
+    if #S.ud[u.ini] == 0 and #(tagged[u.ini] or {}) == 0 then nodock = nodock + 1 end
   end
   setVis(w("Pnl_RDockCard"), 0)
   dynDocks("RDock", function() return S.rd end, udSave, "Refuel dock", docks)
