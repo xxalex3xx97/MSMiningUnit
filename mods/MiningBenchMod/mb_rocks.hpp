@@ -8,9 +8,9 @@
 //          rock_id_of, rock_sel in mb_devcmd.hpp), dllmain.cpp (include only).
 // GAME FACTS (fact = taken from earlier in-game checks; ASSUMPTION = from code/notes, not re-checked; UNVERIFIED = not confirmed):
 //   - Rock list = DMSPlayerController.ScannableHUDMarkers, the game's own V-scan list. Entries are rock actors
-//     (BP_GenericResourceAsteroid_C : DMSActorBase).
+//     (class "asteroid_actor" : DMSActorBase).
 //   - Ore = BPI_HUDMarkerActor.GetScanItem(Item) on each actor. Id = DMSActorBase.ObjectId = save object id
-//     (SmallResourceAsteroidObject). Radius = GetRadius() on that save object, raw units.
+//     (class "asteroid"). Radius = GetRadius() on that save object, raw units.
 //   - Distance = K2_GetActorLocation world difference / 100 (uu -> m). fact: 100 uu = 1 m (verified from weapon actors, earlier).
 //   - Save-object Location is chunk-relative: NOT used for distances.
 //   - Ship frame = ship object 'Actor' property: K2_GetActorLocation, GetActorForwardVector / RightVector / UpVector.
@@ -44,7 +44,7 @@ namespace
     // ---------------- rock actors: the game's V-scan list (controller ScannableHUDMarkers) ----------------
     // WHY: the game's own V-scan and distances use the asteroid ACTORS listed in ScannableHUDMarkers. Distance = actor world
     // position difference (K2_GetActorLocation, uu: 100 uu = 1 m), i.e. the game's own math.
-    // Ore = BPI_HUDMarkerActor::GetScanItem (read once per actor). Id = DMSActorBase.ObjectId = the SmallResourceAsteroidObject id.
+    // Ore = BPI_HUDMarkerActor::GetScanItem (read once per actor). Id = DMSActorBase.ObjectId = the class "asteroid" id.
     // The save-object Location is chunk-relative, so the list/pick/aim below never use it for distances.
 
     // CRASH FIX: rock actors are streamed in and out by the game. Pointers we cache across ticks (target of a move job, rock_sel,
@@ -60,7 +60,7 @@ namespace
 
     // FALLBACK: the HUD list is the player's own scan list. An AI ship far from the player can see no rock in it while rock actors
     // are loaded in its sector. A belt seek with no rock in range requests the fallback; rock_list_refresh then adds the actors of
-    // class BP_GenericResourceAsteroid_C from FindAllOf (not in the HUD list). FindAllOf runs at most every ROCK_FALLBACK_S_MS.
+    // class class "asteroid_actor" from FindAllOf (not in the HUD list). FindAllOf runs at most every ROCK_FALLBACK_S_MS.
     constexpr ULONGLONG ROCK_FALLBACK_WANT_MS = 6000;   // a request lasts this long (seek re-requests on each rock check)
     constexpr ULONGLONG ROCK_FALLBACK_S_MS = 60000;     // FindAllOf refresh period (ms); destroyed rocks leave the shared list at once via the delete listener, so a pass only finds NEW rocks
     constexpr ULONGLONG ROCK_FALLBACK_REQ_MS = 10000;   // a miner that found nothing may trigger an extra pass, at most this often (ms)
@@ -184,7 +184,7 @@ namespace
     // WHY: a depleted rock is never chosen again (rock search, approach, retarget, save-data rocks), even as the only rock.
     std::set<int> g_depleted_rocks;
 
-    // WHAT: ObjectId -> SmallResourceAsteroidObject (save object, source of GetRadius). Rebuilt on every list refresh.
+    // WHAT: ObjectId -> class "asteroid" (save object, source of GetRadius). Rebuilt on every list refresh.
     std::map<int, UObject*> g_save_by_id;
 
     // WHAT: GetTickCount64() in ms at the last list refresh (0 = never).
@@ -212,7 +212,7 @@ namespace
         return item_kind(it->second);
     }
 
-    // WHAT: GetRadius() of a save object (SmallResourceAsteroidObject), raw units. 0 when the call fails.
+    // WHAT: GetRadius() of a save object (class "asteroid"), raw units. 0 when the call fails.
     // WHY: surface distance = centre distance - radius; the stop rule uses surface distance.
     double rock_radius(UObject* o)
     {
@@ -325,7 +325,7 @@ namespace
         list.push_back(a);
     }
 
-    // WHAT: adds the FindAllOf(BP_GenericResourceAsteroid_C) actors to the refresh being built while a fallback request is recent.
+    // WHAT: adds the FindAllOf(class "asteroid_actor") actors to the refresh being built while a fallback request is recent.
     //       FindAllOf runs at most every ROCK_FALLBACK_S_MS; between passes the last pass's live actors are reused.
     // WHY: an AI ship far from the player sees its belt rocks in the world but not in the player's HUD list.
     void rock_fallback_merge(std::vector<UObject*>& list, std::map<UObject*, UObject*>& items, std::map<UObject*, int>& ids, std::map<int, UObject*>& by_id)
@@ -339,7 +339,7 @@ namespace
             g_rock_fb_pass_ms = now;
             g_fb_req = false;
             std::vector<UObject*> found;
-            UObjectGlobals::FindAllOf(STR("BP_GenericResourceAsteroid_C"), found);
+            { const std::wstring rcls = ms_cls("asteroid_actor"); if (!rcls.empty()) UObjectGlobals::FindAllOf(rcls.c_str(), found); }
             g_fb_list.clear();
             g_fb_set.clear();
             for (UObject* a : found) if (alive(a)) { g_fb_list.push_back(a); g_fb_set.insert(a); }
@@ -399,7 +399,7 @@ namespace
         g_rock_by_id.swap(by_id);
         for (auto it = g_rock_loc.begin(); it != g_rock_loc.end();) { if (!g_rock_item.count(it->first)) it = g_rock_loc.erase(it); else ++it; }
         // 5. save objects for radius: g_save_by_id keeps only the ids of the listed rocks. The full FindAllOf over every
-        //    SmallResourceAsteroidObject (tens of thousands) runs only when a listed rock has no live entry (it was the CPU spike every pass).
+        //    class "asteroid" (tens of thousands) runs only when a listed rock has no live entry (it was the CPU spike every pass).
         static std::set<int> save_miss;   // ids a walk could not find: not searched again until the set is cleared below
         if (save_miss.size() > 2000) save_miss.clear();
         bool missing = false;
@@ -414,7 +414,7 @@ namespace
             for (auto& kv : g_rock_id) want.insert(kv.second);
             g_save_by_id.clear();
             std::vector<UObject*> saves;
-            UObjectGlobals::FindAllOf(STR("SmallResourceAsteroidObject"), saves);
+            { const std::wstring acls = ms_cls("asteroid"); if (!acls.empty()) UObjectGlobals::FindAllOf(acls.c_str(), saves); }
             for (UObject* o : saves) if (alive(o)) { const int sid_ = obj_id(o); if (want.count(sid_)) g_save_by_id[sid_] = o; }
             for (int w : want) if (!g_save_by_id.count(w)) save_miss.insert(w);
         }

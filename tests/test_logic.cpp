@@ -622,13 +622,14 @@ static void t_mine_radius()
 
 static void t_station()
 {
-    CHECK(station_destroyable("BP_StationObject_C"));
-    CHECK(!station_destroyable("BP_AllyStationObject_C"));
-    CHECK(!station_destroyable("BP_AbandonedStationObject_01_C"));
-    CHECK(!station_destroyable("BPO_TradingOutpost_01_C"));
-    CHECK(!station_destroyable(""));
-    CHECK(station_row(7, "My|Base\n", "BP_StationObject_C", 3) == "7|My Base |BP_StationObject_C|3|1");
-    CHECK(station_row(8, "Outpost", "BP_AllyStationObject_C", 2) == "8|Outpost|BP_AllyStationObject_C|2|0");
+    CHECK(station_destroyable("BP_StationObject_C", "BP_StationObject_C"));
+    CHECK(!station_destroyable("BP_AllyStationObject_C", "BP_StationObject_C"));
+    CHECK(!station_destroyable("BP_AbandonedStationObject_01_C", "BP_StationObject_C"));
+    CHECK(!station_destroyable("BPO_TradingOutpost_01_C", "BP_StationObject_C"));
+    CHECK(!station_destroyable("", "BP_StationObject_C"));
+    CHECK(!station_destroyable("BP_StationObject_C", ""));
+    CHECK(station_row(7, "My|Base\n", "BP_StationObject_C", 3, "BP_StationObject_C") == "7|My Base |BP_StationObject_C|3|1");
+    CHECK(station_row(8, "Outpost", "BP_AllyStationObject_C", 2, "BP_StationObject_C") == "8|Outpost|BP_AllyStationObject_C|2|0");
     CHECK(parse_station_id("123") == 123);
     CHECK(parse_station_id("") == 0);
     CHECK(parse_station_id("0") == 0);

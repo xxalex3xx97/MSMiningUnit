@@ -124,7 +124,7 @@ namespace
         double sw_prev[3] = {0, 0, 0};         // MS_SWEEP: position of the ore picked last (the next pick prefers ore near it)
         bool sw_prev_ok = false;               // sw_prev is set
         int sw_fb_n = 0;                       // return flights by move job after a failed return warp (one per return)
-        int sw_found = -1;                     // MS_SWEEP: BP_FloatingOre_C count of the last scan (-1 none yet)
+        int sw_found = -1;                     // MS_SWEEP: class "floating_ore" count of the last scan (-1 none yet)
         bool sw_frame = false;                 // MS_SWEEP: ship frame readable at the last scan
         int sw_undock_n = 0;                   // MS_SWEEP: undock tries while docked and position unreadable (guard)
         int noy_run = 0;                       // consecutive MINE idle-watchdog exits with no ore gained (reset: ore gained, dock/unload, Start)
@@ -458,7 +458,7 @@ namespace
             e.first = now;
             e.second.clear();
             std::vector<UObject*> saves;
-            UObjectGlobals::FindAllOf(STR("SmallResourceAsteroidObject"), saves);
+            { const std::wstring acls = ms_cls("asteroid"); if (!acls.empty()) UObjectGlobals::FindAllOf(acls.c_str(), saves); }
             for (UObject* o : saves)
             {
                 if (!alive(o)) continue;
@@ -526,7 +526,7 @@ namespace
         return (buf[rp->GetOffset_Internal()] & rb->GetFieldMask()) == 0;
     }
 
-    // WHAT: shared floating ore scan (all ships): BP_FloatingOre_C actors with their positions (uu) at scan time.
+    // WHAT: shared floating ore scan (all ships): class "floating_ore" actors with their positions (uu) at scan time.
     // WHY: FindAllOf plus one K2 read per actor is the expensive part (about 9000 actors). Done at most every ORE_SCAN_MS
     //      (or forced: sweep start and rescans), once for all ships, not per ship every 2 s.
     struct OreEnt { UObject* a = nullptr; double p[3] = {0, 0, 0}; };
@@ -549,7 +549,8 @@ namespace
     void ore_pass_fn(void* p)
     {
         auto* c = static_cast<OrePassCtx*>(p);
-        UObjectGlobals::FindAllOf(STR("BP_FloatingOre_C"), *c->v);
+        c->v->clear();
+        { const std::wstring fcls = ms_cls("floating_ore"); if (!fcls.empty()) UObjectGlobals::FindAllOf(fcls.c_str(), *c->v); }
         for (UObject* a : *c->v)
         {
             g_ore_gone.erase(a);           // the engine lists it now: a re-used address is live again
@@ -577,7 +578,7 @@ namespace
         return g_ore_scan;
     }
 
-    // WHAT: floating ore actors (BP_FloatingOre_C) within range_m of the ship, from the shared scan. -1 = ship frame unreadable.
+    // WHAT: floating ore actors (class "floating_ore") within range_m of the ship, from the shared scan. -1 = ship frame unreadable.
     // WHY: the collect state waits while dropped ore still floats near the ship. Cached positions; alive_seh only on entries in range.
     int ore_near(UObject* ship, double range_m)
     {
@@ -1699,7 +1700,7 @@ namespace
                  STR(" back=") + (m.sw_back ? STR("1") : STR("0")));
     }
 
-    // WHAT: MS_SWEEP helper: cache the floating ore actors (BP_FloatingOre_C) and their positions (uu) into m.sw_list. Logs found / kept / frame.
+    // WHAT: MS_SWEEP helper: cache the floating ore actors (class "floating_ore") and their positions (uu) into m.sw_list. Logs found / kept / frame.
     // WHY: does not need the ship frame (a docked ship may not have one): only the nearest-first sort in SW_PICK needs it.
     void sweep_scan(UObject* ship, int sid, MineSt& m)
     {
@@ -2072,7 +2073,8 @@ namespace
         if (!alive(dobj) || !get_int_prop(dobj, STR("ParentID"), pid) || pid <= 0) return;
         c->pid = pid;
         std::vector<UObject*> all;
-        if (!find_all_seh(STR("StationObject"), all)) return;
+        const std::wstring scls = ms_cls("station");
+        if (scls.empty() || !find_all_seh(scls.c_str(), all)) return;
         UObject* st = nullptr;
         for (UObject* s : all) if (!st && alive(s) && s->GetName().rfind(STR("Default__"), 0) != 0 && obj_id(s) == pid) st = s;
         if (!st) return;

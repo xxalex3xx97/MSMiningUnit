@@ -1,10 +1,13 @@
 // FILE: mods/MiningBenchMod/mb_mscore.hpp
-// WHAT: loads the MSCore DLL (ue4ss/Mods/MSCore/dlls/main.dll) and resolves its exports (API 2). Command plumbing, orders, autopilot, filters, warp primitives, sector list, docks, items and the map pin forward to it.
+// WHAT: loads the MSCore DLL (ue4ss/Mods/MSCore/dlls/main.dll) and resolves its exports (API 2). Command plumbing, orders, autopilot, filters, warp primitives, sector list, docks, items and the map pin forward to it. Game class names (asteroid, station, containers) come from MSCore_class by logical name (ms_cls).
 // WHY: the stateless game calls moved into MSCore so every mod shares one copy. Mining keeps its state machines and only forwards the primitives.
 // DEPENDS ON: mb_common (get_dll_dir, log_line, STR).
 // USED BY: mb_orders (add_input, orders, autopilot), mb_steer (view_send), mb_warpreal (throttle), mb_filters, mb_docks, mb_warp, mb_belt, mb_pin, mb_dockjob, dllmain.
 // NOTE: MsFilterRow and MsSector must match F:\MSCore\cpp\MSCore\msc_api.hpp (same layout, same sizes).
 #pragma once
+
+#include <map>
+#include <string>
 
 namespace
 {
@@ -63,6 +66,7 @@ namespace
         int (*chunk_hold2)(int, int, const long long*, int, wchar_t*, int) = nullptr;
         int (*chunk_release)(int) = nullptr;
         int (*chunk_ready)(wchar_t*, int) = nullptr;
+        int (*cls)(const char*, char*, int) = nullptr;
     };
     MsApi g_ms;
 
@@ -104,6 +108,7 @@ namespace
             m.chunk_hold2 = reinterpret_cast<int (*)(int, int, const long long*, int, wchar_t*, int)>(GetProcAddress(h, "MSCore_chunk_hold2"));
             m.chunk_release = reinterpret_cast<int (*)(int)>(GetProcAddress(h, "MSCore_chunk_release"));
             m.chunk_ready = reinterpret_cast<int (*)(wchar_t*, int)>(GetProcAddress(h, "MSCore_chunk_ready"));
+            m.cls = reinterpret_cast<int (*)(const char*, char*, int)>(GetProcAddress(h, "MSCore_class"));
         }
         const bool full = m.api && m.add_input && m.view_send && m.throttle && m.find_item && m.find_dock && m.new_order &&
                           m.update_order && m.delete_order && m.autopilot && m.skip_to && m.filter_send && m.filters_read &&
@@ -132,6 +137,15 @@ namespace
         }
         return true;
     }
+
+    // WHAT: game class name for a logical name from MSCore (MSCore_class, 0.8.10+). Empty = MSCore missing/too old/unknown: caller turns its feature off. Cached once found. Game thread only.
+    std::wstring ms_cls(const char* logical) {
+        static std::map<std::string, std::wstring> cache;
+        auto it = cache.find(logical); if (it != cache.end()) return it->second;
+        std::wstring err; if (!ms_load(err)) return std::wstring();
+        if (!g_ms.cls) { static bool warned = false; if (!warned) { warned = true; log_line(STR("MSCore too old (needs 0.8.10): asteroid, station and container features are off")); } return std::wstring(); }
+        char buf[96] = {}; if (!g_ms.cls(logical, buf, static_cast<int>(sizeof(buf)))) return std::wstring();
+        std::wstring w(buf, buf + strlen(buf)); cache[logical] = w; return w; }
 
     // WHAT: copies the export's error text into err when it failed; returns the export's ok flag.
     // WHY: every forwarder reads its error the same way (wchar_t e[256] filled by the DLL).

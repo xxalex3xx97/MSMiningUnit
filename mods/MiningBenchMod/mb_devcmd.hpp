@@ -127,7 +127,7 @@ namespace
     int stations_write()
     {
         std::vector<UObject*> v;
-        UObjectGlobals::FindAllOf(STR("StationObject"), v);
+        { const std::wstring scls = ms_cls("station"); if (!scls.empty()) UObjectGlobals::FindAllOf(scls.c_str(), v); }
         std::string out;
         int n = 0;
         for (UObject* o : v)
@@ -139,7 +139,7 @@ namespace
             std::wstring name = obj_display(o);
             if (name.empty()) name = cls;
             const int np = static_cast<int>(station_ids(o, STR("MachineIDs")).size() + station_ids(o, STR("ConstructionObjectIDs")).size());
-            const std::string row = station_row(id, u8(name), u8(cls), np);
+            const std::string row = station_row(id, u8(name), u8(cls), np, to_utf8(ms_cls("player_station")));
             out += row + "\n";
             ++n;
             log_line(STR("DEVSTATION row ") + widen(row));
@@ -262,7 +262,8 @@ namespace
     //      INFERRED that disassembly is a queued task, so the pass repeats (station_destroy_tick) until the station disappears.
     bool station_step()
     {
-        UObject* st = find_by_id(STR("StationObject"), g_sd.id);
+        const std::wstring scls = ms_cls("station");
+        UObject* st = scls.empty() ? nullptr : find_by_id(scls.c_str(), g_sd.id);
         if (!alive(st)) return true;
         const std::vector<int> machines = station_ids(st, STR("MachineIDs"));
         const std::vector<int> cons = station_ids(st, STR("ConstructionObjectIDs"));
@@ -304,6 +305,7 @@ namespace
                 UObject* crate = nullptr;
                 int n_inv = 0, n_elem = 0;
                 std::set<std::wstring> distinct;
+                const std::wstring crate_cls = ms_cls("item_crate");
                 for (int id : *pick)
                 {
                     auto it = byid.find(id);
@@ -312,7 +314,7 @@ namespace
                     if (!get_int_prop(it->second, STR("InventoryID"), iid) || iid <= 0) continue;
                     auto iv = byid.find(iid);
                     if (iv == byid.end() || !alive(iv->second)) continue;
-                    if (!crate && it->second->GetClassPrivate()->GetName() == STR("BP_ItemCrateObject_C")) crate = it->second;
+                    if (!crate && it->second->GetClassPrivate()->GetName() == crate_cls) crate = it->second;
                     ++n_inv;
                     if (!sample_inv) sample_inv = iv->second;
                     FProperty* tp = iv->second->GetPropertyByNameInChain(STR("ItemTotals"));
@@ -430,7 +432,8 @@ namespace
             g_sd.active = false;
             log_line(STR("DEVSTATION timeout station=") + std::to_wstring(g_sd.id) + STR(" still present after 30 s"));
             {
-                UObject* left = find_by_id(STR("StationObject"), g_sd.id);
+                const std::wstring lcls = ms_cls("station");
+                UObject* left = lcls.empty() ? nullptr : find_by_id(lcls.c_str(), g_sd.id);
                 const size_t n = alive(left) ? station_ids(left, STR("MachineIDs")).size() : 0;
                 station_result(g_sd.id, "error", STR("30 s: items moved to your ships, ") + std::to_wstring(n) + STR(" parts still stand - remove them by hand"));
             }
@@ -453,10 +456,12 @@ namespace
         const int id = parse_station_id(arg);
         if (id <= 0) return STR("error: usage dev_destroy_station:<id>");
         if (g_sd.active) return STR("error: a destroy is already running");
-        UObject* st = find_by_id(STR("StationObject"), id);
+        const std::wstring scls = ms_cls("station");
+        if (scls.empty()) return STR("error: MSCore too old (needs 0.8.10)");
+        UObject* st = find_by_id(scls.c_str(), id);
         if (!alive(st)) { station_result(id, "error", STR("no station with that id")); return STR("error: no station with id ") + std::to_wstring(id); }
         const std::wstring cls = st->GetClassPrivate()->GetName();
-        if (!station_destroyable(to_utf8(cls)))
+        if (!station_destroyable(to_utf8(cls), to_utf8(ms_cls("player_station"))))
         {
             log_line(STR("DEVSTATION refused station=") + std::to_wstring(id) + STR(" class=") + cls);
             station_result(id, "error", STR("refused: ") + cls + STR(" is not a player-built station"));
