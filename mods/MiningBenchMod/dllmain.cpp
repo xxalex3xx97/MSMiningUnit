@@ -14,6 +14,7 @@
 #include "mb_mscore.hpp"
 #include "mb_math.hpp"
 #include "mb_docks.hpp"
+#include "mb_docktags.hpp"
 #include "mb_ships.hpp"
 #include "mb_weapons.hpp"
 #include "mb_orders.hpp"
@@ -50,6 +51,7 @@ namespace
         scan_and_log(bench, dead);
         mine_set_bench(bench, dead);
         write_lists();
+        dock_tags_refresh();
         if (bench.empty()) return;
         for (auto& [ship, id] : bench)
         {

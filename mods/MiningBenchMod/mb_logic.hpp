@@ -196,6 +196,46 @@ namespace
             if (int d = dock_token(tok)) out.push_back(d);
         return out;
     }
+    // WHAT: tags in one dock name. [TITANIUM] etc (one ore per tag), [MISC], [AUTO-FILTER]. Square brackets, any case; spaces, _ and - inside the brackets are ignored ("[Water Ice]" = [WATERICE]).
+    // WHY: user rule 2026-11-18: a tagged dock is paired by name, no INI write. The Lua window (MiningUnitUI) reads the same result from DockTags.txt.
+    struct DockTag { int id = 0; std::vector<int> ores; bool misc = false; bool autof = false; };
+    std::vector<DockTag> g_dock_tags;   // docks that carry at least one tag; refreshed by dock_tags_refresh (mb_docktags.hpp)
+    std::string tag_norm(const std::string& s) { std::string o; for (unsigned char ch : s) if (ch != ' ' && ch != '_' && ch != '-' && ch != '\t') o += static_cast<char>(std::toupper(ch)); return o; }
+    DockTag dock_tag_parse(int id, const std::string& name) {
+        DockTag t; t.id = id; size_t p = 0;
+        while ((p = name.find('[', p)) != std::string::npos) {
+            const size_t e = name.find(']', p + 1);
+            if (e == std::string::npos) break;
+            const std::string w = tag_norm(name.substr(p + 1, e - p - 1));
+            if (w == "MISC") t.misc = true;
+            else if (w == "AUTOFILTER") t.autof = true;
+            else for (int i = 0; i < N_ORE; ++i)
+                if (w == tag_norm(ORE_KEY[i]) && std::find(t.ores.begin(), t.ores.end(), i) == t.ores.end()) t.ores.push_back(i);
+            p = e + 1;
+        }
+        return t; }
+    // WHAT: ore lists = tagged docks first (id order), then the manual picks not already there; an ore with an empty list uses the [MISC] docks. A [MISC] dock is never an ore-tag dock.
+    void apply_dock_tags(Config& c) {
+        if (g_dock_tags.empty()) return;
+        std::vector<int> misc;
+        for (const DockTag& t : g_dock_tags) if (t.misc) misc.push_back(t.id);
+        for (int i = 0; i < N_ORE; ++i) {
+            std::vector<int> out;
+            for (const DockTag& t : g_dock_tags) if (!t.misc && std::find(t.ores.begin(), t.ores.end(), i) != t.ores.end()) out.push_back(t.id);
+            for (int d : c.ore_docks[i]) if (std::find(out.begin(), out.end(), d) == out.end()) out.push_back(d);
+            if (out.empty()) out = misc;
+            c.ore_docks[i] = out; } }
+    // WHAT: {dock id, ore index} for every [AUTO-FILTER] dock (never [MISC]): its first ore tag, else the first ore (ore order) whose list in any of cfgs (RAW configs, no tags merged) holds the dock. No ore = no pair.
+    std::vector<std::pair<int, int>> autofilter_pairs(const std::vector<DockTag>& tags, const std::vector<Config>& cfgs) {
+        std::vector<std::pair<int, int>> out;
+        for (const DockTag& t : tags) {
+            if (!t.autof || t.misc) continue;
+            int ore = t.ores.empty() ? -1 : t.ores[0];
+            for (int i = 0; ore < 0 && i < N_ORE; ++i)
+                for (const Config& c : cfgs)
+                    if (std::find(c.ore_docks[i].begin(), c.ore_docks[i].end(), t.id) != c.ore_docks[i].end()) { ore = i; break; }
+            if (ore >= 0) out.push_back({t.id, ore}); }
+        return out; }
     // WHAT: current queue row per ship id (runtime only; 0 = first row). Advanced by item_advance, reset by mine_cmd start.
     std::map<int, int> g_item_idx;
     // WHAT: copies the keys present in kv into c. An empty value counts as missing and keeps c's value.
@@ -266,6 +306,7 @@ namespace
                 c.amount = c.items[i].second;
             }
         }
+        apply_dock_tags(c);
         return c;
     }
     // WHAT: parses "<seq>|<ship>|<cmd>". false when any part is malformed: seq and ship must be digits, cmd must not be empty.
