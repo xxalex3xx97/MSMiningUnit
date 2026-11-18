@@ -8,9 +8,8 @@
 //      instead of a crash or a wrong write. Limits: a same-name, same-type change in behaviour is not detected; the natives are confirmed only by
 //      the chunk-hold canary (mb_chunkhold.hpp).
 // DEPENDS ON: mb_common.hpp (log_line, alive, STR, widen, u8, get_dll_dir, write_atomic), mb_compat.hpp (g_compat, SafeMode, feature_name),
-//             mb_pattern.hpp / mb_natives.hpp (nat_resolve, g_nat, nat_hex), mb_version.hpp (kKnownBuildSize), mb_warpreal.hpp (kCmdTypeOff,
-//             kThrottleTypeId), mb_ue.hpp (first_of, get_obj_prop), mb_mining.hpp (g_bench_ids, mine_halt),
-//             mb_chunkhold.hpp (chunk_hold_release_all), mb_config.hpp (check_config, g_cfg.kill_switch).
+//             mb_version.hpp (kKnownBuildSize), mb_ue.hpp (first_of, get_obj_prop), mb_mining.hpp (g_bench_ids, mine_halt),
+//             mb_mscore.hpp (ms_chunk_ok, g_ms), mb_chunkhold.hpp (chunk_hold_release_all, ch_hex), mb_config.hpp (check_config, g_cfg.kill_switch).
 // USED BY: dllmain.cpp (tick lambda: compat_killed, compat_run, compat_selftest through the thunks).
 // GAME FACTS: the contract table names come from tools/compat_names.py (run over the mod headers). Names read through a computed path, names
 //             only seen in dev/test code, and BP classes are not in the table (see the report of the slice).
@@ -205,16 +204,6 @@ namespace
         return true;
     }
 
-    // WHAT: the contract's map key check: SolarSystem.ChunkMap key element size must be CH_KEY_SIZE (12). ok false + why otherwise.
-    bool chunkmap_key_ok(UClass* solar, std::string& why)
-    {
-        FProperty* p = solar ? row_prop(solar, STR("ChunkMap")) : nullptr;
-        auto* mp = p ? CastField<FMapProperty>(p) : nullptr;
-        if (!mp || !mp->GetKeyProp()) { why = "ChunkMap is not a map"; return false; }
-        if (mp->GetKeyProp()->GetElementSize() != CH_KEY_SIZE) { why = "key size " + std::to_string(mp->GetKeyProp()->GetElementSize()) + " != 12"; return false; }
-        return true;
-    }
-
     // WHAT: the command type id check (WARPREAL). Every command class the code sends has its type id (int32 at cmd+kCmdTypeOff) in 1..0x400,
     //       all distinct and different from kThrottleTypeId; the UObject base is kCmdTypeOff bytes, and no own property of the command classes
     //       starts before kCmdTypeOff+4. Creates three command objects (factory made, not sent). false + why on a mismatch.
@@ -234,8 +223,8 @@ namespace
         const uint8_t* base = reinterpret_cast<const uint8_t*>(GetModuleHandleW(nullptr));
         if (!base) { out(STR("COMPAT build info unavailable: no module base")); return; }
         const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + reinterpret_cast<const IMAGE_DOS_HEADER*>(base)->e_lfanew);
-        out(STR("COMPAT build size=") + std::to_wstring(size) + STR(" timestamp=") + nat_hex(nt->FileHeader.TimeDateStamp) +
-            STR(" sizeofimage=") + std::to_wstring(nt->OptionalHeader.SizeOfImage) + STR(" checksum=") + nat_hex(nt->OptionalHeader.CheckSum));
+        out(STR("COMPAT build size=") + std::to_wstring(size) + STR(" timestamp=") + ch_hex(nt->FileHeader.TimeDateStamp) +
+            STR(" sizeofimage=") + std::to_wstring(nt->OptionalHeader.SizeOfImage) + STR(" checksum=") + ch_hex(nt->OptionalHeader.CheckSum));
         if (ec || size != kKnownBuildSize)
             out(STR("COMPAT build differs from the tested build (size ") + std::to_wstring(kKnownBuildSize) + STR("): full self-test runs (info only)"));
     }
@@ -268,18 +257,20 @@ namespace
             g_compat.add(r.f, what, ok, why);
         }
         {
-            std::string why;
-            const bool ok = chunkmap_key_ok(row_class("SolarSystem", cache), why);
-            g_compat.add(F_CHUNKHOLD, "SolarSystem.ChunkMap key size", ok, why);
-        }
-        {
             std::wstring why;
             const bool ok = compat_tid_check(why);
             g_compat.add(F_WARPREAL, "command type id @0x28", ok, u8(why));
         }
         {
-            const bool ok = nat_resolve();
-            g_compat.add(F_CHUNKHOLD, "natives", ok, u8(g_nat.why));
+            std::wstring why;
+            const bool ok = ms_chunk_ok(why);
+            g_compat.add(F_CHUNKHOLD, "MSCore chunk export", ok, u8(why));
+            if (ok)
+            {
+                wchar_t w[256] = {0};
+                const bool rd = g_ms.chunk_ready(w, 256) != 0;
+                g_compat.add(F_CHUNKHOLD, "MSCore chunk natives", rd, u8(std::wstring(w)));
+            }
         }
 
         for (const CompatRow& r : g_compat.rows)
@@ -319,7 +310,7 @@ namespace
         for (int sid : g_bench_ids)
         {
             unsigned long code = 0;
-            if (!compat_seh_halt(sid, &code)) log_line(STR("COMPAT safe mode: stop of ship ") + std::to_wstring(sid) + STR(" faulted code=") + nat_hex(code));
+            if (!compat_seh_halt(sid, &code)) log_line(STR("COMPAT safe mode: stop of ship ") + std::to_wstring(sid) + STR(" faulted code=") + ch_hex(code));
         }
         try { chunk_hold_release_all(); } catch (...) {}
         try { write_atomic(get_dll_dir() / "MiningCompat.txt", std::string("SAFE MODE\n") + g_compat_text); } catch (...) {}

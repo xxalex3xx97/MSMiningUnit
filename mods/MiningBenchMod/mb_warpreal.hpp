@@ -145,10 +145,6 @@ namespace
                      STR(" pit=") + std::to_wstring(pit) + STR(" body_dir=(") + std::to_wstring(b[0]) + STR(",") + std::to_wstring(b[1]) + STR(",") + std::to_wstring(b[2]) + STR(")"));
     }
 
-    // WHAT: the command type id of ShipMovementInputCommand (int32 at cmd+kCmdTypeOff), and that offset. Checked by the compat self-test (mb_compat_run.hpp).
-    constexpr int32_t kThrottleTypeId = 0x3a;
-    constexpr size_t kCmdTypeOff = 0x28;
-
     // WHAT: sends a ShipMovementInputCommand{DeltaThrottle = delta} to ship sid with AddInputCommand (no pilot, no seat).
     // WHY: Ghidra (part6f-ghidra-findings): the jump charge starts when the ship handles this command with DeltaThrottle=+1 (ChangeThrottle) while
     //      bJumpTargetSet and bAlignedWithJumpTarget hold. MSCore_throttle builds the ShipMovementInputCommand and sets its type id.
