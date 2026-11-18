@@ -122,9 +122,8 @@ pcall(function()
   end)
 end)
 
--- [AUTO-FILTER] applier. MiningBenchMod C++ writes DockFilter.txt "<dock id>|<ITEM_a>[,<ITEM_b>...]" (docks tagged [AUTO-FILTER] + ores, never [MISC]); the items are the ores in tag order.
--- Spreading: slot ix gets items[(ix % n) + 1], so one item fills every slot and several items repeat in order over the slots.
--- Each (dock, item string) is applied ONCE via MSCore factory_native.set_dock_filter(id, slot, item, 0) on every slot (overrides the old filter); a changed list applies again.
+-- [AUTO-FILTER] applier. MiningBenchMod C++ writes DockFilter.txt "<dock id>|<ITEM_x>" (docks tagged [AUTO-FILTER] + an ore, never [MISC]).
+-- Each (dock, item) pair is applied ONCE via MSCore factory_native.set_dock_filter(id, slot, item, 0) on every slot (overrides the old filter); a changed ore applies again.
 -- ponytail: the slot count is unknown here (BPO_Dock 2, BPO_Dock_2 8): tries slots 0..7 and stops at the first refusal. Ask MSCore for the slot count and drop the cap.
 local DF = { done = {}, logged = {}, mscore = nil, warned = false }
 local DF_SLOTS = 8
@@ -134,7 +133,7 @@ local function dfApply()
   local want = {}
   for line in fh:lines() do
     local id, item = line:match("^%s*(%d+)|(%S+)%s*$")
-    if id and item:find("%w") then want[id] = item end
+    if id then want[id] = item end
   end
   fh:close()
   for id in pairs(DF.done) do if not want[id] then DF.done[id] = nil end end
@@ -153,10 +152,8 @@ local function dfApply()
   for id, item in pairs(want) do
     if DF.done[id] ~= item then
       local n, why = 0, nil
-      local items = {}
-      for it in item:gmatch("[^,]+") do items[#items + 1] = it end
       for ix = 0, DF_SLOTS - 1 do
-        local okc, r, err = pcall(FN.set_dock_filter, tonumber(id), ix, items[(ix % #items) + 1], 0)
+        local okc, r, err = pcall(FN.set_dock_filter, tonumber(id), ix, item, 0)
         if okc and r then n = n + 1 else why = tostring(okc and err or r); break end
       end
       if n > 0 then DF.done[id] = item end
