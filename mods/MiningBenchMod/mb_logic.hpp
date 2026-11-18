@@ -214,6 +214,8 @@ namespace
             p = e + 1;
         }
         return t; }
+    // WHAT: a dock with 2+ ore tags is invalid (user rule 2026-11-19: one ore, one filter per dock). Clears its ore tags and [AUTO-FILTER] so it is never paired or filtered; returns true when it was invalid (caller logs once). [MISC] is untouched.
+    bool dock_tag_invalidate(DockTag& t) { if (t.ores.size() < 2) return false; t.ores.clear(); t.autof = false; return true; }
     // WHAT: ore lists = tagged docks first (id order), then the manual picks not already there; an ore with an empty list uses the [MISC] docks. A [MISC] dock is never an ore-tag dock.
     void apply_dock_tags(Config& c) {
         if (g_dock_tags.empty()) return;

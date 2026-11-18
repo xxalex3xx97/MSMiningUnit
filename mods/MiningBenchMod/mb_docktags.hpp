@@ -29,6 +29,7 @@ namespace
                     const std::wstring cn = cls ? std::wstring(cls->GetName()) : std::wstring();
                     if (cn.find(STR("Abandoned")) != std::wstring::npos || cn.find(STR("NPC")) != std::wstring::npos || cn.find(STR("ShipBlockDock")) != std::wstring::npos) continue;
                     DockTag t = dock_tag_parse(obj_id(o), u8(dock_name(o)));
+                    if (dock_tag_invalidate(t)) { static std::set<int> warned; if (warned.insert(t.id).second) log_line(STR("DOCK TAGS: dock ") + std::to_wstring(t.id) + STR(" has several ore tags: ignored (one ore tag per dock)")); }
                     if (t.id > 0 && (t.misc || t.autof || !t.ores.empty())) tags.push_back(t);
                 }
                 std::sort(tags.begin(), tags.end(), [](const DockTag& a, const DockTag& b) { return a.id < b.id; });

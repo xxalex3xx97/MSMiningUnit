@@ -2164,6 +2164,9 @@ static void t_dock_tags()
     CHECK(dock_tag_parse(1, "[NICKEL").ores.empty());
     CHECK(dock_tag_parse(1, "[FOO] [x]").ores.empty());
     CHECK((dock_tag_parse(1, "[titanium][NICKEL]").ores == std::vector<int>{0, 1}));
+    DockTag bad = dock_tag_parse(30, "[AUTO-FILTER] [NICKEL] [COBALT]"); CHECK(dock_tag_invalidate(bad)); CHECK(bad.ores.empty() && !bad.autof);
+    DockTag ok1 = dock_tag_parse(31, "[AUTO-FILTER] [NICKEL]"); CHECK(!dock_tag_invalidate(ok1)); CHECK(ok1.autof && ok1.ores.size() == 1);
+    DockTag ms = dock_tag_parse(32, "[MISC] [NICKEL] [COBALT]"); CHECK(dock_tag_invalidate(ms) && ms.misc);
     g_dock_tags = {dock_tag_parse(10, "[TITANIUM]"), dock_tag_parse(11, "[MISC]")};
     g_cfg.ore_docks[0] = {5, 10}; g_cfg.ore_docks[2] = {9};
     Config c = eff_cfg(1);
