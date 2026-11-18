@@ -2172,10 +2172,9 @@ static void t_dock_tags()
     CHECK((c.ore_docks[2] == std::vector<int>{9}));
     CHECK((g_cfg.ore_docks[0] == std::vector<int>{5, 10}));
     DockTag p1 = dock_tag_parse(20, "[AUTO-FILTER] [NICKEL]"), p2 = dock_tag_parse(21, "[AUTO-FILTER]"), p3 = dock_tag_parse(22, "[AUTO-FILTER] [MISC] [TITANIUM]"), p4 = dock_tag_parse(23, "[COBALT]");
-    DockTag p5 = dock_tag_parse(24, "[AUTO-FILTER] [NICKEL] [COBALT]"), p6 = dock_tag_parse(25, "[AUTO-FILTER] [MISC] [TITANIUM]");
     Config m; m.ore_docks[3] = {21};
-    auto pr = autofilter_pairs({p1, p2, p3, p4, p5, p6}, {m});
-    CHECK((pr == std::vector<std::pair<int, std::vector<int>>>{{20, {1}}, {21, {3}}, {24, {1, 2}}}));
+    auto pr = autofilter_pairs({p1, p2, p3, p4}, {m});
+    CHECK((pr == std::vector<std::pair<int, int>>{{20, 1}, {21, 3}}));
     reset_globals();
 }
 

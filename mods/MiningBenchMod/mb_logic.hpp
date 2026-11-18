@@ -225,16 +225,16 @@ namespace
             for (int d : c.ore_docks[i]) if (std::find(out.begin(), out.end(), d) == out.end()) out.push_back(d);
             if (out.empty()) out = misc;
             c.ore_docks[i] = out; } }
-    // WHAT: {dock id, ore indices} for every [AUTO-FILTER] dock (never [MISC]): all its ore tags in tag order; no ore tag -> the first ore (ore order) whose list in any of cfgs (RAW configs, no tags merged) holds the dock, as one ore. No ore = no entry.
-    std::vector<std::pair<int, std::vector<int>>> autofilter_pairs(const std::vector<DockTag>& tags, const std::vector<Config>& cfgs) {
-        std::vector<std::pair<int, std::vector<int>>> out;
+    // WHAT: {dock id, ore index} for every [AUTO-FILTER] dock (never [MISC]): its first ore tag, else the first ore (ore order) whose list in any of cfgs (RAW configs, no tags merged) holds the dock. No ore = no pair.
+    std::vector<std::pair<int, int>> autofilter_pairs(const std::vector<DockTag>& tags, const std::vector<Config>& cfgs) {
+        std::vector<std::pair<int, int>> out;
         for (const DockTag& t : tags) {
             if (!t.autof || t.misc) continue;
-            std::vector<int> ores = t.ores;
-            for (int i = 0; ores.empty() && i < N_ORE; ++i)
+            int ore = t.ores.empty() ? -1 : t.ores[0];
+            for (int i = 0; ore < 0 && i < N_ORE; ++i)
                 for (const Config& c : cfgs)
-                    if (std::find(c.ore_docks[i].begin(), c.ore_docks[i].end(), t.id) != c.ore_docks[i].end()) { ores = {i}; break; }
-            if (!ores.empty()) out.push_back({t.id, ores}); }
+                    if (std::find(c.ore_docks[i].begin(), c.ore_docks[i].end(), t.id) != c.ore_docks[i].end()) { ore = i; break; }
+            if (ore >= 0) out.push_back({t.id, ore}); }
         return out; }
     // WHAT: current queue row per ship id (runtime only; 0 = first row). Advanced by item_advance, reset by mine_cmd start.
     std::map<int, int> g_item_idx;
