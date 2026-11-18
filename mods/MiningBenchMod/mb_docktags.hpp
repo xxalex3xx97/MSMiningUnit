@@ -1,7 +1,7 @@
 // FILE: mods/MiningBenchMod/mb_docktags.hpp
 // WHAT: dock name tags ([TITANIUM], [MISC], [AUTO-FILTER]) read from the dock walk. dock_tags_refresh fills g_dock_tags and writes DockTags.txt and DockFilter.txt next to the dll when their content changed.
 //   DockTags.txt  line: "<id>|<ore keys comma>|<misc 0/1>|<autofilter 0/1>"  (read by the Lua window)
-//   DockFilter.txt line: "<id>|<ITEM_xxx>"  (read by MiningUnitUI main.lua, which calls MSCore set_dock_filter)
+//   DockFilter.txt line: "<id>|<ITEM_a>[,<ITEM_b>...]"  = the dock's ore items in tag order (one item = every filter slot; several = spread slot i gets item[i mod n]); read by MiningUnitUI main.lua, which calls MSCore set_dock_filter
 // WHY separate: the tag walk is its own rule set; it stays out of write_lists (docks.txt).
 // DEPENDS ON: mb_common (alive, log_line, get_dll_dir, write_atomic, u8, widen, STR), mb_ue (obj_id), mb_docks (dock_name), mb_logic (DockTag, dock_tag_parse, autofilter_pairs, g_cfg, g_ship_kv, apply_kv, ORE_KEY, ORE_ITEM).
 // USED BY: dllmain.cpp (tick_work, after write_lists).
@@ -43,12 +43,17 @@ namespace
             }
             std::vector<Config> cfgs{g_cfg};
             for (const auto& kv : g_ship_kv) { Config c = g_cfg; apply_kv(c, kv.second, true); cfgs.push_back(c); }
-            for (const auto& pr : autofilter_pairs(g_dock_tags, cfgs)) fx += std::to_string(pr.first) + "|" + ORE_ITEM[pr.second] + "\n";
+            for (const auto& pr : autofilter_pairs(g_dock_tags, cfgs))
+            {
+                fx += std::to_string(pr.first) + "|";
+                for (size_t k = 0; k < pr.second.size(); ++k) fx += (k ? "," : "") + std::string(ORE_ITEM[pr.second[k]]);
+                fx += "\n";
+            }
             static bool first = true;
             static std::string last_tx, last_fx;
             const auto dir = get_dll_dir();
             if (first || tx != last_tx) { write_atomic(dir / "DockTags.txt", tx); log_line(STR("DOCK TAGS: ") + std::to_wstring(g_dock_tags.size()) + STR(" tagged docks")); last_tx = tx; }
-            if (first || fx != last_fx) { write_atomic(dir / "DockFilter.txt", fx); log_line(STR("AUTO-FILTER pairs: ") + std::to_wstring(std::count(fx.begin(), fx.end(), '\n'))); last_fx = fx; }
+            if (first || fx != last_fx) { write_atomic(dir / "DockFilter.txt", fx); log_line(STR("AUTO-FILTER docks: ") +std::to_wstring(std::count(fx.begin(), fx.end(), '\n'))); last_fx = fx; }
             first = false;
         }
         catch (const std::exception& e) { log_line(STR("dock tags failed: ") + widen(e.what())); }
