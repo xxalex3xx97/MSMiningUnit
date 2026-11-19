@@ -304,7 +304,7 @@ namespace
     {
         mine_fire(sid, false);
         mv_cancel(sid);
-        zero_all(ship);
+        zero_all_dual(ship);
     }
 
 
@@ -711,7 +711,7 @@ namespace
         g_ob.erase(sid); g_pf.erase(sid);
         std::wstring err;
         set_autopilot(sid, false, err);
-        zero_all(ship);
+        zero_all_dual(ship);
     }
 
     // WHAT: wait text of a ship queued for a dock (dock network verdict + elapsed time). A flee shows "Fleeing: waiting for dock".
@@ -881,7 +881,7 @@ namespace
         run_cmd(-1, sid, "laser_off");
         run_cmd(-1, sid, "tractor_on");
         mv_cancel(sid);
-        zero_all(ship);
+        zero_all_dual(ship);
         ore_scan(true);   // fresh floating ore list: the shared cache can be a minute old
         m.st = MS_COLLECT; m.t = 0.0; m.col_t = 0.0; m.col_stall = 0.0; m.col_scan_t = COLLECT_SCAN_S; m.col_last = -1;
         m.col_next = kind; m.col_why = text;
@@ -951,7 +951,7 @@ namespace
         std::wstring err;
         m.noy_run = 0;   // unloaded: the no-yield run starts over
         set_autopilot(sid, false, err);
-        zero_all(ship);
+        zero_all_dual(ship);
         if (g_park_pick.erase(sid)) { m.st = MS_HALT; m.fin = false; m.noore = false; m.leave = false; mset(sid, m, STR("parked at dock, waiting for instruction"), STR("Parked")); return; }
         // hull hit: fled to dock, the trip is over for good
         if (m.flee)
@@ -1420,7 +1420,7 @@ namespace
         mlog(sid, STR("Path blocked by rock ") + std::to_wstring(bid) + STR(": rock ") + std::to_wstring(tid) + STR(" skipped"));
         g_path_skip[sid].insert(tid);
         appr_done(sid, STR("skipped"));
-        mv_cancel(sid); zero_all(ship);
+        mv_cancel(sid); zero_all_dual(ship);
         g_sel_rocks.erase(sid);
         m.wp_on = false; m.wp_n = 0; m.seek_started = false; m.path_t = 0.0;
         m.chk_t = MINE_ROCK_CHECK_S;   // the next check picks another rock
@@ -1480,7 +1480,7 @@ namespace
         {
             log_path(sid, tid, bid, dist, STR("retarget ") + std::to_wstring(aid));
             mlog(sid, STR("Path blocked by rock ") + std::to_wstring(bid) + STR(": next rock ") + std::to_wstring(aid));
-            mv_cancel(sid); zero_all(ship);
+            mv_cancel(sid); zero_all_dual(ship);
             g_sel_rocks[sid] = aid;
             g_path_skip[sid].insert(tid);   // the blocked rock is out for this visit: each retarget removes one rock, so the chain ends
             const int rt = ar.retargets + 1;
@@ -1527,7 +1527,7 @@ namespace
                     PtTarget pt;
                     pt.sys = sys;
                     dock_add_m(ch, raw, off, pt.ch, pt.loc);
-                    mv_cancel(sid); zero_all(ship);
+                    mv_cancel(sid); zero_all_dual(ship);
                     const std::wstring r = move_start(sid, "approach_rock", -1, nullptr, &pt);
                     if (r == STR("waiting"))
                     {
@@ -1972,7 +1972,7 @@ namespace
             if (mv_active(sid) && m.sw_t < SWEEP_FLY_TIMEOUT_S) return;
             if (mv_active(sid))
             {
-                mv_cancel(sid); zero_all(ship);
+                mv_cancel(sid); zero_all_dual(ship);
                 m.sw_nofly = true;
                 sw_phase(ship, sid, m, SW_RETURN);
                 return;
@@ -2293,7 +2293,7 @@ namespace
     // WHAT: flight or warp to the slot is over: stop, hold (hold_ph 2), phase holding, Control lines.
     void slot_arrive(UObject* ship, int sid, MineSt& m, NetShip& s, int d)
     {
-        zero_all(ship);
+        zero_all_dual(ship);
         if (m.hold_warp) chunk_hold_target_clear(sid);
         m.hold_warp = false; m.hold_t = 0.0;
         m.hold_ph = 2; s.phase = 2;
@@ -2788,7 +2788,7 @@ namespace
                 }
                 if (m.qpark == 0)
                 {
-                    mv_cancel(sid); zero_all(ship); slot_clear(sid); g_job_res.erase(sid);
+                    mv_cancel(sid); zero_all_dual(ship); slot_clear(sid); g_job_res.erase(sid);
                     g_park_raw.insert(sid);
                     const std::wstring r = job_start(sid, "dock_mining", -1);
                     g_park_raw.erase(sid);
@@ -2834,7 +2834,7 @@ namespace
             {
                 for (const auto& kv : g_net_docks) if (kv.second.resv == sid) cleared_dock = widen(net_dock_label(kv.first));
                 mv_cancel(sid);
-                zero_all(ship);
+                zero_all_dual(ship);
                 slot_clear(sid);
                 const auto gs = g_net_ships.find(sid);
                 if (gs != g_net_ships.end()) gs->second.phase = 3;   // cleared: the job is starting
@@ -2846,7 +2846,7 @@ namespace
                 g_ob.erase(sid); g_pf.erase(sid);
                 std::wstring perr;
                 set_autopilot(sid, false, perr);
-                zero_all(ship);
+                zero_all_dual(ship);
                 g_job_res.erase(sid);
             }
             const std::wstring r = job_start(sid, m.trip, -1);
@@ -2871,7 +2871,7 @@ namespace
             g_ob.erase(sid); g_pf.erase(sid);
             std::wstring e;
             set_autopilot(sid, false, e);
-            zero_all(ship);
+            zero_all_dual(ship);
             m.dwait = true; m.dwait_t = 60.0; m.dwait_shown = -1.0;   // 60 s = the next tick asks the dock network again (joins the queue)
             dock_wait_text(sid, m);
             return;
