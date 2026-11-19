@@ -122,4 +122,46 @@ pcall(function()
   end)
 end)
 
+-- [AUTO-FILTER] applier. MiningBenchMod C++ writes DockFilter.txt "<dock id>|<ITEM_x>" (docks tagged [AUTO-FILTER] + an ore, never [MISC]).
+-- Each (dock, item) pair is applied ONCE via MSCore factory_native.set_dock_filter(id, slot, item, 0) on every slot (overrides the old filter); a changed ore applies again.
+-- ponytail: the slot count is unknown here (BPO_Dock 2, BPO_Dock_2 8): tries slots 0..7 and stops at the first refusal. Ask MSCore for the slot count and drop the cap.
+local DF = { done = {}, logged = {}, mscore = nil, warned = false }
+local DF_SLOTS = 8
+local function dfApply()
+  local fh = io.open(W.DATA .. "DockFilter.txt", "r")
+  if not fh then return end
+  local want = {}
+  for line in fh:lines() do
+    local id, item = line:match("^%s*(%d+)|(%S+)%s*$")
+    if id then want[id] = item end
+  end
+  fh:close()
+  for id in pairs(DF.done) do if not want[id] then DF.done[id] = nil end end
+  local pending = false
+  for id, item in pairs(want) do if DF.done[id] ~= item then pending = true end end
+  if not pending then return end
+  if DF.mscore == nil then
+    local okM, MS = pcall(require, "mscore")
+    DF.mscore = (okM and type(MS) == "table") and MS or false
+  end
+  local FN = DF.mscore and DF.mscore.factory_native
+  if not (FN and FN.set_dock_filter) then
+    if not DF.warned then DF.warned = true; print(TAG .. "MSCore too old (needs 0.8.8): [AUTO-FILTER] docks are not filtered\n") end
+    return
+  end
+  for id, item in pairs(want) do
+    if DF.done[id] ~= item then
+      local n, why = 0, nil
+      for ix = 0, DF_SLOTS - 1 do
+        local okc, r, err = pcall(FN.set_dock_filter, tonumber(id), ix, item, 0)
+        if okc and r then n = n + 1 else why = tostring(okc and err or r); break end
+      end
+      if n > 0 then DF.done[id] = item end
+      local key = id .. "|" .. item .. "|" .. n
+      if not DF.logged[key] then DF.logged[key] = true; print(TAG .. "auto-filter dock=" .. id .. " item=" .. item .. " slots set=" .. n .. (why and (" stopped: " .. why) or "") .. "\n") end
+    end
+  end
+end
+pcall(LoopAsync, 5000, function() pcall(ExecuteInGameThread, function() pcall(dfApply) end) return false end)
+
 print(TAG .. "loaded. F4 = fleet window, block interact = Mining Unit window\n")
