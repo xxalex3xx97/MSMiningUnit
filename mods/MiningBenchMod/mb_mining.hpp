@@ -881,6 +881,21 @@ namespace
         return true;
     }
 
+    // WHAT: Park button: send the ship to a parking dock now, whatever its idle state (button trip, like dock_to). No parking dock -> error + log.
+    std::wstring park_btn(UObject* ship, int sid)
+    {
+        const std::vector<int> pk = eff_cfg(sid).park_docks;
+        if (pk.empty()) { mlog(sid, STR("no parking dock")); return STR("error: no parking dock"); }
+        if (!park_wanted(pk, net_docked_at(sid, ship), false, false)) { mlog(sid, STR("already parked")); return STR("ok already parked"); }
+        MineSt& bm = g_mine[sid];
+        bm.run = false; bm.leave = true; bm.fin = false; bm.btn = true;
+        bm.unl_prev = -1; bm.unl_undock = false;
+        g_park_pick.insert(sid);
+        mlog(sid, STR("Action: park"));
+        trip_begin(ship, sid, bm, STR("button"), "dock_mining");
+        return STR("ok");
+    }
+
     // trip finished at the dock: autopilot off, then continue / stop. Orders are left in place (next build clears them, undock reuses a DeliverOrder).
     void trip_end(UObject* ship, int sid, MineSt& m, const Config& c)
     {

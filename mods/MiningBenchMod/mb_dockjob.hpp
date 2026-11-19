@@ -435,7 +435,12 @@ namespace
             // first free candidate: the Dock picker's dock, else refuel_dock_id / refuel_dock_name, then refuel_docks
             auto pk = g_dock_pick.find(sid);
             const Config c = eff_cfg(sid);
-            const std::vector<int> cands = (pk != g_dock_pick.end() && pk->second > 0) ? std::vector<int>{pk->second} : refuel_candidates(c, why);
+            std::vector<int> cands = (pk != g_dock_pick.end() && pk->second > 0) ? std::vector<int>{pk->second} : refuel_candidates(c, why);
+            if (pk == g_dock_pick.end() || pk->second <= 0) {
+                int64_t hv[N_FUEL];
+                for (int i = 0; i < N_FUEL; ++i) { std::wstring fw; UObject* fit = item_c(FUEL_ITEM[i], fw); hv[i] = alive(fit) ? inv_total(ship, fit) : -1; }
+                cands = refuel_by_fuel(cands, g_dock_tags, fuel_need_mask(c, hv));
+            }
             if (cands.empty()) return why == STR("no dock configured") ? why : STR("error: ") + why;
             const NetVerdict v = net_pick(g_net_docks, g_net_ships, g_net_ticket, sid, P_REFUEL, net_req_of(sid, P_REFUEL), cands, 0, g_now);
             if (v.k == NetVerdict::ERR) return net_refusal(v, net_dock_label(cands.front()));

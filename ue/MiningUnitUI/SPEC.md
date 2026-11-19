@@ -33,6 +33,7 @@ WBP_MiningUnit (UserWidget)
    │     │     ├─ Btn_Undock  Button  Is Variable  └─ Txt_Undock  TextBlock Is Variable "Undock"
    │     │     ├─ Btn_Refuel  Button  Is Variable  └─ Txt_Refuel  TextBlock Is Variable "Refuel"
    │     │     ├─ Btn_Unload  Button  Is Variable  └─ Txt_Unload  TextBlock Is Variable "Unload"
+   │     │     ├─ Btn_Park    Button  Is Variable  └─ Txt_Park    TextBlock Is Variable "Park"
    │     │     └─ Btn_Collect Button  Is Variable  └─ Txt_Collect TextBlock Is Variable "Collect ore"
    │     ├─ CENTER (header title = Txt_Title, min width 260)
    │     │  ├─ Txt_Title    TextBlock      Is Variable    "Mining Unit" (Lua sets "Mining Unit - <ship>")
@@ -69,7 +70,7 @@ Ship select = key Remote in the Fleet Control box (Sel_Remote, Txt_SelRemote). L
 Page_Ship (select fields, keys: dock_id, refuel_dock_id; dock_name_filter key is not touched):
 - Single Unload dock row removed. Txt_ShipWarn (yellow F2D21E, Collapsed; Lua text). Per ore <ok> (7 ore keys): card Pnl_UDockCard_<ok> (Collapsed), rows m=1..5: Pnl_UDockRow_<ok>_<m> (Collapsed) = select field Sel_UDock_<ok>_<m>, Txt_SelUDock_<ok>_<m> + trash Btn_UDockDel_<ok>_<m>; Btn_UDockAdd_<ok>. Refuel list: Pnl_RDockCard (Collapsed), Pnl_RDockRow_<m> = Sel_RDock_<m>, Txt_SelRDock_<m> + Btn_RDockDel_<m>; Btn_RDockAdd.
 - Misc card: Pnl_UDockCard_Misc, Dyn_UDock_Misc, Btn_UDockAdd_Misc (last card on Page_Ship; script add_misc_dock_card.py)
-- Parking card: Pnl_UDockCard_Park, Dyn_UDock_Park, Btn_UDockAdd_Park (after the Misc card on Page_Ship; script add_parking_dock_card.py). Headers of the 7 ore cards and Misc/Parking carry the tag hint in their text (Lbl_HdrUD<k>).
+- Parking card: Pnl_UDockCard_Park, Dyn_UDock_Park, Btn_UDockAdd_Park (after the Misc card on Page_Ship; script add_parking_dock_card.py). Card header = Row_CardHead<key> [lead icon][Lbl_Hdr...][spacer][Btn_DockHelp_<ok> "?" 32x28, Txt_DockHelp_<ok>; the same for Btn_DockHelp_RDock, Txt_DockHelp_RDock, Btn_DockHelp_Misc, Txt_DockHelp_Misc, Btn_DockHelp_Park, Txt_DockHelp_Park]; keys: the 7 ore keys, RDock, Misc, Park; help text lives in Lua (HELP_CARDS) and opens Pnl_Modal.
 - Operation tab "Warp management" card (Lbl_HdrWarp): Txt_OpBeltLabel "Sector Selector" / select field "Belt": Sel_Belt (Button), Txt_SelBelt; Btn_BeltPinned "Use pinned sector"; Btn_BeltWarp "Warp to belt"
 - Select field = Sel_<key> (Button, shows the current choice in Txt_Sel<key>). Click opens the shared modal Pnl_Modal (no panel or options per field). Click a row = select + close + save to MiningBench.ini.
 - Edt_* style: black text, font size 11, light grey bg kept (WidgetStyle).
@@ -143,13 +144,14 @@ Pnl_Modal = Overlay, Is Variable, Collapsed, 2nd child of Root (anchors like Pan
 
 ## Ore icon on mining lines + per-ship log cards (2026-10-28)
 - Every ship card (Card = modal, Fleet = right column; P in {Card,Fleet}, i = 1..CN / 1..FN) has the mining line as one HorizontalBox Row_<P>MineRow_<i> = Txt_<P>MineLbl_<i> ("Mining:", Collapsed) + Img_<P>Ore_<i> (Image, 24x24, Hidden; same icon source as Img_StatusOre) + Txt_<P>Mine_<i> (ore name only, Collapsed). Txt_<P>Mine_<i> keeps its old name.
-- Log tab All ships mode: Pnl_LogAll VerticalBox (Collapsed, sibling of Row_LogScroll inside Pnl_PageLog) > ScrollBox Row_LogAllScroll > Pnl_LogCard_<f> (Border, f = 1..FN, Collapsed) > header row Txt_LogCardName_<f> (size 16) + Txt_LogCardStatus_<f> (size 14, dimmer), then Txt_LogCard_<f>_<r> (r = 1..10, size 13, AutoWrapText). LOG_ROWS=10 in gen_paste = LOG_ROWS in wbp_loader.lua. Lua: All mode shows Pnl_LogAll and hides Row_LogScroll; single mode the reverse.
+- Log tab All ships mode: Pnl_LogAll VerticalBox (Collapsed, sibling of Row_LogScroll inside Pnl_PageLog) > ScrollBox Row_LogAllScroll > Pnl_LogCard_<f> (Border, f = 1..FN, Collapsed) > header row Txt_LogCardName_<f> (size 16) + Txt_LogCardStatus_<f> (size 14, dimmer, fill) + fold button Btn_LogFold_<f> (Button > Row_LogFoldOv_<f> Overlay > Lbl_LogFoldUp_<f> and Lbl_LogFoldDn_<f>, using T_IconUp/T_IconDown), then Txt_LogCard_<f>_<r> (r = 1..10, size 13, AutoWrapText). LOG_ROWS=10 in gen_paste = LOG_ROWS in wbp_loader.lua. Lua: Pnl_LogAll shows in both modes; Row_LogScroll and Dyn_Log are unused and always collapsed.
 - Placeholder names (validator): Img_CardOre_<c>, Txt_CardMineLbl_<c> (c = 1..CN); Img_FleetOre_<f>, Txt_FleetMineLbl_<f> (f = 1..FN).
 
 ## Multi-select card modal (Part 7, 2026-10-29)
+- Log all-ships list: `Btn_LogGrpHdr_<f>`, `Txt_LogGrpName_<f>`, `Btn_LogGrpFold_<f>`, `Txt_LogGrpFold_<f>` (f=1..FN) = group header bar before each Pnl_LogCard_<f> in Row_LogAllScroll; Row_LogGrp_<f> is a Row_ (non-variable); python-built copies are not variables, Lua finds them via a Pnl_LogAll scan + deepFind.
 - CN = 40 now (FN stays 20). Modal card list Row_ModalCardScroll interleaves per slot: Row_CardHdr_<c> (HorizontalBox, Is Variable, Collapsed) > Btn_CardHdr_<c> > Txt_CardHdr_<c> (fleet/All header, gold-or-grey bg by Lua) + Btn_CardFold_<c> > Txt_CardFold_<c> (">"/"v", Collapsed), then Opt_Card_<c>.
 - Btn_ModalDone > Txt_ModalDone (Done button, Collapsed, below Row_ModalCardScroll; multi mode only).
-- Dock card header icons (Image, Hidden, 24x24, Is Variable, Lua sets brush): Img_UDockOre_<ok> (ore icon) in each unload card; Img_RDockFuelDeuterium, Img_RDockFuelHydrogen, Img_RDockFuelWarp in the refuel card. Unload cards are ordered Water Ice, Titanium, Silica, Nickel, Iridium, Graphite, Cobalt.
+- Dock card header icons (Image, Hidden, 24x24, Is Variable, Lua sets brush): Img_UDockOre_<ok> (ore icon, now left of the title) in each unload card; Img_RDockFuelDeuterium, Img_RDockFuelHydrogen, Img_RDockFuelWarp in the refuel card. Unload cards are ordered Water Ice, Titanium, Silica, Nickel, Iridium, Graphite, Cobalt.
 
 ## Lists (all dynamic, 2026-11-03)
 Every variable-length list is a `DynamicEntryBox` `Dyn_<name>` of a small row Widget Blueprint, built headless by `scripts/build_lists.py` (helpers in `scripts/uew.py`: `dyn_list`). No row limits; rows exist only as the data needs.
