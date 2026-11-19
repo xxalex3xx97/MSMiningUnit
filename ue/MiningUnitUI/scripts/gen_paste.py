@@ -561,7 +561,7 @@ def build_tree():
     hint = S(tb("Txt_AmountHint", "0 = unlimited (mine until cargo is full)", 13, color=GOLD), pad=(0, 0, 0, 6))
     page_items = page("Page_Items", [hint] + rows + [add])
     # Operation page: bordered cards (outline > body, gold title + 2px gold line). Layout-only widgets are Row_*/Lbl_*.
-    def card(key, title_name, title, kids, icons=(), lead=(), help_key=None):
+    def card(key, title_name, title, kids, icons=(), lead=(), help_key=None, add_node=None):
         t = S(tb(title_name, title, 16, var=False, color=GOLD), pad=(0, 0, 0, 4))
         if icons or lead or help_key:   # header: [lead icons][title][icons][spacer][?] (Lua sets brushes)
             def img(i, p):
@@ -571,9 +571,14 @@ def build_tree():
             hk += [img(i, (8, 0, 0, 0)) for i in icons]
             if help_key:
                 hk.append(S(N("SizeBox", "Row_HelpSp" + key, var=False), fill=1))
+                if add_node is not None:
+                    hk.append(S(add_node, pad=(8, 0, 0, 0), v="Center"))
                 b = btn("Btn_DockHelp_" + help_key, "?", BTN, size=14, tname="Txt_DockHelp_" + help_key)
                 S(b.kids[0], pad=(0, 0, 0, 0), h="Center", v="Center")
                 hk.append(S(wrap(b, 32, 28), pad=(8, 0, 0, 0), v="Center"))
+                fb = btn("Btn_DockFold_" + help_key, "v", BTN, size=14, tname="Txt_DockFold_" + help_key)
+                S(fb.kids[0], pad=(0, 0, 0, 0), h="Center", v="Center")
+                hk.append(S(wrap(fb, 32, 28), pad=(6, 0, 0, 0), v="Center"))
             t = S(hrow("Row_CardHead" + key, hk), pad=(0, 0, 0, 4), h="Fill")
         ln = S(wrap(N("Border", "Row_CardLine" + key, var=False, props=[("BrushColor", GOLD2)]), None, 2), pad=(0, 0, 0, 8), h="Fill")
         for k in kids:
@@ -612,8 +617,8 @@ def build_tree():
         return out
 
     def dock_card(tag, key, ckey, title, icons=(), lead=()):
-        add = S(wrap(btn("Btn_%sAdd%s" % (tag, "_" + key if key else ""), "Add dock", BTN, size=15), None, 40), pad=(0, 4, 0, 0), h="Fill")
-        c = card(ckey, "Lbl_Hdr" + ckey, title, dock_rows(tag, key) + [add], icons, lead, key or "RDock")
+        add = wrap(btn("Btn_%sAdd%s" % (tag, "_" + key if key else ""), "Add dock", BTN, size=15), None, 28)
+        c = card(ckey, "Lbl_Hdr" + ckey, title, dock_rows(tag, key), icons, lead, key or "RDock", add)
         c.name, c.var = "Pnl_%sCard%s" % (tag, "_" + key if key else ""), True
         c.props.append(("Visibility", "Collapsed"))
         return c
@@ -625,14 +630,14 @@ def build_tree():
     for k in reversed(ORES):
         ship_kids.append(dock_card("UDock", k, "UD" + k, "%s Unload Dock" % ("Water Ice" if k == "WaterIce" else k), (), ["Img_UDockOre_" + k]))
     # Misc card: LAST on Ship, Collapsed (Lua shows it). Same shell as an ore card, no rows; its Dyn_UDock_Misc list is added by build_lists.py (uew.dyn_list)
-    misc_add = S(wrap(btn("Btn_UDockAdd_Misc", "Add dock", BTN, size=15), None, 40), pad=(0, 4, 0, 0), h="Fill")
-    misc = card("UDMisc", "Lbl_HdrUDMisc", "Misc Docks", [misc_add], help_key="Misc")
+    misc_add = wrap(btn("Btn_UDockAdd_Misc", "Add dock", BTN, size=15), None, 28)
+    misc = card("UDMisc", "Lbl_HdrUDMisc", "Misc Docks", [], help_key="Misc", add_node=misc_add)
     misc.name, misc.var = "Pnl_UDockCard_Misc", True
     misc.props.append(("Visibility", "Collapsed"))
     ship_kids.append(misc)
     # Parking card: after Misc, Collapsed (Lua shows it). Dyn_UDock_Park list is added by build_lists.py
-    park_add = S(wrap(btn("Btn_UDockAdd_Park", "Add dock", BTN, size=15), None, 40), pad=(0, 4, 0, 0), h="Fill")
-    park = card("UDPark", "Lbl_HdrUDPark", "Parking Docks", [park_add], help_key="Park")
+    park_add = wrap(btn("Btn_UDockAdd_Park", "Add dock", BTN, size=15), None, 28)
+    park = card("UDPark", "Lbl_HdrUDPark", "Parking Docks", [], help_key="Park", add_node=park_add)
     park.name, park.var = "Pnl_UDockCard_Park", True
     park.props.append(("Visibility", "Collapsed"))
     ship_kids.append(park)

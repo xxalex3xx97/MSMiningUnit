@@ -781,11 +781,12 @@ end
 -- Every ore has a dock card. An ore unloads when its list is not empty. Warning = no ore has a dock (not in All ships mode).
 local HELP_CARDS = {}
 for _, u in ipairs(UD_ORES) do
-  HELP_CARDS[#HELP_CARDS + 1] = { key = u.k, card = "Pnl_UDockCard_" .. u.k, nice = (u.k == "WaterIce" and "Water Ice" or u.k), tag = u.k:upper() }
+  HELP_CARDS[#HELP_CARDS + 1] = { key = u.k, card = "Pnl_UDockCard_" .. u.k, nice = (u.k == "WaterIce" and "Water Ice" or u.k), tag = u.k:upper(),
+    ini = u.ini, tg = u.ini, ck = "UD" .. u.k, hdr = "Lbl_HdrUD" .. u.k, box = "Dyn_UDock_" .. u.k, base = (u.k == "WaterIce" and "Water Ice" or u.k) .. " Unload Dock" }
 end
-HELP_CARDS[#HELP_CARDS + 1] = { key = "RDock", card = "Pnl_RDockCard", nice = "Refuel", refuel = true }
-HELP_CARDS[#HELP_CARDS + 1] = { key = "Misc", card = "Pnl_UDockCard_Misc", nice = "Misc", tag = "MISC" }
-HELP_CARDS[#HELP_CARDS + 1] = { key = "Park", card = "Pnl_UDockCard_Park", nice = "Parking", tag = "PARKING" }
+HELP_CARDS[#HELP_CARDS + 1] = { key = "RDock", card = "Pnl_RDockCard", nice = "Refuel", refuel = true, ck = "RDock", hdr = "Lbl_HdrRDock", box = "Dyn_RDock", tg = "refuel", base = "Refuel Docks (tried in order)" }
+HELP_CARDS[#HELP_CARDS + 1] = { key = "Misc", card = "Pnl_UDockCard_Misc", nice = "Misc", tag = "MISC", ini = UD_MISC.ini, tg = UD_MISC.ini, ck = "UDMisc", hdr = "Lbl_HdrUDMisc", box = "Dyn_UDock_Misc", base = "Misc Docks" }
+HELP_CARDS[#HELP_CARDS + 1] = { key = "Park", card = "Pnl_UDockCard_Park", nice = "Parking", tag = "PARKING", ini = UD_PARK.ini, tg = "park", ck = "UDPark", hdr = "Lbl_HdrUDPark", box = "Dyn_UDock_Park", base = "Parking Docks" }
 local function helpLines(h)
   local t
   if h.refuel then
@@ -802,6 +803,25 @@ local function helpLines(h)
   for i, line in ipairs(t) do out[i] = { id = tostring(i), text = line } end
   return out
 end
+local function cardHead(h, tagged)
+  local c = w(h.card); if not c then return end
+  S.cfw = S.cfw or {}
+  local f = S.cfw[h.key]
+  if not (f and ok(f.box)) then
+    f = { hdr = deepFind(c, h.hdr), box = deepFind(c, h.box), line = deepFind(c, "Row_Sz_Row_CardLine" .. h.ck), g = deepFind(c, "Txt_DockFold_" .. h.key) }
+    S.cfw[h.key] = f
+  end
+  local tg, isTg, n = tagged[h.tg] or {}, {}, 0
+  for _, id in ipairs(tg) do isTg[id] = true; n = n + 1 end
+  for _, id in ipairs(h.refuel and S.rd or S.ud[h.ini] or {}) do if not isTg[id] then n = n + 1 end end
+  local fold = S.cardFold and S.cardFold[h.key]
+  S.tc = S.tc or {}
+  local t = h.base .. " (" .. n .. ")"
+  if f.hdr and S.tc["ch_" .. h.key] ~= t then if try("cardHdr", function() f.hdr:SetText(FText(t)) end) then S.tc["ch_" .. h.key] = t end end
+  local g = fold and ">" or "v"
+  if f.g and S.tc["cg_" .. h.key] ~= g then if try("cardFold", function() f.g:SetText(FText(g)) end) then S.tc["cg_" .. h.key] = g end end
+  setVis(f.box, fold and 1 or 0); setVis(f.line, fold and 1 or 0)
+end
 local function udRender()
   if not S.ud then return end
   local docks, nodock = S.docks or {}, 0
@@ -817,6 +837,7 @@ local function udRender()
   dynDocks("UDock_" .. UD_PARK.k, function() return S.ud and S.ud[UD_PARK.ini] or {} end, udSave, "Parking dock", docks, "Pnl_UDockCard_" .. UD_PARK.k, function() return tagged.park or {} end)
   setVis(w("Pnl_RDockCard"), 0)
   dynDocks("RDock", function() return S.rd end, udSave, "Refuel dock", docks, "Pnl_RDockCard", function() return tagged.refuel or {} end)
+  for _, h in ipairs(HELP_CARDS) do cardHead(h, tagged) end
   S.warn = (not S.all and nodock == #UD_ORES) and "No unload dock set for any ore" or ""
   M.setText("Txt_ShipWarn", S.warn)
   setVis(w("Txt_ShipWarn"), S.warn ~= "" and 0 or 1)
@@ -906,7 +927,9 @@ local function qSerialize(rows)
   for _, r in ipairs(rows or S.q.rows) do t[#t + 1] = r.id .. ":" .. r.amt end
   return table.concat(t, ",")
 end
-local function qSave(g) if g.locked then return end iniSave({ items = qSerialize(g.rows) }, g.ids) end
+local renameGroup  -- defined below (after shipTagsApply)
+local renameFlush
+local function qSave(g) iniSave({ items = qSerialize(g.rows) }, g.ids); if renameGroup then renameGroup(g) end end
 -- dropdown options for row r of rows: mineable items, plus the row's current item when it is not mineable
 local function qOpts(rows, r)
   local o = {}
@@ -972,7 +995,7 @@ local function qRender()
         local function put(name, s) local t = find(name); if t then try("items " .. name, function() t:SetText(FText(s)) end) end end
         put("Txt_IGroupName", en.name .. " (" .. en.count .. (en.count == 1 and " ship)" or " ships)"))
         put("Txt_IGroupFold", en.folded and ">" or "v")
-        setVis(find("Btn_IGroupAdd"), g.locked and 1 or 0)
+        setVis(find("Btn_IGroupAdd"), 0)
         return
       end
       local rw = g.rows[en.i]
@@ -983,13 +1006,10 @@ local function qRender()
       local e = find("Edt_Amount")
       if e and S.q.shown[i] ~= rw.amt then try("amount set", function() e:SetText(FText(rw.amt)) end) end
       S.q.shown[i] = rw.amt
-      if e then pcall(function() e:SetIsReadOnly(g.locked and true or false) end) end   -- pool entries are reused: set both ways
-      if g.locked then setVis(find("Col_UD"), 1); setVis(find("Sz_Del"), 1) end
+      if e then pcall(function() e:SetIsReadOnly(false) end) end   -- pool entries are reused: set both ways
     end }
-  local anyLocked = false
-  for _, en in ipairs(flat) do if en.g.locked then anyLocked = true end end
-  setVis(w("Btn_ItemAdd"), (S.all or anyLocked) and 1 or 0)
-  M.setText("Txt_AmountHint", anyLocked and "Queue comes from the ship name tags (read-only)." or "0 = unlimited (mine until cargo is full)")
+  setVis(w("Btn_ItemAdd"), S.all and 1 or 0)
+  M.setText("Txt_AmountHint", "0 = unlimited (mine until cargo is full)")
 end
 -- "ITEM_A:1,ITEM_B:" -> {{id=,amt=},..}
 local function parseQueue(s)
@@ -1007,6 +1027,11 @@ local function taggedShips()
     local p = split(l)
     local id = trim(p[1] or "")
     if id ~= "" then map[id] = parseQueue(trim(p[2] or "")) end
+  end
+  for id, p in pairs(S.qPend or {}) do   -- fresh edits shown until the next ship scan rewrites ShipTags.txt
+    if os.clock() < p.t then
+      if #p.rows > 0 then local c = {}; for i, r in ipairs(p.rows) do c[i] = { id = r.id, amt = r.amt } end; map[id] = c else map[id] = nil end
+    else S.qPend[id] = nil end
   end
   return map
 end
@@ -1038,6 +1063,106 @@ try("queueGroup selftest", function()
   assert(k2 == "~none" and n2 == "No queue")
   L("queueGroup selftest ok")
 end)
+-- ===== ship name ore tags: queue rows -> "[TITANIUM:200] [NICKEL]" inside the ship name =====
+local TAGW = { ITEM_TitaniumOre = "TITANIUM", ITEM_NickelOre = "NICKEL", ITEM_CobaltOre = "COBALT", ITEM_IridiumOre = "IRIDIUM",
+  ITEM_WaterIce = "WATERICE", ITEM_Silica = "SILICA", ITEM_Graphite = "GRAPHITE" }
+local TAGSET = { ICE = true }
+for _, v in pairs(TAGW) do TAGSET[v] = true end
+local function shipTagsApply(name, rows)
+  name = name or ""
+  local out, last, firstPos, pos = "", 1, nil, 1
+  while true do
+    local s, e, inner = name:find("%[([^%]]*)%]", pos)
+    if not s then break end
+    local norm = (inner:match("^([^:]*)") or ""):upper():gsub("[ _%-]", "")
+    if TAGSET[norm] then
+      out = out .. name:sub(last, s - 1)
+      if not firstPos then firstPos = #out + 1 end
+      last = e + 1
+    end
+    pos = e + 1
+  end
+  out = out .. name:sub(last)
+  local tags, seen = {}, {}
+  for _, r in ipairs(rows or {}) do
+    local wd = TAGW[r.id or ""]
+    if wd and not seen[wd] then
+      seen[wd] = true
+      local n = tostring(r.amt or ""):match("^%d+$") and tonumber(r.amt) or 0
+      tags[#tags + 1] = n > 0 and ("[" .. wd .. ":" .. string.format("%d", n) .. "]") or ("[" .. wd .. "]")
+    end
+  end
+  if #tags > 0 then
+    local tx = table.concat(tags, " ")
+    if firstPos then out = out:sub(1, firstPos - 1) .. tx .. out:sub(firstPos)
+    elseif out == "" then out = tx
+    else out = out .. " " .. tx end
+  end
+  return (out:gsub(" +", " "):match("^%s*(.-)%s*$"))
+end
+try("shipTagsApply selftest", function()
+  local N, T = { id = "ITEM_NickelOre", amt = "100" }, { id = "ITEM_TitaniumOre", amt = "0" }
+  local function eq(a, b) assert(a == b, tostring(a) .. " ~= " .. tostring(b)) end
+  eq(shipTagsApply("Medium Miner 3", { N, { id = "ITEM_TitaniumOre", amt = "50" } }), "Medium Miner 3 [NICKEL:100] [TITANIUM:50]")
+  eq(shipTagsApply("Miner [TITANIUM:5] x", { T }), "Miner [TITANIUM] x")
+  eq(shipTagsApply("A [NICKEL:1] B [TITANIUM:2]", { { id = "ITEM_TitaniumOre", amt = "9" } }), "A [TITANIUM:9] B")
+  eq(shipTagsApply("A [MISC] [TITANIUM]", {}), "A [MISC]")
+  eq(shipTagsApply("[TITANIUM]  x", {}), "x")
+  eq(shipTagsApply("", { T }), "[TITANIUM]")
+  eq(shipTagsApply("Medium Miner 1 [ICE]", { { id = "ITEM_WaterIce", amt = "0" } }), "Medium Miner 1 [WATERICE]")
+  local q = { N, T }
+  local a = shipTagsApply("Medium Miner 3 [ICE] z", q)
+  eq(shipTagsApply(a, q), a)
+  L("shipTagsApply selftest ok")
+end)
+local MSN  -- cached mscore module (false = missing)
+local function renameShip(id, name)
+  local okF, ok2, err = pcall(function()
+    if MSN == nil then local o, m = pcall(require, "mscore"); MSN = o and type(m) == "table" and m or false end
+    local FN = MSN and MSN.factory_native
+    local f = (FN and FN.rename_ship) or _G.MSCoreNative_rename_ship or _G.MSCoreNative_rename_dock
+    if not f then return false, "no rename native" end
+    return f(tonumber(id) or id, name)
+  end)
+  if not okF then return false, tostring(ok2) end
+  if ok2 == false or ok2 == nil then return false, err and tostring(err) or "rename failed" end
+  return true
+end
+local function renameNow(g)
+  local names = {}
+  for _, o in ipairs(benchShips()) do names[o.id] = o.text end
+  S.qPend = S.qPend or {}
+  local n, firstErr = 0, nil
+  for _, id in ipairs(g.ids) do
+    local cur = names[id]
+    if cur then
+      local nw = shipTagsApply(cur, g.rows)
+      if nw ~= cur and nw ~= "" then
+        local rows = {}
+        for i, r in ipairs(g.rows) do rows[i] = { id = r.id, amt = r.amt } end
+        local ok1, err = renameShip(id, nw)
+        if ok1 then n = n + 1 else firstErr = firstErr or err end
+        S.qPend[id] = { rows = rows, t = os.clock() + 20 }
+      end
+    end
+  end
+  if firstErr then M.setText("Txt_Status", "error: ship rename failed: " .. firstErr)
+  elseif n > 0 then M.setText("Txt_Status", "ship names updated (" .. n .. ")") end
+end
+-- debounce: typing an amount saves on every change; rename once, ~1 s after the last edit (also flushed when the window closes)
+renameGroup = function(g)
+  S.rnQ = S.rnQ or {}; S.qPend = S.qPend or {}
+  local ids, rows = {}, {}
+  for i, id in ipairs(g.ids) do ids[i] = id end
+  for i, r in ipairs(g.rows) do rows[i] = { id = r.id, amt = r.amt } end
+  for _, id in ipairs(ids) do S.qPend[id] = { rows = rows, t = os.clock() + 20 } end   -- the tab keeps showing the new queue until the next ship scan
+  S.rnQ[table.concat(ids, ",")] = { g = { ids = ids, rows = rows }, due = os.clock() + 1.0 }
+end
+renameFlush = function(force)
+  for k, e in pairs(S.rnQ or {}) do
+    if force or os.clock() >= e.due then S.rnQ[k] = nil; renameNow(e.g) end
+  end
+end
 try("parseQueue selftest", function()
   local r = parseQueue("ITEM_A:1, ITEM_B:")
   assert(#r == 2 and r[1].id == "ITEM_A" and r[1].amt == "1" and r[2].amt == "" and #parseQueue("") == 0)
@@ -1071,7 +1196,7 @@ itemsLoad = function()
   local ids = targets()
   local tags = taggedShips()
   local function rowsOf(id)
-    if tags[id] then return tags[id], true end
+    if tags[id] then return tags[id], false end
     local sec = iniGet(lines, "ship." .. id)
     if sec.items ~= nil then return parseQueue(sec.items), false end
     return {}, false
@@ -1113,6 +1238,7 @@ itemsLoad = function()
   qRender()
 end
 local function itemsTick()
+  if renameFlush then renameFlush() end
   if not S.sid or not S.q or M.lastTab ~= 2 then return end
   local flat = S.q.flat or {}
   for r = 1, #flat do
@@ -1855,6 +1981,7 @@ end
 function M.isOpen() return ok(S.frame) and inVp(S.frame) end
 
 function M.close()
+  try("rename flush", function() if renameFlush then renameFlush(true) end end)   -- a pending ship-name rewrite must not be lost
   S.gen = S.gen + 1  -- stops the status loop
   if BIND and BIND.clear then BIND.clear() end  -- drop button callbacks + global layout hook
   S.sid = nil
@@ -1865,7 +1992,7 @@ function M.close()
   S.req, S.simple = nil, nil
   S.fleet, S.holoOut, S.tc = nil, nil, nil
   S.logFold, S.logFw, S.logSid = nil, nil, nil
-  S.logGFold, S.docksFold, S.logSl, S.logGk, S.logFg = nil, nil, nil, nil, nil
+  S.logGFold, S.docksFold, S.logSl, S.logGk, S.logFg, S.cardFold, S.cfw = nil, nil, nil, nil, nil, nil, nil
   S.ud, S.rd, S.warn, S.dyn, S.dynWarn = nil, nil, nil, nil, nil
   if not (S.root or S.p or S.frame) then return end
   if M.closing and os.clock() - (M.closing_at or 0) < 3 then return end   -- already closing: idempotent (a teardown lost for 3 s is ignored)
@@ -2182,7 +2309,7 @@ function M.open(ship)
     S.mode, S.t0 = mode, os.clock()
     S.logKey = nil   -- new widgets: repaint the Log tab on the first tick
     S.logFold, S.logFw, S.logSid = nil, nil, nil
-    S.logGFold, S.docksFold, S.logSl, S.logGk, S.logFg = nil, nil, nil, nil, nil
+    S.logGFold, S.docksFold, S.logSl, S.logGk, S.logFg, S.cardFold, S.cfw = nil, nil, nil, nil, nil, nil, nil
     S.docksKey = nil
     S.wc, S.wbuilt = nil, nil   -- new window: the python-built index is walked once again (lazily)
     -- ship list = bench ships; sid = block's ship if listed, else last picked (F4), else first; empty list = nil
@@ -2265,21 +2392,26 @@ function M.open(ship)
       S.last = S.last or {}
       for _, u in ipairs(UD_ORES) do
         bind("Btn_UDockAdd_" .. u.k, function()
+          S.cardFold = S.cardFold or {}; S.cardFold[u.k] = false; udRender()
           modalSelect{ title = "Unload dock", options = S.docks or {}, onPick = function(id) table.insert(S.ud[u.ini], id); udSave() end }
         end)
       end
       bind("Btn_UDockAdd_" .. UD_MISC.k, function()
+        S.cardFold = S.cardFold or {}; S.cardFold["Misc"] = false; udRender()
         modalSelect{ title = "Unload dock", options = S.docks or {}, onPick = function(id) table.insert(S.ud[UD_MISC.ini], id); udSave() end }
       end)
       bind("Btn_UDockAdd_" .. UD_PARK.k, function()
+        S.cardFold = S.cardFold or {}; S.cardFold["Park"] = false; udRender()
         modalSelect{ title = "Parking dock", options = S.docks or {}, onPick = function(id) table.insert(S.ud[UD_PARK.ini], id); udSave() end }
       end)
       bind("Btn_RDockAdd", function()
+        S.cardFold = S.cardFold or {}; S.cardFold["RDock"] = false; udRender()
         modalSelect{ title = "Refuel dock", options = S.docks or {}, onPick = function(id) table.insert(S.rd, id); udSave() end }
       end)
       for _, h in ipairs(HELP_CARDS) do
         local c = w(h.card); local b = c and deepFind(c, "Btn_DockHelp_" .. h.key)
         if b then try("bind help", function() BIND.onClick(b, function() modalSelect{ title = h.nice .. " docks - how to", options = helpLines(h) } end) end) end
+        local fb = c and deepFind(c, "Btn_DockFold_" .. h.key); if fb then try("bind fold", function() BIND.onClick(fb, function() S.cardFold = S.cardFold or {}; S.cardFold[h.key] = not S.cardFold[h.key]; udRender() end) end) end
       end
       selInit("Belt", bind, function(id) S.last.belt = id; iniSave({ belt_sector = id }); shipFill() end, "Sector Selector", function(o) return { cols = o.cols, ores = o.ores } end, loadSectors, function() return { "Sector", "ID", "Distance" } end)
       bind("Btn_BeltPinned", function()
@@ -2292,7 +2424,7 @@ function M.open(ship)
       M.setBtnText("Btn_BeltWarp", "Warp to sector")
       bind("Btn_ItemAdd", function()
         local g = S.q and S.q.single
-        if S.all or not g or g.locked then return end
+        if S.all or not g then return end
         g.rows[#g.rows + 1] = { id = "", amt = "" }; qSave(g); itemsLoad()
       end)
       -- presets: Presets.txt "<name>|<ITEM_x:amt,...>"
@@ -2303,16 +2435,12 @@ function M.open(ship)
         return out
       end
       local function applyTo(preset, groups)
-        local done, skipped = 0, 0
+        local done = 0
         for _, g in ipairs(groups) do
-          if g.locked then skipped = skipped + #g.ids
-          else
-            local rows = parseQueue(preset.q)
-            g.rows = rows; qSave(g); done = done + #g.ids
-          end
+          g.rows = parseQueue(preset.q); qSave(g); done = done + #g.ids
         end
         itemsLoad()
-        M.setText("Txt_Status", "preset applied to " .. done .. " ships" .. (skipped > 0 and (", " .. skipped .. " skipped (name tags)") or ""))
+        if not S.qPend or next(S.qPend) == nil then M.setText("Txt_Status", "preset applied to " .. done .. " ships") end
       end
       bind("Btn_PresetSave", function()
         local groups = curGroups()
