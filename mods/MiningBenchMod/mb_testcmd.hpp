@@ -6,8 +6,8 @@
 //             call_int, set_int_prop, get_int_prop), mb_docks.hpp (find_item), mb_weapons.hpp (set_all_firing,
 //             fire_input), mb_orders.hpp (order_by_id, dist_target_m, set_autopilot), mb_cmdstate.hpp (g_cmd, g_cmd_*_acc, CMD_*),
 //             mb_rocks.hpp (rock_list_ensure, act_frame, act_aim, nearest_item_actor, pick_rock, rock_actor_by_id, rock_id_of,
-//             rock_kind, actor_ok, g_sel_rock), mb_steer.hpp (move_start, move_tick, spd_update,
-//             g_mv, MoveJob, view_zero, zero_all, g_spd, g_last_err, MV_SPEED_ABORT), mb_dockjob.hpp (job_start, jobs_tick, g_jobs,
+//             rock_kind, actor_ok, g_sel_rock), mb_steer.hpp (move_start, move_tick, spd_update_sc,
+//             g_mv, MoveJob, zero_all, g_last_err, MV_SPEED_ABORT), mb_dockjob.hpp (job_start, jobs_tick, g_jobs,
 //             g_undock_state), mb_mining.hpp (mining_tick, mine_halt: M3 loop).
 // USED BY: dllmain.cpp (cmd_init at load, cmd_tick from the engine tick hook). The Lua Test tab writes MiningCmd.txt
 //          (no status file is read any more).
@@ -266,7 +266,7 @@ namespace
             set_last_step(STR("thr_check"));
             thr_check();
             set_last_step(STR("spd_update"));
-            spd_update_dual(step);
+            spd_update_sc(step);
             set_last_step(STR("pin_hook_ensure"));
             pin_hook_ensure();   // retried until the AddInputCommand hook is armed (MapPin id, mb_pin.hpp)
             set_last_step(STR("cmd_poll"));

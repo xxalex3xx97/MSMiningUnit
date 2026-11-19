@@ -2104,9 +2104,8 @@ namespace
             const std::wstring r = move_start(sid, "approach_rock", -1, m.sw_ore, nullptr, m.sw_list[(size_t)i].p);
             if (r == STR("waiting"))
             {
-                MoveJob& mv = g_mvs[sid];   // fly to the cached scan point; aim_calc_ore re-reads the ore when near it
+                MoveJob& mv = g_mvs[sid];   // fly to the cached scan point; ShipControl re-reads the ore when near it
                 std::copy(m.sw_list[(size_t)i].p, m.sw_list[(size_t)i].p + 3, mv.ore_loc);
-                mv.ore_fresh = false; mv.ore_t = 0.0;
                 sw_phase(ship, sid, m, SW_APPROACH);
             }
             else m.sw_list[(size_t)i].done = true;
@@ -2731,7 +2730,6 @@ namespace
             return false;
         }
         mv.warp_wait = true;
-        mv.warp_t = 0.0;
         mlog(sid, STR("Far flight: warping closer, landing short of the target"));
         return true;
     }
@@ -3573,7 +3571,7 @@ namespace
 
     // WHAT: once per status second per bench ship: cargo probe (first time only), position and speed (m/s) from the actor location delta
     //       (uu = cm: delta / el / 100), cargo fill %. Read-only: no game writes. el = seconds since the last sample.
-    // ponytail: no glitch filter here (spd_update has one for the speed monitor); add it if floating-origin jumps show as speed spikes.
+    // ponytail: no glitch filter here (ShipControl's speed monitor has one); add it if floating-origin jumps show as speed spikes.
     void mine_sample(double el)
     {
         for (int sid : g_bench_ids)
@@ -3776,7 +3774,7 @@ namespace
         g_sel_rocks.erase(sid); g_item_idx.erase(sid);
         g_flee_pick.erase(sid); g_park_pick.erase(sid); g_dock_pick.erase(sid); g_unl_ores.erase(sid); g_unl_misc.erase(sid);
         g_job_res.erase(sid); g_mv_res.erase(sid); g_skip.erase(sid);
-        g_ob.erase(sid); g_pf.erase(sid); g_spds.erase(sid); g_mvs.erase(sid);
+        g_ob.erase(sid); g_pf.erase(sid); g_mvs.erase(sid);
         g_warp_wait.erase(sid); g_wr_wait.erase(sid);
         g_net_ship_names.erase(sid);
         save_rock_picks().erase(sid);

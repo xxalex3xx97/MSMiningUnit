@@ -9,26 +9,19 @@
 //                         (SWEEP leg: sw_nofly + SW_RETURN; ore: SwOre marked done).
 //         MINE (drift): brake only; nudge BUBBLE_NUDGE_M away from the rock when too near it, else resume.
 // WHY: the path check runs before an approach and every PATH_WATCH_S; a rock that comes into view between checks was hit at full speed.
-// STATE: g_bubble (mb_steer.hpp), one BubbleState per ship. move_aim_step holds Throttle 0 while braking (bubble_braking).
+// STATE: ShipControl holds one BubbleState per ship (SC3); mining reads its status only (bub_ladder). Legacy ladder removed in SC6-D2.
 // BUDGET: one ship pass <= BUBBLE_SLOW_MS (0.2 ms). Over it: 'BUBBLE slow' (once per 30 s) and that ship is not checked for 10 s
 //         (never while it is braking: its pending fix must run).
 // ORDER: bubble_tick runs in cmd_tick BEFORE mining_tick, so a finished waypoint is flown again before the state machine reads the job.
 // OUTPUT: log 'BUBBLE brake ship= phase= rock= dist= rad= speed= -> replan|waypoint|skip|nudge|resume', 'BUBBLE slow ship= ms='.
 //         Dev: bubble_status:<ship> and bubble_sim:<ship>:<rock_id> (read-only), both write MiningBubble.txt (mb_devcmd.hpp dispatch).
 // DEPENDS ON (exact, include order): mb_registry.hpp (reg_st, RockReg, reg_eff_rad, reg_abs_m), mb_mining.hpp (MineSt, g_mine, g_bench_ids, standoff_of,
-//          path_guard, path_give_up, rock_actor_by_id, item_c, dock_add_m, sw_phase, SwOre), mb_steer.hpp (spd_of, g_bubble, g_mvs, move_start, mv_cancel),
+//          path_guard, path_give_up, rock_actor_by_id, item_c, dock_add_m, sw_phase, SwOre), mb_steer.hpp (g_mvs, move_start, mv_cancel),
 //          mb_logic.hpp (bubble_*).
 // USED BY: mb_testcmd.hpp (cmd_tick, bubble_tick), mb_devcmd.hpp (bubble_dev).
 
 namespace
 {
-    // WHAT: a ship whose bubble pass was slow is not checked this long (ms); the slow log line is written at most this often (ms).
-    constexpr ULONGLONG BUBBLE_OFF_MS = 10000;
-    constexpr ULONGLONG BUBBLE_SLOW_LOG_MS = 30000;
-
-    std::map<int, ULONGLONG> g_bubble_off;   // sid -> GetTickCount64 until which the ship is not checked (slow pass)
-    ULONGLONG g_bubble_slow_ms = 0;          // GetTickCount64 of the last BUBBLE slow line (0 = none yet)
-
     // WHAT: Euclidean distance between two points (m).
     double bub_dist(const double a[3], const double b[3])
     {
@@ -90,24 +83,6 @@ namespace
         return false;
     }
 
-    // WHAT: flies ship sid to wp (m) with a point move job (the approach move kind, as path_guard does). false when the job did not start.
-    bool bub_move_to(int sid, UObject* ship, const double wp[3])
-    {
-        ActFrame f;
-        if (!act_frame(ship, f)) return false;
-        const int sys = sys_id(ship);
-        int64_t ch[3] = {0, 0, 0};
-        double raw[3] = {0, 0, 0};
-        if (sys <= 0 || !get_chunk(ship, ch) || !get_loc(ship, raw)) return false;
-        const double ps[3] = {f.loc[0] / MV_UU_PER_M, f.loc[1] / MV_UU_PER_M, f.loc[2] / MV_UU_PER_M};
-        const double off[3] = {wp[0] - ps[0], wp[1] - ps[1], wp[2] - ps[2]};
-        PtTarget pt;
-        pt.sys = sys;
-        dock_add_m(ch, raw, off, pt.ch, pt.loc);
-        mv_cancel(sid); zero_all_dual(ship);
-        return move_start(sid, "approach_rock", -1, nullptr, &pt) == STR("waiting");
-    }
-
     // WHAT: nearest rock of ship (registry, surface). near = its centre closer than bubble_too_near. c / r = its centre (m) and radius (m).
     bool bub_near_rock(UObject* ship, const double p[3], double cr, double c[3], double& r)
     {
@@ -145,88 +120,6 @@ namespace
             if (m.sw_back) { m.sw_nofly = true; sw_phase(ship, sid, m, SW_RETURN); }
             else if (m.sw_ph != SW_PICK) sw_phase(ship, sid, m, SW_PICK);
         }
-    }
-
-    // WHAT: carries out the fix of a ladder event (SEEK replan / skip, waypoint, skip, nudge, or brake only). ph = bs.phase of the hit.
-    void bub_exec(int sid, UObject* ship, MineSt& m, BubbleState& bs, int act, const double p[3], double cr)
-    {
-        double nc[3] = {0, 0, 0}, nr = 0.0;
-        const bool nrock = bub_near_rock(ship, p, cr, nc, nr);
-        const BubbleFix fix = bubble_fix(static_cast<BubblePhase>(bs.phase), act, bs.wp, nrock);
-        const auto mj = g_mvs.find(sid);
-        const MoveJob cur = mj != g_mvs.end() ? mj->second : MoveJob();
-        if (fix == BF_REPLAN) { bub_do_replan(sid, ship, m, bs.blk); return; }
-        if (fix == BF_WAYPOINT)
-        {
-            double dst[3] = {0, 0, 0}, bc[3] = {0, 0, 0}, br = 0.0, wp[3] = {0, 0, 0};
-            if (flight_dst(cur, dst) && reg_geom(bs.blk, bc, br))
-            {
-                path_waypoint(p, dst, bc, block_r_m(br, bubble_clear_m(cr, g_cfg.bubble_clearance_m)), wp);
-                if (bub_move_to(sid, ship, wp))
-                {
-                    ++bs.wp;
-                    bs.resume = true;
-                    std::copy(dst, dst + 3, bs.dst);
-                    return;
-                }
-            }
-            bs.resume = false;   // no waypoint possible: skip below
-        }
-        if (fix == BF_NUDGE)
-        {
-            double away[3] = {p[0] - nc[0], p[1] - nc[1], p[2] - nc[2]};
-            const double n = std::max(1e-9, bub_dist(p, nc));
-            double wp[3];
-            for (int i = 0; i < 3; ++i) wp[i] = p[i] + away[i] / n * BUBBLE_NUDGE_M;
-            bub_move_to(sid, ship, wp);
-            bs.resume = false;
-            return;
-        }
-        if (fix == BF_RESUME || fix == BF_NONE) { bs.resume = false; return; }
-        // SKIP (SEEK: give the target up; waypoint / ore: the flight is dropped)
-        bs.resume = false;
-        bub_do_skip(sid, ship, m, bs.phase, bs.blk, bs.blk_d);
-    }
-
-    // WHAT: one bubble pass for ship sid in phase ph: query, ladder step, and the fix of the step.
-    void bubble_one(int sid, MineSt& m, BubblePhase ph, UObject* ship)
-    {
-        ActFrame f;
-        if (!act_frame(ship, f)) return;
-        BubbleState& bs = g_bubble[sid];
-        const SpeedMon sp = spd_get(sid);
-        const double v = sp.have ? sp.v / g_raw_per_m : 0.0;
-        const double cr = bubble_ship_r(sid);
-        const double p[3] = {f.loc[0] / MV_UU_PER_M, f.loc[1] / MV_UU_PER_M, f.loc[2] / MV_UU_PER_M};
-        double d = 0.0, rad = 0.0;
-        const int raw = bubble_query(sid, ship, f, v, bubble_skip_id(sid, ph, p, m.rock), d, rad);
-        int bid = raw;
-        // brake only for a blocker ahead and closing (range rate from the last pass); beside, behind or opening: no brake
-        double bc[3] = {0, 0, 0}, br = 0.0, dnow = 0.0;
-        const bool same_prev = raw != 0 && bs.prev_id == raw;
-        if (raw && reg_geom(raw, bc, br))
-        {
-            dnow = bub_dist(p, bc);
-            const double cosA = dnow > 1e-9 ? ((bc[0] - p[0]) * f.fw[0] + (bc[1] - p[1]) * f.fw[1] + (bc[2] - p[2]) * f.fw[2]) / dnow : 0.0;
-            if (!bubble_brake_ok(cosA, dnow, bs.prev_d, same_prev, v)) bid = 0;
-        }
-        bs.prev_id = raw;
-        bs.prev_d = dnow;
-        if (bid) { bs.blk = bid; bs.blk_d = d; if (!bs.braking) bs.phase = ph; }
-        if (bs.rock != m.rock) bs.wp = 0;   // bubble_step resets the count on a new rock too
-        const BubbleAct act = bubble_step(bs, bid != 0, v, m.rock);
-        if (act == BBA_BRAKE)
-        {
-            set_int_prop(ship, STR("Throttle"), 0);
-            double nc[3] = {0, 0, 0}, nr = 0.0;
-            const bool nrock = bub_near_rock(ship, p, cr, nc, nr);
-            const BubbleFix fix = bubble_fix(static_cast<BubblePhase>(bs.phase), bs.pending, bs.wp, nrock);
-            log_line(STR("BUBBLE brake ship=") + std::to_wstring(sid) + STR(" phase=") + widen(bubble_phase_name(static_cast<BubblePhase>(bs.phase))) +
-                     STR(" rock=") + std::to_wstring(bid) + STR(" dist=") + std::to_wstring(static_cast<long long>(std::llround(d))) +
-                     STR(" rad=") + std::to_wstring(static_cast<long long>(std::llround(rad))) + STR(" speed=") + std::to_wstring(v) +
-                     STR(" -> ") + widen(bubble_fix_name(fix)));
-        }
-        else if (act == BBA_REPLAN || act == BBA_RETARGET) bub_exec(sid, ship, m, bs, act, p, cr);
     }
 
     // WHAT: one mining ship's laser this tick: its system and the beam from the ship (a, m) to its rock centre (b, m).
@@ -339,77 +232,21 @@ namespace
         }
     }
 
-    // WHAT: bubble tick (cmd_tick 0.25 s block, before mining_tick). Every bench ship in SEEK / MINE / COLLECT / SWEEP gets one check per tick
-    //       when it moves by our steering or faster than BUBBLE_BRAKE_V. Game autopilot, docking autopilot and warp travel are never touched.
+    // WHAT: bubble tick (cmd_tick 0.25 s block, before mining_tick). The bubble ladder runs in ShipControl (SC3); the mining side only answers
+    //       its callbacks (sc_host_*). The legacy mining ladder was removed in SC6-D2 (mining refuses to run without ShipControl).
     void bubble_tick(double dt)
     {
-        if (!sc_bubble_block() && g_sc_speed_on) sc_tick_bubble(dt);   // ShipControl runs the ladder of its ships (SC3)
-        const ULONGLONG now = GetTickCount64();
-        for (int sid : g_bench_ids)
-        {
-            auto it = g_mine.find(sid);
-            if (it == g_mine.end()) continue;
-            MineSt& m = it->second;
-            if (sc_bub_covers(sid)) { g_bubble.erase(sid); continue; }   // ShipControl runs this ship's ladder
-            UObject* ship = find_by_id(STR("DMSPlayerShipObject"), sid);
-            const bool state_ok = m.st == MS_SEEK || m.st == MS_MINE || m.st == MS_COLLECT || m.st == MS_SWEEP;
-            if (!state_ok || !alive(ship) || (m.st == MS_SWEEP && m.sw_ph == SW_WARP)) { g_bubble.erase(sid); continue; }
-            BubbleState& bs = g_bubble[sid];
-            // a flown waypoint ends: fly again to the flight destination, unless the ship is there
-            if (bs.resume && !mv_active(sid))
-            {
-                double ps[3] = {0, 0, 0};
-                ActFrame f;
-                if (act_frame(ship, f)) for (int i = 0; i < 3; ++i) ps[i] = f.loc[i] / MV_UU_PER_M;
-                if (bub_dist(ps, bs.dst) <= BUBBLE_ARRIVE_M || !bub_move_to(sid, ship, bs.dst)) bs.resume = false;
-            }
-            const BubFlags fl = bubble_flags(ship);
-            auto mj = g_mvs.find(sid);
-            const MoveJob* mv = (mj != g_mvs.end() && !mj->second.kind.empty()) ? &mj->second : nullptr;
-            const bool thrust = mv && mv->kind == "approach_rock";
-            const SpeedMon sp = spd_get(sid);
-            const double v = sp.have ? sp.v / g_raw_per_m : 0.0;
-            if (mv && mv->warp_wait) continue;   // far-trip warp in progress: the teleport is not ours to brake
-            const BubbleWhy why = bubble_why(fl.ap, fl.dap, fl.trav, thrust, v);
-            bs.why = why;
-            if (why == BW_AUTOPILOT || why == BW_DOCK_AUTOPILOT || why == BW_TRAVEL) { g_bubble.erase(sid); continue; }
-            if (why == BW_IDLE && !bs.braking) { if (!bs.resume) bs.wp = 0; continue; }
-            if (!bs.braking && !bs.resume && !mv) bs.wp = 0;
-            auto off = g_bubble_off.find(sid);
-            if (!bs.braking && off != g_bubble_off.end() && now < off->second) continue;   // slow pass: paused (a braking ship always finishes)
-            const BubblePhase ph = bs.braking ? static_cast<BubblePhase>(bs.phase)
-                                              : bubble_phase(thrust, mv && mv->pt_on, mv && mv->ore_on, !thrust);
-            LARGE_INTEGER t0;
-            QueryPerformanceCounter(&t0);
-            bubble_one(sid, m, ph, ship);
-            const double ms = perf_ms_since(t0);
-            if (ms > BUBBLE_SLOW_MS)
-            {
-                g_bubble_off[sid] = now + BUBBLE_OFF_MS;
-                if (g_bubble_slow_ms == 0 || now - g_bubble_slow_ms >= BUBBLE_SLOW_LOG_MS)
-                {
-                    g_bubble_slow_ms = now;
-                    log_line(STR("BUBBLE slow ship=") + std::to_wstring(sid) + STR(" ms=") + std::to_wstring(ms));
-                }
-            }
-        }
+        if (!sc_bubble_block() && g_sc_speed_on) sc_tick_bubble(dt);
     }
 
-    // WHAT: ladder state of ship sid for the status line: ShipControl's status when its ladder runs the ship, else the legacy g_bubble entry. Zeros when none.
+    // WHAT: ladder state of ship sid for the status line: ShipControl's status (SC3). Zeros when ShipControl does not run the ship.
     void bub_ladder(int sid, int& braking, int& replans, int& wp, int& resume, int& blk)
     {
         braking = replans = wp = resume = blk = 0;
-        if (sc_bub_on_ship(sid))
-        {
-            ScBubbleStatus s{};
-            if (!sc_bubble_status(sid, s) || !s.have) return;
-            braking = s.braking; replans = s.replans; wp = s.wp; resume = s.resume; blk = s.blk;
-            return;
-        }
-        const auto bs = g_bubble.find(sid);
-        if (bs == g_bubble.end()) return;
-        braking = bs->second.braking ? 1 : 0; replans = bs->second.replans; wp = bs->second.wp;
-        resume = bs->second.resume ? 1 : 0; blk = bs->second.blk;
+        if (!sc_bub_on_ship(sid)) return;
+        ScBubbleStatus s{};
+        if (!sc_bubble_status(sid, s) || !s.have) return;
+        braking = s.braking; replans = s.replans; wp = s.wp; resume = s.resume; blk = s.blk;
     }
 
     // WHAT: bubble_status:<ship> and bubble_sim:<ship>:<rock_id> (Dev cmds). Read-only: no game write. Writes MiningBubble.txt; returns one line.
