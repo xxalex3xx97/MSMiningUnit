@@ -40,12 +40,19 @@ namespace
         int (*move_status)(int, ScMoveStatus*) = nullptr;
         int (*tick_frame)(double) = nullptr;
         bool move_bound = false;            // api_level >= 3 and every move export resolved (the caps bit is checked by sc_move_block)
+        int (*tick_bubble)(double) = nullptr;                       // level 4
+        int (*bubble_status)(int, ScBubbleStatus*) = nullptr;
+        bool bubble_bound = false;          // api_level >= 4, move_bound and both bubble exports resolved (the caps bit is checked by sc_bubble_block)
     };
     ScApi g_sc;
     ScHost g_sc_host;                   // host callbacks (zero-initialised; filled by sc_load)
     std::set<int> g_sc_held;            // ships this mod has claimed and not released yet
     const wchar_t* const kScOwner = L"mining";
     const char* const kScOwnerA = "mining";   // speed monitor / zero owner (narrow, SC_watch / SC_zero take char*)
+
+    // WHAT: ScHost size sent to ShipControl by API level: 112 (API 4), 80 (API 3), 24 (API 2). SC_set_host refuses any other size.
+    // WHY: an API 3 ShipControl rejects the 112-byte host, so the size follows the level it reports.
+    int sc_host_size() { return g_sc.api_level >= 4 ? static_cast<int>(sizeof(ScHost)) : g_sc.api_level >= 3 ? SC_HOST_SIZE_L3 : SC_HOST_SIZE_L2; }
 
     // host callbacks of the move jobs: defined in mb_steer.hpp (they need the move jobs). Declared here for sc_load.
     void sc_host_tlog(const wchar_t* text);
@@ -55,6 +62,11 @@ namespace
     int sc_host_target_ok(int sid, void* handle);
     int sc_host_ore_loc(int sid, void* handle, double* out3_uu);
     int sc_host_braking(int sid);
+    // bubble ladder callbacks (SC3-C, ScHost level 4): defined in mb_bubble.hpp
+    int sc_host_first_blocker(int sid, int sys, int phase, int rock, const double p[3], const double b[3], double clear_m, ScBlockHit* out);
+    int sc_host_bubble_profile(int sid, ScBubbleProfile* out);
+    int sc_host_on_bubble(int sid, const ScBubbleEvent* ev);
+    int sc_host_near_rock(int sid, const double p[3], double ship_r_m, double* out_c3, double* out_r);
     void mv_cancel(int sid);            // mb_steer.hpp
     bool mv_active_sc(int sid);         // mb_steer.hpp
 
@@ -115,11 +127,14 @@ namespace
         s.move_status = reinterpret_cast<int (*)(int, ScMoveStatus*)>(GetProcAddress(h, "SC_move_status"));
         s.tick_frame = reinterpret_cast<int (*)(double)>(GetProcAddress(h, "SC_tick_frame"));
         s.move_bound = s.api_level >= 3 && s.speed_bound && s.move_start && s.move_cancel && s.move_active && s.move_status && s.tick_frame;
+        s.tick_bubble = reinterpret_cast<int (*)(double)>(GetProcAddress(h, "SC_tick_bubble"));
+        s.bubble_status = reinterpret_cast<int (*)(int, ScBubbleStatus*)>(GetProcAddress(h, "SC_bubble_status"));
+        s.bubble_bound = s.api_level >= 4 && s.move_bound && s.tick_bubble && s.bubble_status;
         g_sc = s;
         if (g_sc.speed_bound)
         {
-            // API 3 takes the 80-byte host; API 2 takes the 24-byte layout (its fields only). The move callbacks are ignored there.
-            g_sc_host.size = static_cast<int32_t>(g_sc.api_level >= 3 ? sizeof(ScHost) : SC_HOST_SIZE_L2);
+            // API 4 takes the 112-byte host, API 3 the 80-byte prefix, API 2 the 24-byte one (sc_host_size). Fields past the size are ignored there.
+            g_sc_host.size = static_cast<int32_t>(sc_host_size());
             g_sc_host.log = sc_host_log;
             g_sc_host.on_speed_abort = sc_host_abort;
             g_sc_host.tlog = sc_host_tlog;
@@ -129,6 +144,10 @@ namespace
             g_sc_host.target_ok = sc_host_target_ok;
             g_sc_host.ore_loc = sc_host_ore_loc;
             g_sc_host.braking = sc_host_braking;
+            g_sc_host.first_blocker = sc_host_first_blocker;
+            g_sc_host.bubble_profile = sc_host_bubble_profile;
+            g_sc_host.on_bubble = sc_host_on_bubble;
+            g_sc_host.near_rock = sc_host_near_rock;
             g_sc.set_host(&g_sc_host);
         }
         if (!ok_logged) { ok_logged = true; log_line(std::wstring(STR("SHIPCTL loaded: ")) + path.wstring()); }
@@ -303,12 +322,47 @@ namespace
         catch (...) { return -1; }
     }
 
+    // ---------------- bubble ladder (level 4, SC3-C) ----------------
+
+    // WHAT: why the bubble ladder cannot run in ShipControl now. nullptr = usable (API >= 4 and bubble caps bit 8, value 8).
+    const wchar_t* sc_bubble_block()
+    {
+        if (!g_sc.h) return STR("ShipControl not loaded");
+        if (!g_sc.bubble_bound) return STR("ShipControl API < 4");
+        try { if (!(g_sc.caps() & 8)) return STR("MSCore flight not usable"); }
+        catch (...) { return STR("MSCore flight not usable"); }
+        return nullptr;
+    }
+
+    // WHAT: true when the bubble ladder of ship sid runs in ShipControl: ladder usable, speed monitor on (g_sc_speed_on), ship claimed by mining.
+    bool sc_bub_on_ship(int sid) { return !sc_bubble_block() && g_sc_speed_on && g_sc_held.count(sid) != 0; }
+    // WHAT: true when the legacy bubble pass skips ship sid: ShipControl runs its ladder and the ship is watched (move-job ships).
+    bool sc_bub_covers(int sid) { return sc_bub_on_ship(sid) && g_sc_watch.count(sid) != 0; }
+
+    // WHAT: SC_tick_bubble: one bubble pass of ShipControl (dt = s). >= 0 = ships passed, -1 = not usable (also on an exception).
+    int sc_tick_bubble(double dt)
+    {
+        if (!g_sc.bubble_bound) return -1;
+        try { return g_sc.tick_bubble(dt); }
+        catch (...) { return -1; }
+    }
+
+    // WHAT: SC_bubble_status of ship sid into o (size set here). true = call worked (o.have 0 when no state). Never throws.
+    bool sc_bubble_status(int sid, ScBubbleStatus& o)
+    {
+        o = ScBubbleStatus{};
+        o.size = static_cast<int32_t>(sizeof(ScBubbleStatus));
+        if (!g_sc.bubble_bound) return false;
+        try { return g_sc.bubble_status(sid, &o) != 0; }
+        catch (...) { return false; }
+    }
+
     // WHAT: host callbacks cleared (zeroed struct, size as installed). Called at mod unload before sc_release_all. No-op when never installed.
     void sc_host_clear()
     {
         if (!g_sc.speed_bound || !g_sc.set_host) return;
         ScHost z = {};
-        z.size = static_cast<int32_t>(g_sc.api_level >= 3 ? sizeof(ScHost) : SC_HOST_SIZE_L2);
+        z.size = static_cast<int32_t>(sc_host_size());
         try { g_sc.set_host(&z); }
         catch (...) {}
     }

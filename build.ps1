@@ -21,6 +21,7 @@ if ($Mod -eq 'MiningBenchMod') {
     Copy-Item "$src\mods\ShipControl\sc_api.h" -Destination $mirror -Force
     Copy-Item "$src\mods\ShipControl\sc_logic_path.hpp" -Destination $mirror -Force   # mb_logic.hpp includes the path/warp geometry
     Copy-Item "$src\mods\ShipControl\sc_logic_steer.hpp" -Destination $mirror -Force  # mb_logic.hpp includes the approach/low-power rules
+    Copy-Item "$src\mods\ShipControl\sc_logic_bubble.hpp" -Destination $mirror -Force  # mb_logic.hpp includes the bubble ladder rules (SC3-C)
 }
 
 # ShipControl is not in the mirror's cppmods\CMakeLists.txt yet: add it once
