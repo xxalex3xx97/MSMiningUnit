@@ -758,6 +758,8 @@ namespace
     inline bool shield_dropped(int32_t baseline, int32_t s) { return s >= 0 && hull_dropped(baseline, s); }
     // WHAT: whole shield units from the GetShields double. Negative / NaN = -1 (unreadable). Floors, so regeneration never looks like a drop; clamps to INT32_MAX.
     inline int32_t shield_whole(double v) { if (!(v >= 0.0)) return -1; if (v > 2147483647.0) return 2147483647; return static_cast<int32_t>(v); }
+    // WHAT: whole shield units from the raw PNum Value (Q16 fixed point, 65536 = 1 unit). Negative raw = -1 (unreadable).
+    inline int32_t shield_from_raw(int64_t raw) { return shield_whole(static_cast<double>(raw) / 65536.0); }
     // WHAT: flee dock candidates. With cargo the cargo candidates stay; with empty cargo (no ore lists match) every ore dock list, then refuel docks, in order, no duplicates.
     inline std::vector<int> flee_fallback_docks(std::vector<int> cargo_cands,
             const std::vector<std::vector<int>>& ore_docks, const std::vector<int>& refuel)

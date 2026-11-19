@@ -1051,6 +1051,30 @@ namespace
                 const double n = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
                 if (n > 1e-9) for (int i = 0; i < 3; ++i) m.hz_dir[i] = d[i] / n;
             }
+            // a ship within SHIP_ZONE_M (any other ship, bench or piloted) overrides the rock direction: away from that ship. Rare flee event only.
+            {
+                std::vector<UObject*> ships;
+                ActFrame sf, near_f;
+                const int ssys = sys_id(ship);
+                if (act_frame(ship, sf) && find_all_seh(STR("DMSPlayerShipObject"), ships))
+                {
+                    double best = -1.0; int best_id = 0;
+                    for (UObject* g : ships)
+                    {
+                        ActFrame gf;
+                        if (!alive(g) || obj_id(g) == sid || sys_id(g) != ssys || !act_frame(g, gf)) continue;
+                        const double dm = dist3(sf.loc, gf.loc) / MV_UU_PER_M;
+                        if (best < 0.0 || dm < best) { best = dm; best_id = obj_id(g); near_f = gf; }
+                    }
+                    if (best >= 0.0 && best < SHIP_ZONE_M)
+                    {
+                        double d[3] = {sf.loc[0] - near_f.loc[0], sf.loc[1] - near_f.loc[1], sf.loc[2] - near_f.loc[2]};
+                        const double n = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+                        if (n > 1e-9) for (int i = 0; i < 3; ++i) m.hz_dir[i] = d[i] / n;
+                        log_line(STR("HAZARD ship=") + std::to_wstring(sid) + STR(" away from ship ") + std::to_wstring(best_id) + STR(" ") + std::to_wstring(static_cast<long long>(best)) + STR(" m"));
+                    }
+                }
+            }
             // marking: the nearest rock (if within HAZARD_BLOCK_M); the target too only when no other rock is within HAZARD_BLOCK_M
             const std::wstring hit = STR(" (lost ") + std::to_wstring(drop) + STR(", no attacker)");
             bool marked = false;
@@ -1116,6 +1140,8 @@ namespace
     // WHY: the shield value is the only early sign of a hit on a shielded ship (the hull does not move until the shield is gone).
     int32_t shield_now(UObject* ship)
     {
+        int64_t raw = 0;
+        if (pnum_prop(ship, STR("Shields"), raw)) return shield_from_raw(raw);
         double d = 0.0;
         if (call_double(ship, STR("GetShields"), d)) return shield_whole(d);
         static bool warned = false;
@@ -1148,7 +1174,7 @@ namespace
             if (m.st == MS_HALT) return true;   // keep the stop reason; Start resets it
             if (m.st == MS_OFF || m.st == MS_CHECK) { const bool was_chk = m.st == MS_CHECK; chunk_hold_release(sid); m.st = MS_OFF; m.leave = false; m.empty_t = 0.0; mset(sid, m, m.run ? STR("idle: Enabled is off") : STR("idle")); if (was_chk && park_try(ship, sid, m, STR("stopped"))) return true; return true; }
             if (m.st == MS_SEEK || m.st == MS_MINE || m.st == MS_WARP || m.st == MS_COLLECT) { m.leave = true; go_home(ship, sid, m, STR("mining switched off")); return true; }
-            m.leave = true;   // UNDOCK / TRIP / HOLD: let them end, then park
+            m.leave = !m.flee;   // UNDOCK / TRIP / HOLD: let them end, then park; a flee is never aborted by Enabled off
         }
         else m.leave = false;
         // 1b. hull hit while flying / mining / warping: stop work, dock trip (flee), trip_end halts with the red ERROR. Not while a flee runs (its back-out move would be cancelled).
@@ -2248,7 +2274,14 @@ namespace
         pt.sys = m.hz_sys;
         dock_add_m(m.hz_ch, m.hz_loc, off, pt.ch, pt.loc);
         const std::wstring r = move_start(sid, "approach_rock", -1, nullptr, &pt);
-        if (r != STR("waiting")) return false;
+        if (r != STR("waiting"))
+        {
+            static std::map<int, ULONGLONG> last_refuse_ms;   // sid -> GetTickCount64 of the last refused log (once per second)
+            const ULONGLONG now = GetTickCount64();
+            auto it = last_refuse_ms.find(sid);
+            if (it == last_refuse_ms.end() || now - it->second >= 1000) { last_refuse_ms[sid] = now; log_line(STR("HAZARD ship=") + std::to_wstring(sid) + STR(" move-away refused: ") + r); }
+            return false;
+        }
         ++m.hz_k;
         return true;
     }
@@ -3359,7 +3392,17 @@ namespace
         {
             int32_t mx = 0;
             if (get_int_prop(ship, STR("MaxHealth"), mx)) m.hull_max = mx;
-            { double d = 0.0; if (call_double(ship, STR("GetMaxShields"), d)) m.sh_max = shield_whole(d); }
+            {
+                int64_t raw_max = 0, raw_cur = 0;
+                if (pnum_prop(ship, STR("MaxShields"), raw_max)) m.sh_max = shield_from_raw(raw_max);
+                else { double d = 0.0; if (call_double(ship, STR("GetMaxShields"), d)) m.sh_max = shield_whole(d); }
+                static std::set<int> shield_logged;   // once per ship: confirms the raw scale
+                if (shield_logged.insert(sid).second)
+                {
+                    const bool ok_cur = pnum_prop(ship, STR("Shields"), raw_cur);
+                    log_line(STR("MINE shield raw ship=") + std::to_wstring(sid) + STR(" Shields=") + (ok_cur ? std::to_wstring(raw_cur) : std::wstring(STR("n/a"))) + STR(" Max=") + (raw_max != 0 ? std::to_wstring(raw_max) : std::wstring(STR("n/a"))));
+                }
+            }
             m.dmg_txt = struct_prop_text(ship, STR("DamageState"));
         }
         const int32_t s = shield_now(ship);   // -1 unreadable: never a drop

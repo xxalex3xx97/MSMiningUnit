@@ -2337,6 +2337,15 @@ static void t_ship_zone()
     CHECK(!ship_blk_ignore(ia, ib2, o, 320.0));
 }
 
+static void t_shield_from_raw()
+{
+    // raw PNum Value is Q16: 65536 = 1 unit; negative = unreadable (-1); whole units floor
+    CHECK(shield_from_raw(-65536) == -1);
+    CHECK(shield_from_raw(0) == 0);
+    CHECK(shield_from_raw(65536LL * 60) == 60);
+    CHECK(shield_from_raw(65536LL * 60 + 100) == 60);
+}
+
 int main()
 {
     const Case cases[] = {
@@ -2344,6 +2353,7 @@ int main()
         {"quat_angle", t_quat_angle}, {"rotvec_zero", t_rotvec_zero},
         {"trim", t_trim}, {"to_int", t_to_int}, {"parse_distance", t_parse_distance}, {"parse_items", t_parse_items},
         {"ok_res", t_ok_res},
+        {"shield_from_raw", t_shield_from_raw},
         {"apply_kv_empty_keeps_old", t_apply_kv_empty_keeps_old}, {"apply_kv_dock_per_ship", t_apply_kv_dock_per_ship},
         {"apply_kv_items_empty_clears", t_apply_kv_items_empty_clears}, {"dock_lists", t_dock_lists}, {"eff_cfg_items_row", t_eff_cfg_items_row},
         {"eff_cfg_does_not_touch_global", t_eff_cfg_does_not_touch_global}, {"trip_progress", t_trip_progress}, {"warp_settle", t_warp_settle},
