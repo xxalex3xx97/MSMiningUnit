@@ -578,6 +578,18 @@ static void t_unload_cand()
     CHECK(unload_cand(std::vector<bool>(7, false), docks).empty());
 }
 
+static void t_unload_misc()
+{
+    const std::vector<int> got = unload_misc_ores({true, false, true, false, false, false, false}, {false, false, true, false, false, false, false});
+    CHECK(got.size() == 1 && got[0] == 0);
+    CHECK(unload_misc_ores(std::vector<bool>(7, false), std::vector<bool>(7, false)).empty());
+    CHECK(unload_misc_trip(0, 1, 0, true));
+    CHECK(unload_misc_trip(0, 0, 2, true));
+    CHECK(!unload_misc_trip(1, 1, 0, true));
+    CHECK(!unload_misc_trip(0, 1, 0, false));
+    CHECK(!unload_misc_trip(0, 0, 0, true));
+}
+
 static void t_refuel_stalled()
 {
     CHECK(!refuel_stalled(true, 60, 10.0, 10, 60.0));   // all delivered
@@ -2062,6 +2074,14 @@ static void t_reg_cache_bench()
     std::printf("bench reg_cache_table n=%zu ms=%.2f\n", tab.rocks.size(), std::chrono::duration<double, std::milli>(t2 - t1).count());
 }
 
+static void t_mining_world_ready()
+{
+    CHECK(mining_world_ready(true, false));
+    CHECK(!mining_world_ready(false, false));
+    CHECK(!mining_world_ready(true, true));
+    CHECK(!mining_world_ready(false, true));
+}
+
 // low power: response grace, dock loop guard, approach timeout and Throttle cap, power name matchers, low_power_return bound
 static void t_lowpower()
 {
@@ -2178,6 +2198,19 @@ static void t_dock_tags()
     Config m; m.ore_docks[3] = {21};
     auto pr = autofilter_pairs({p1, p2, p3, p4}, {m});
     CHECK((pr == std::vector<std::pair<int, int>>{{20, 1}, {21, 3}}));
+    g_cfg.misc_docks = {40, 11};
+    c = eff_cfg(1);
+    CHECK((c.misc_docks == std::vector<int>{11, 40}));
+    CHECK((c.ore_docks[1] == std::vector<int>{11, 40}));
+    CHECK((c.ore_docks[2] == std::vector<int>{9}));
+    g_dock_tags.clear();
+    c = eff_cfg(1);
+    CHECK((c.ore_docks[1] == std::vector<int>{40, 11}));
+    std::map<std::string, std::string> kvm{{"unload_docks_misc", "7,8,x"}};
+    Config kc; apply_kv(kc, kvm, true);
+    CHECK((kc.misc_docks == std::vector<int>{7, 8}));
+    Config m2; m2.misc_docks = {21};
+    CHECK(autofilter_pairs({p2}, {m, m2}).empty());
     reset_globals();
 }
 
@@ -2195,8 +2228,8 @@ int main()
         {"belt", t_belt}, {"csq", t_csq}, {"sector_contains", t_sector_contains}, {"warp_fuel", t_warp_fuel},
         {"cargo_pct", t_cargo_pct}, {"fuel_low", t_fuel_low}, {"got_delta", t_got_delta}, {"row_done", t_row_done},
         {"item_next", t_item_next}, {"collect_verdict", t_collect_verdict}, {"sweep", t_sweep}, {"ore_scan_due", t_ore_scan_due}, {"idle_limit", t_idle_limit}, {"hull_dropped", t_hull_dropped}, {"dead_scan", t_dead_scan},
-        {"dock_limit_giveup", t_dock_limit_giveup}, {"loop_guards", t_loop_guards}, {"setting_clamp", t_setting_clamp},{"unload_chain_more", t_unload_chain_more}, {"unload_cand", t_unload_cand}, {"refuel_stalled", t_refuel_stalled}, {"mine_radius", t_mine_radius},
-        {"station", t_station},
+        {"dock_limit_giveup", t_dock_limit_giveup}, {"loop_guards", t_loop_guards}, {"setting_clamp", t_setting_clamp},{"unload_chain_more", t_unload_chain_more}, {"unload_cand", t_unload_cand}, {"unload_misc", t_unload_misc},{"refuel_stalled", t_refuel_stalled}, {"mine_radius", t_mine_radius},
+        {"station", t_station}, {"mining_world_ready", t_mining_world_ready},
         {"net_free_go", t_net_free_go}, {"net_busy_wait", t_net_busy_wait}, {"net_second_dock", t_net_second_dock},
         {"net_fifo", t_net_fifo}, {"net_go_drops_other_grant", t_net_go_drops_other_grant}, {"net_not_configured", t_net_not_configured}, {"net_dock_gone", t_net_dock_gone},
         {"net_full", t_net_full}, {"net_bad_holder", t_net_bad_holder}, {"unload_stalled", t_unload_stalled},

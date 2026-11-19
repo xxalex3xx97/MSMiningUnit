@@ -41,6 +41,7 @@ namespace
         std::string kind;              // command as sent: dock_mining | dock_refuel | dock_auto | undock (MiningStatusX job column)
         int stage = 0;                 // 0 = wait OrderIDs growth, 1 = apply dock (UpdateShipOrderInput), 2 = watch autopilot, 3 = order build, 4 = far trip warp settle, then the dock order (see mb_dockjob.hpp)
         std::vector<int> unl;          // dock_mining: ore indices unloaded at dock (set at job start, used when the order is issued)
+        std::vector<UObject*> unlm;    // misc trip: non-ore items unloaded at dock
         int base = 0, new_order = 0, new_index = 0;   // base = OrderIDs count before the new order; new_order = id of the new DeliverOrder; new_index = its index in Orders (SkipToOrder target)
         double t = 0.0, log_acc = 0.0;   // t = seconds since the job started (summed from the tick step); log_acc = seconds since the last watch log line
         double skip_wait = -1.0;       // stage 2: SkipToOrder due at this t (-1 = none)
@@ -60,6 +61,7 @@ namespace
     std::map<int, int> g_dock_pick;
     // WHAT: ore indices (ORE_KEY order) this ship unloads on its current dock trip, per ship id. WHY: one dock takes only the ores whose list holds it; the other ores stay in cargo for the next trip, and MS_HOLD waits only for these.
     std::map<int, std::vector<int>> g_unl_ores;
+    std::map<int, std::vector<UObject*>> g_unl_misc;   // sid -> non-ore items on the current misc trip
     // WHAT: last result text of the dock/undock job and of the move job, per ship id. WHY: the mining loop (mb_mining.hpp) reads how a job ended.
     std::map<int, std::wstring> g_job_res, g_mv_res;
 

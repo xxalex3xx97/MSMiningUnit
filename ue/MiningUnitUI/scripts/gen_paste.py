@@ -615,6 +615,12 @@ def build_tree():
                  dock_card("RDock", "", "RDock", "Refuel docks (tried in order)", ["Img_RDockFuel" + f for f in FUELS])]
     for k in reversed(ORES):
         ship_kids.append(dock_card("UDock", k, "UD" + k, "Unload docks: " + ("Water Ice" if k == "WaterIce" else k), ["Img_UDockOre_" + k]))
+    # Misc card: LAST on Ship, Collapsed (Lua shows it). Same shell as an ore card, no rows; its Dyn_UDock_Misc list is added by build_lists.py (uew.dyn_list)
+    misc_add = S(wrap(btn("Btn_UDockAdd_Misc", "Add dock", BTN, size=15), None, 40), pad=(0, 4, 0, 0), h="Fill")
+    misc = card("UDMisc", "Lbl_HdrUDMisc", "Misc docks (no-ore cargo, ores without a dock)", [misc_add])
+    misc.name, misc.var = "Pnl_UDockCard_Misc", True
+    misc.props.append(("Visibility", "Collapsed"))
+    ship_kids.append(misc)
     page_ship = page("Page_Ship", ship_kids)
 
     c_mining = card("Mining","Lbl_HdrMining", "Mining", [

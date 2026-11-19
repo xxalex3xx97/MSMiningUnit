@@ -27,6 +27,8 @@ local UDN = 20 -- max docks per unload-ore list and per refuel list (= gen_paste
 -- ore key k = widget part (Pnl_UDockCard_<k>, modal key UDock_<k>_<n>); ini = INI key part (unload_docks_<ini>)
 local UD_ORES = { { k = "Cobalt", ini = "cobalt" }, { k = "Graphite", ini = "graphite" }, { k = "Iridium", ini = "iridium" },
   { k = "Nickel", ini = "nickel" }, { k = "Silica", ini = "silica" }, { k = "Titanium", ini = "titanium" }, { k = "WaterIce", ini = "waterice" } }
+-- misc row (not an ore: kept out of UD_ORES so ore loops/warnings stay unchanged); k = widget part, ini = unload_docks_<ini>
+local UD_MISC = { k = "Misc", ini = "misc" }
 -- every name Lua touches; missing ones are logged after CreateWidget
 local NAMES = { "Panel", "PageSwitcher", "Page_Ship", "Page_Items", "Page_Operation", "Txt_Title", "Pnl_Fleet", "Sel_Remote", "Pnl_Modal", "Btn_ModalOutside", "Btn_ModalClose",
   "Txt_ModalTitle", "Edt_ModalSearch", "Pnl_ModalColHead", "Btn_Close", "Btn_ModalDone",
@@ -54,6 +56,7 @@ for _, u in ipairs(UD_ORES) do
   NAMES[#NAMES + 1] = "Img_UDockOre_" .. u.k; NAMES[#NAMES + 1] = "Pnl_UDockCard_" .. u.k; NAMES[#NAMES + 1] = "Btn_UDockAdd_" .. u.k
   for n = 1, UDN do NAMES[#NAMES + 1] = "Pnl_UDockRow_" .. u.k .. "_" .. n; NAMES[#NAMES + 1] = "Btn_UDockDel_" .. u.k .. "_" .. n end
 end
+NAMES[#NAMES + 1] = "Pnl_UDockCard_" .. UD_MISC.k; NAMES[#NAMES + 1] = "Btn_UDockAdd_" .. UD_MISC.k
 for n = 1, UDN do NAMES[#NAMES + 1] = "Pnl_RDockRow_" .. n; NAMES[#NAMES + 1] = "Btn_RDockDel_" .. n end
 for _, f in ipairs({ "Deuterium", "Hydrogen", "Warp" }) do NAMES[#NAMES + 1] = "Img_RDockFuel" .. f end
 NAMES[#NAMES + 1] = "Pnl_RDockCard"; NAMES[#NAMES + 1] = "Btn_RDockAdd"; NAMES[#NAMES + 1] = "Txt_ShipWarn"
@@ -113,7 +116,8 @@ local function rootW()
 end
 -- Only these python-built names (add_docks_tab.py, add_btn_collect.py) ever use the tree lookup. Every other missing name returns nil at once.
 local WALK_NAMES = { Btn_TabDocks = true, Txt_TabDocks = true, Pnl_PageDocks = true, Txt_DocksHdr = true, Row_DocksScroll = true,
-  Dyn_Docks = true, Btn_DocksHelp = true, Pnl_DocksLegend = true, Btn_Collect = true, Txt_Collect = true }
+  Dyn_Docks = true, Btn_DocksHelp = true, Pnl_DocksLegend = true, Btn_Collect = true, Txt_Collect = true,
+  Pnl_UDockCard_Misc = true, Btn_UDockAdd_Misc = true }
 local WALK_NODES = 2600   -- hard cap of one index walk
 -- ONE bounded walk per window open (S.wc = name -> widget for WALK_NAMES). Stops early when all are found. Logs time + nodes.
 local function buildIndex()
@@ -522,7 +526,7 @@ local function wrlines(path, lines)
   fh:close(); return true
 end
 local SHIP_SAVE_KEYS = { "dock_name_filter", "refuel_dock_id", "refuel_docks", "unload_docks_cobalt", "unload_docks_graphite", "unload_docks_iridium",
-  "unload_docks_nickel", "unload_docks_silica", "unload_docks_titanium", "unload_docks_waterice", "resource", "amount", "items", "belt_sector" }
+  "unload_docks_nickel", "unload_docks_silica", "unload_docks_titanium", "unload_docks_waterice", "unload_docks_misc", "resource", "amount", "items", "belt_sector" }
 local targets  -- ship ids a command/save goes to (defined after benchShips)
 local function iniSave(vals)
   if not S.sid then return end
@@ -548,10 +552,11 @@ local function dockTags()
     local function add(dk, role)
       if dk == "" or seen[role .. dk] then return end
       seen[role .. dk] = true
-      by[dk] = by[dk] or { Unload = {}, Refuel = {} }
+      by[dk] = by[dk] or { Unload = {}, Refuel = {}, Misc = {} }
       table.insert(by[dk][role], o.text)
     end
     for _, u in ipairs(UD_ORES) do for _, dk in ipairs(idList(sec["unload_docks_" .. u.ini])) do add(dk, "Unload") end end
+    for _, dk in ipairs(idList(sec["unload_docks_" .. UD_MISC.ini])) do add(dk, "Misc") end
     for _, dk in ipairs(idList(sec.refuel_docks)) do add(dk, "Refuel") end
     local rid = sec.refuel_dock_id; if rid == nil then rid = glob.refuel_dock_id or "" end
     add(trim(rid), "Refuel")
@@ -559,23 +564,27 @@ local function dockTags()
   local out = {}
   for dk, r in pairs(by) do
     local s = ""
-    for _, role in ipairs({ "Unload", "Refuel" }) do
+    for _, role in ipairs({ "Unload", "Misc", "Refuel" }) do
       if #r[role] > 0 then s = s .. " [" .. role .. ": " .. table.concat(r[role], ", ") .. "]" end
     end
     out[dk] = s
   end
   return out
 end
--- DockTags.txt (C++ mb_docktags.hpp): "<dock id>|<ore keys comma>|<misc 0/1>|<autofilter 0/1>". Returns ore key (= u.ini) -> ids of docks tagged for it (locked rows). [MISC] docks are never ore-tagged.
+-- DockTags.txt (C++ mb_docktags.hpp): "<dock id>|<ore keys comma>|<misc 0/1>|<autofilter 0/1>". Returns ore key (= u.ini) -> ids of docks tagged for it (locked rows); key "misc" = [MISC] docks (never ore-tagged).
 local function taggedDocks()
   local by = {}
   for _, l in ipairs(rdcached(M.DATA .. "DockTags.txt") or {}) do
     local p = split(l)
     local id = trim(p[1] or "")
-    if id ~= "" and trim(p[3] or "") ~= "1" then
-      for k0 in (p[2] or ""):gmatch("[^,]+") do
-        local k = trim(k0)
-        by[k] = by[k] or {}; by[k][#by[k] + 1] = id
+    if id ~= "" then
+      if trim(p[3] or "") == "1" then
+        by.misc = by.misc or {}; by.misc[#by.misc + 1] = id
+      else
+        for k0 in (p[2] or ""):gmatch("[^,]+") do
+          local k = trim(k0)
+          by[k] = by[k] or {}; by[k][#by[k] + 1] = id
+        end
       end
     end
   end
@@ -755,6 +764,8 @@ local function udRender()
     dynDocks("UDock_" .. u.k, function() return S.ud and S.ud[u.ini] or {} end, udSave, "Unload dock", docks, "Pnl_UDockCard_" .. u.k, function() return tagged[u.ini] or {} end)
     if #S.ud[u.ini] == 0 and #(tagged[u.ini] or {}) == 0 then nodock = nodock + 1 end
   end
+  setVis(w("Pnl_UDockCard_" .. UD_MISC.k), 0)
+  dynDocks("UDock_" .. UD_MISC.k, function() return S.ud and S.ud[UD_MISC.ini] or {} end, udSave, "Unload dock", docks, "Pnl_UDockCard_" .. UD_MISC.k, function() return tagged[UD_MISC.ini] or {} end)
   setVis(w("Pnl_RDockCard"), 0)
   dynDocks("RDock", function() return S.rd end, udSave, "Refuel dock", docks)
   S.warn = (not S.all and nodock == #UD_ORES) and "No unload dock set for any ore" or ""
@@ -765,6 +776,7 @@ end
 function udSave()
   local vals = {}
   for _, u in ipairs(UD_ORES) do vals["unload_docks_" .. u.ini] = table.concat(S.ud[u.ini], ",") end
+  vals["unload_docks_" .. UD_MISC.ini] = table.concat(S.ud[UD_MISC.ini], ",")
   vals.refuel_docks = table.concat(S.rd, ",")
   iniSave(vals)
   S.docks = loadDocks(); shipFill(); udRender()
@@ -780,6 +792,7 @@ local function shipLoad()
   S.last.belt = pick("belt_sector"); if S.last.belt == "" then S.last.belt = "auto" end
   S.ud = {}
   for _, u in ipairs(UD_ORES) do S.ud[u.ini] = idList(sec["unload_docks_" .. u.ini]) end
+  S.ud[UD_MISC.ini] = idList(sec["unload_docks_" .. UD_MISC.ini])
   S.rd = idList(sec.refuel_docks)
   S.docks = loadDocks()
   shipFill()
@@ -1317,6 +1330,8 @@ local function queueReason(why)
 end
 local function docksLoad()
   local tags, ships = dockTags(), netShips()
+  local tg = {}   -- docks picked by name tag ([ORE] / [MISC]) are not in the INI lists: list them too
+  for _, ids in pairs(taggedDocks()) do for _, d in ipairs(ids) do tg[d] = true end end
   local names = {}
   for _, o in ipairs(benchShips()) do names[o.id] = o.text end
   for sid, s in pairs(ships) do if s.name ~= "" then names[sid] = s.name end end
@@ -1325,7 +1340,7 @@ local function docksLoad()
   for _, l in ipairs(rdcached(M.DATA .. "NetDocks.txt") or {}) do
     local p = split(l)
     local id = trim(p[1] or "")
-    if id ~= "" and tags[id] then
+    if id ~= "" and (tags[id] or tg[id]) then
       local raw, occ, cleared = trim(p[2] or ""), trim(p[3] or ""), trim(p[9] or "")
       local name = trim(p[8] or "")
       local why = trim(p[4] or "")
@@ -1944,6 +1959,9 @@ function M.open(ship)
           modalSelect{ title = "Unload dock", options = S.docks or {}, onPick = function(id) table.insert(S.ud[u.ini], id); udSave() end }
         end)
       end
+      bind("Btn_UDockAdd_" .. UD_MISC.k, function()
+        modalSelect{ title = "Unload dock", options = S.docks or {}, onPick = function(id) table.insert(S.ud[UD_MISC.ini], id); udSave() end }
+      end)
       bind("Btn_RDockAdd", function()
         modalSelect{ title = "Refuel dock", options = S.docks or {}, onPick = function(id) table.insert(S.rd, id); udSave() end }
       end)

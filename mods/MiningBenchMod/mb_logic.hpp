@@ -101,6 +101,8 @@ namespace
         std::string refuel_dock_name = "";      // refuel_dock_id written as an in-game name
         // per ore: unload docks in list order (INI: unload_docks_<orekey>=id,id). Empty = this ore is not unloaded. Per-ship overridable.
         std::vector<int> ore_docks[N_ORE];
+        // misc docks (INI: unload_docks_misc=id,id). Receive non-ore cargo and ores with an empty list. Global only, merged with [MISC] tags.
+        std::vector<int> misc_docks;
         // refuel docks in list order (INI: refuel_docks=id,id). refuel_dock_id is tried first. Per-ship overridable.
         std::vector<int> refuel_docks;
         // s: wait at the dock after the order list (global only). (INI: wait_seconds)
@@ -216,11 +218,12 @@ namespace
         return t; }
     // WHAT: a dock with 2+ ore tags is invalid (user rule 2026-11-19: one ore, one filter per dock). Clears its ore tags and [AUTO-FILTER] so it is never paired or filtered; returns true when it was invalid (caller logs once). [MISC] is untouched.
     bool dock_tag_invalidate(DockTag& t) { if (t.ores.size() < 2) return false; t.ores.clear(); t.autof = false; return true; }
-    // WHAT: ore lists = tagged docks first (id order), then the manual picks not already there; an ore with an empty list uses the [MISC] docks. A [MISC] dock is never an ore-tag dock.
+    // WHAT: misc = [MISC]-tagged docks then manual misc picks; an ore with an empty list uses misc. Ore lists = tagged docks first (id order), then the manual picks not already there. A [MISC] dock is never an ore-tag dock.
     void apply_dock_tags(Config& c) {
-        if (g_dock_tags.empty()) return;
         std::vector<int> misc;
         for (const DockTag& t : g_dock_tags) if (t.misc) misc.push_back(t.id);
+        for (int d : c.misc_docks) if (std::find(misc.begin(), misc.end(), d) == misc.end()) misc.push_back(d);
+        c.misc_docks = misc;
         for (int i = 0; i < N_ORE; ++i) {
             std::vector<int> out;
             for (const DockTag& t : g_dock_tags) if (!t.misc && std::find(t.ores.begin(), t.ores.end(), i) != t.ores.end()) out.push_back(t.id);
@@ -232,6 +235,8 @@ namespace
         std::vector<std::pair<int, int>> out;
         for (const DockTag& t : tags) {
             if (!t.autof || t.misc) continue;
+            // never a dock in a misc list
+            bool isMisc = false; for (const Config& c : cfgs) if (std::find(c.misc_docks.begin(), c.misc_docks.end(), t.id) != c.misc_docks.end()) isMisc = true; if (isMisc) continue;
             int ore = t.ores.empty() ? -1 : t.ores[0];
             for (int i = 0; ore < 0 && i < N_ORE; ++i)
                 for (const Config& c : cfgs)
@@ -287,6 +292,7 @@ namespace
             auto it = kv.find(std::string("unload_docks_") + ORE_KEY[i]);
             if (it != kv.end()) c.ore_docks[i] = dock_list(it->second);
         }
+        { auto it = kv.find("unload_docks_misc"); if (it != kv.end()) c.misc_docks = dock_list(it->second); }
         { auto it = kv.find("refuel_docks"); if (it != kv.end()) c.refuel_docks = dock_list(it->second); }
     }
     // WHAT: effective config for ship sid: g_cfg plus its [ship.<sid>] overrides.
@@ -1092,6 +1098,21 @@ namespace
         for (size_t i = 0; i < in_cargo.size() && i < has_docks.size(); ++i)
             if (in_cargo[i] && has_docks[i]) out.push_back(static_cast<int>(i));
         return out;
+    }
+
+    // WHAT: ORE indices in cargo with NO unload dock list (they go to a misc dock when one exists).
+    std::vector<int> unload_misc_ores(const std::vector<bool>& in_cargo, const std::vector<bool>& has_docks)
+    {
+        std::vector<int> out;
+        for (size_t i = 0; i < in_cargo.size() && i < has_docks.size(); ++i)
+            if (in_cargo[i] && !has_docks[i]) out.push_back(static_cast<int>(i));
+        return out;
+    }
+
+    // WHAT: a trip uses the misc docks only when no ore dock is a candidate, misc docks exist, and something is left (no-dock ores or non-ore items). WHY: misc docks are the LAST docks in the unload order (user 2026-11-19).
+    bool unload_misc_trip(size_t ore_cands, size_t misc_ores, size_t other_items, bool has_misc)
+    {
+        return ore_cands == 0 && has_misc && (misc_ores + other_items) > 0;
     }
 
     // WHAT: refuel stalled: items not all delivered, t >= wait_s, and the fuel cargo has not grown for idle_s (idle_s 0 = off).
