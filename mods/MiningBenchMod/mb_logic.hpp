@@ -28,6 +28,7 @@ namespace
     constexpr int N_ORE = 7;
     constexpr const char* FUEL_KEY[N_FUEL] = {"hydrogen", "warp", "deuterium"};
     constexpr const char* FUEL_ITEM[N_FUEL] = {"ITEM_HydrogenFuel", "ITEM_WarpFuel", "ITEM_EnrichedFuel"};
+    constexpr int FUEL_BIT[N_FUEL] = {1, 4, 2};   // tag mask bit per FUEL index: H=1 D=2 W=4
     constexpr const char* ORE_KEY[N_ORE] = {"titanium", "nickel", "cobalt", "iridium", "waterice", "silica", "graphite"};
     constexpr const char* ORE_ITEM[N_ORE] = {"ITEM_TitaniumOre", "ITEM_NickelOre", "ITEM_CobaltOre", "ITEM_IridiumOre", "ITEM_WaterIce", "ITEM_Silica", "ITEM_Graphite"};
 
@@ -202,7 +203,7 @@ namespace
     }
     // WHAT: tags in one dock name. [TITANIUM] etc (one ore per tag), [MISC], [AUTO-FILTER]. Square brackets, any case; spaces, _ and - inside the brackets are ignored ("[Water Ice]" = [WATERICE]).
     // WHY: user rule 2026-11-18: a tagged dock is paired by name, no INI write. The Lua window (MiningUnitUI) reads the same result from DockTags.txt.
-    struct DockTag { int id = 0; std::vector<int> ores; bool misc = false; bool autof = false; bool park = false; };
+    struct DockTag { int id = 0; std::vector<int> ores; bool misc = false; bool autof = false; bool park = false; bool refuel = false; int fuel = 0; };
     std::vector<DockTag> g_dock_tags;   // docks that carry at least one tag; refreshed by dock_tags_refresh (mb_docktags.hpp)
     std::string tag_norm(const std::string& s) { std::string o; for (unsigned char ch : s) if (ch != ' ' && ch != '_' && ch != '-' && ch != '\t') o += static_cast<char>(std::toupper(ch)); return o; }
     DockTag dock_tag_parse(int id, const std::string& name) {
@@ -214,6 +215,10 @@ namespace
             if (w == "MISC") t.misc = true;
             else if (w == "PARKING") t.park = true;
             else if (w == "AUTOFILTER") t.autof = true;
+            else if (w == "REFUEL") t.refuel = true;
+            else if (w == "HYDROGEN") t.fuel |= 1;
+            else if (w == "DEUTERIUM") t.fuel |= 2;
+            else if (w == "WARP") t.fuel |= 4;
             else for (int i = 0; i < N_ORE; ++i)
                 if (w == tag_norm(ORE_KEY[i]) && std::find(t.ores.begin(), t.ores.end(), i) == t.ores.end()) t.ores.push_back(i);
             p = e + 1;
@@ -223,6 +228,9 @@ namespace
     bool dock_tag_invalidate(DockTag& t) { if (t.ores.size() < 2) return false; t.ores.clear(); t.autof = false; return true; }
     // WHAT: misc = [MISC]-tagged docks then manual misc picks; an ore with an empty list uses misc. Ore lists = tagged docks first (id order), then the manual picks not already there. A [MISC] dock is never an ore-tag dock.
     void apply_dock_tags(Config& c) {
+        // [REFUEL] docks (not also [PARKING]) are refuel-only: never an ore/misc target
+        std::vector<int> rtag;
+        for (const DockTag& t : g_dock_tags) if (t.refuel && !t.park) rtag.push_back(t.id);
         std::vector<int> misc;
         for (const DockTag& t : g_dock_tags) if (t.misc) misc.push_back(t.id);
         for (int d : c.misc_docks) if (std::find(misc.begin(), misc.end(), d) == misc.end()) misc.push_back(d);
@@ -232,20 +240,26 @@ namespace
         for (int d : c.park_docks) if (std::find(park.begin(), park.end(), d) == park.end()) park.push_back(d);
         c.park_docks = park;
         auto strip = [&](std::vector<int>& v) { v.erase(std::remove_if(v.begin(), v.end(), [&](int d) { return std::find(park.begin(), park.end(), d) != park.end(); }), v.end()); };
-        strip(misc); strip(c.refuel_docks);
+        auto stripR = [&](std::vector<int>& v) { v.erase(std::remove_if(v.begin(), v.end(), [&](int d) { return std::find(rtag.begin(), rtag.end(), d) != rtag.end(); }), v.end()); };
+        // refuel list = [REFUEL]-tagged docks first (id order), then manual picks; parking wins over refuel
+        std::vector<int> refuel;
+        for (const DockTag& t : g_dock_tags) if (t.refuel && std::find(park.begin(), park.end(), t.id) == park.end()) refuel.push_back(t.id);
+        for (int d : c.refuel_docks) if (std::find(refuel.begin(), refuel.end(), d) == refuel.end() && std::find(park.begin(), park.end(), d) == park.end()) refuel.push_back(d);
+        c.refuel_docks = refuel;
+        stripR(misc); strip(misc);
         c.misc_docks = misc;
         for (int i = 0; i < N_ORE; ++i) {
             std::vector<int> out;
             for (const DockTag& t : g_dock_tags) if (!t.misc && std::find(t.ores.begin(), t.ores.end(), i) != t.ores.end()) out.push_back(t.id);
             for (int d : c.ore_docks[i]) if (std::find(out.begin(), out.end(), d) == out.end()) out.push_back(d);
-            strip(out);
+            stripR(out); strip(out);
             if (out.empty()) out = misc;
             c.ore_docks[i] = out; } }
     // WHAT: {dock id, ore index} for every [AUTO-FILTER] dock (never [MISC]): its first ore tag, else the first ore (ore order) whose list in any of cfgs (RAW configs, no tags merged) holds the dock. No ore = no pair.
     std::vector<std::pair<int, int>> autofilter_pairs(const std::vector<DockTag>& tags, const std::vector<Config>& cfgs) {
         std::vector<std::pair<int, int>> out;
         for (const DockTag& t : tags) {
-            if (!t.autof || t.misc || t.park) continue;
+            if (!t.autof || t.misc || t.park || t.refuel) continue;
             bool isPark = false; for (const Config& c : cfgs) if (std::find(c.park_docks.begin(), c.park_docks.end(), t.id) != c.park_docks.end()) isPark = true; if (isPark) continue;
             // never a dock in a misc list
             bool isMisc = false; for (const Config& c : cfgs) if (std::find(c.misc_docks.begin(), c.misc_docks.end(), t.id) != c.misc_docks.end()) isMisc = true; if (isMisc) continue;
@@ -257,6 +271,16 @@ namespace
         return out; }
     // WHAT: ids of [PARKING] docks, in tag (id) order.
     inline std::vector<int> park_ids(const std::vector<DockTag>& tags) { std::vector<int> o; for (const DockTag& t : tags) if (t.park) o.push_back(t.id); return o; }
+    // WHAT: refuel candidates that serve fuel mask `need` (a [REFUEL] dock with fuel tags serves only those; no fuel tag or untagged = all fuels). Nothing matches = cands unchanged.
+    // WHY: a dock tagged [HYDROGEN] must not be picked when deuterium is what the ship lacks.
+    inline std::vector<int> refuel_by_fuel(const std::vector<int>& cands, const std::vector<DockTag>& tags, int need) {
+        if (need == 0) return cands;
+        std::vector<int> o;
+        for (int d : cands) {
+            int mask = 0;
+            for (const DockTag& t : tags) if (t.id == d && t.refuel) mask = t.fuel;
+            if (mask == 0 || (mask & need) != 0) o.push_back(d); }
+        return o.empty() ? cands : o; }
     // WHAT: parking ids nearest first (dist_m parallel to ids); dist < 0 (unknown) last; ties keep order. Sizes differ = unchanged.
     inline std::vector<int> park_order(std::vector<int> ids, const std::vector<double>& dist_m) {
         if (ids.size() != dist_m.size()) return ids;
@@ -503,6 +527,18 @@ namespace
     bool fuel_low(const FuelCfg& f, int64_t have)
     {
         return have >= 0 && have < f.threshold;
+    }
+
+    // WHAT: fuel tag mask to refuel now: the low enabled fuels, else all enabled fuels (0 = none enabled).
+    // WHY: picks which [REFUEL] docks fit (see refuel_by_fuel).
+    inline int fuel_need_mask(const Config& c, const int64_t have[N_FUEL])
+    {
+        int low = 0, on = 0;
+        for (int i = 0; i < N_FUEL; ++i) {
+            if (!c.fuel[i].on) continue;
+            on |= FUEL_BIT[i];
+            if (fuel_low(c.fuel[i], have[i])) low |= FUEL_BIT[i]; }
+        return low ? low : on;
     }
 
     // WHAT: ore gained since the last sample: inv - last when it went up, else 0.

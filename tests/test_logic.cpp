@@ -2211,6 +2211,25 @@ static void t_dock_tags()
     CHECK((kc.misc_docks == std::vector<int>{7, 8}));
     Config m2; m2.misc_docks = {21};
     CHECK(autofilter_pairs({p2}, {m, m2}).empty());
+    DockTag rf = dock_tag_parse(1, "Fuel [REFUEL] [hydrogen] [Warp]");
+    CHECK(rf.refuel && rf.fuel == 5 && !rf.misc);
+    CHECK(dock_tag_parse(1, "[REFUEL]").refuel && dock_tag_parse(1, "[REFUEL]").fuel == 0);
+    CHECK(dock_tag_parse(1, "[DEUTERIUM]").fuel == 2 && !dock_tag_parse(1, "[DEUTERIUM]").refuel);
+    g_dock_tags = {dock_tag_parse(50, "[REFUEL] [HYDROGEN]"), dock_tag_parse(51, "[REFUEL]"), dock_tag_parse(60, "[PARKING] [REFUEL]"), dock_tag_parse(11, "[MISC]")};
+    g_cfg.refuel_docks = {9, 51}; g_cfg.misc_docks = {50}; g_cfg.ore_docks[0] = {50, 5};
+    c = eff_cfg(1);
+    CHECK((c.refuel_docks == std::vector<int>{50, 51, 9}));
+    CHECK((c.park_docks == std::vector<int>{60}));
+    CHECK((c.misc_docks == std::vector<int>{11}));
+    CHECK((c.ore_docks[0] == std::vector<int>{5}));
+    CHECK(autofilter_pairs({dock_tag_parse(70, "[REFUEL] [AUTO-FILTER] [NICKEL]")}, {Config()}).empty());
+    CHECK((refuel_by_fuel({50, 51, 9}, g_dock_tags, 2) == std::vector<int>{51, 9}));
+    CHECK((refuel_by_fuel({50, 51, 9}, g_dock_tags, 1) == std::vector<int>{50, 51, 9}));
+    CHECK((refuel_by_fuel({50}, g_dock_tags, 2) == std::vector<int>{50}));
+    CHECK((refuel_by_fuel({50, 51, 9}, g_dock_tags, 0) == std::vector<int>{50, 51, 9}));
+    Config fc; fc.fuel[0] = {1, 300, 300}; fc.fuel[1] = {0, 300, 300}; fc.fuel[2] = {1, 300, 300};
+    int64_t h1[N_FUEL] = {500, 0, 100}, h2[N_FUEL] = {500, 0, 500};
+    CHECK(fuel_need_mask(fc, h1) == 2 && fuel_need_mask(fc, h2) == 3);
     reset_globals();
 }
 

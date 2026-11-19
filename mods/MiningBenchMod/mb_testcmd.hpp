@@ -21,6 +21,7 @@
 namespace
 {
     // WHAT: dispatch one command line to its handler and return the result text ("ok ..." / "waiting" / "error: ...").
+    //       park -> park_btn (mb_mining.hpp): Park button, button trip to a parking dock.
     //       Steps: 1 dock_mining, dock_refuel, undock -> job_start (multi-step, result set later by the job).
     //       2 thr_up, thr_down, thr_zero -> thr_cmd. 3 rock_sel ... -> rock_sel. 4 face_rock, approach_rock -> move_start (multi-step).
     //       5 laser_on/off, tractor_on/off: SetFiring on every instance of the class (set_all_firing) plus the fire group input
@@ -62,6 +63,14 @@ namespace
             bm.unl_prev = -1; bm.unl_undock = false;
             trip_begin(bship, sid, bm, STR("button"), "");
             return STR("ok");
+        }
+        if (cmd == "park")
+        {
+            UObject* pship = find_by_id(STR("DMSPlayerShipObject"), sid);
+            if (!alive(pship)) return STR("error: ship not found");
+            if (!g_mine.count(sid)) return STR("error: not a bench ship");
+            g_dock_pick.erase(sid);
+            return park_btn(pship, sid);
         }
         // 1. dock and undock jobs
         if (cmd == "dock_mining" || cmd == "dock_refuel" || cmd == "dock_auto" || cmd == "undock")
