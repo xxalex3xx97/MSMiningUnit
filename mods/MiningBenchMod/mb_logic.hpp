@@ -872,7 +872,7 @@ namespace
         return std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]) < SHIP_ZONE_M;
     }
 
-    // WHAT: true when this ship may keep its laser against the other ship: the other is not firing, or fired earlier (t, ms), or same t and lower sid.
+    // WHAT: true when this ship must HOLD its laser for the other ship inside the zone: the other is not firing, or fired earlier (t, ms), or same t and lower sid.
     // WHY: first ship to fire in a shared zone keeps firing; the other holds, with a fixed tiebreak so both never hold at once.
     inline bool zone_hold_for(bool other_fires, uint64_t other_t, int other_sid, uint64_t my_t, int my_sid)
     {
