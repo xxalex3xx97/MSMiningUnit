@@ -15,6 +15,7 @@
 #include "sc_owner.hpp"
 #include "sc_speed.hpp"   // SC2a: speed judge (pure part); includes sc_mscore.hpp (windows.h only)
 #include "sc_logic_steer.hpp"   // SC2b A1: moved steering rules
+#include "sc_logic_bubble.hpp"  // SC3 A1: moved bubble ladder (pure)
 #include "sc_frame.hpp"         // SC2b A1: frame, aim, calibration
 #include "sc_move.hpp"          // SC2b A2: move jobs (ABI via sc_api.h, sc_view_raw)
 
@@ -320,6 +321,155 @@ static void t_move_abi()
     CHECK(sc_view_raw(1.0) == 65536 && sc_view_raw(-0.5) == -32768 && sc_view_raw(0.0) == 0);   // llround of deg * 65536
 }
 
+// SC3 A1: bubble ladder (sc_logic_bubble.hpp). Values from the legacy mb_logic.hpp / mb_bubble.hpp rules.
+static void t_bubble()
+{
+    // ladder: clear -> hit brakes, pending REPLAN; stop -> REPLAN, count 1; third hit after 2 replans -> RETARGET, count reset at the stop
+    {
+        BubbleState s;
+        CHECK(bubble_step(s, false, 10.0, 5) == BBA_NONE);                  // clear
+        CHECK(s.rock == 5);
+        CHECK(bubble_step(s, true, 10.0, 5) == BBA_BRAKE && s.braking && s.pending == BBA_REPLAN);
+        CHECK(bubble_step(s, true, 5.0, 5) == BBA_NONE && s.braking);       // speed 5 while braking: nothing
+        CHECK(bubble_step(s, true, 2.0, 5) == BBA_REPLAN && s.replans == 1 && !s.braking);
+        CHECK(bubble_step(s, true, 10.0, 5) == BBA_BRAKE && s.pending == BBA_REPLAN);
+        CHECK(bubble_step(s, true, 2.0, 5) == BBA_REPLAN && s.replans == 2);
+        CHECK(bubble_step(s, true, 10.0, 5) == BBA_BRAKE && s.pending == BBA_RETARGET);
+        CHECK(bubble_step(s, true, 2.0, 5) == BBA_RETARGET && s.replans == 0);
+        // new rock id resets the state
+        CHECK(bubble_step(s, true, 10.0, 5) == BBA_BRAKE);
+        CHECK(bubble_step(s, false, 0.0, 9) == BBA_NONE && s.rock == 9 && s.replans == 0 && !s.braking);
+    }
+    // brake rule: ahead and closing only
+    CHECK(!bubble_brake_ok(-0.1, 50.0, 0.0, false, 5.0));            // behind (cos <= 0)
+    CHECK(!bubble_brake_ok(0.5, 50.0, 0.0, false, 0.0));             // first sight, not moving
+    CHECK(bubble_brake_ok(0.5, 50.0, 0.0, false, 1.0));              // first sight, moving
+    CHECK(bubble_brake_ok(0.5, 40.0, 50.0, true, 0.0));              // same blocker, closing
+    CHECK(!bubble_brake_ok(0.5, 50.0, 50.0, true, 5.0));             // same blocker, same distance
+    // activation: autopilot beats everything, then dock autopilot, travel, our steering or speed, else idle
+    CHECK(bubble_why(true, true, true, true, 10.0) == BW_AUTOPILOT);
+    CHECK(bubble_why(false, true, true, true, 10.0) == BW_DOCK_AUTOPILOT);
+    CHECK(bubble_why(false, false, true, true, 10.0) == BW_TRAVEL);
+    CHECK(bubble_why(false, false, false, true, 0.0) == BW_ACTIVE);
+    CHECK(bubble_why(false, false, false, false, 5.0) == BW_ACTIVE);
+    CHECK(bubble_why(false, false, false, false, 2.0) == BW_IDLE);
+    // phase
+    CHECK(bubble_phase(true, false, true, false) == BPH_ORE);
+    CHECK(bubble_phase(true, true, false, false) == BPH_WAYPOINT);
+    CHECK(bubble_phase(true, false, false, false) == BPH_SEEK);
+    CHECK(bubble_phase(false, false, false, true) == BPH_MINE);
+    CHECK(bubble_phase(false, false, false, false) == BPH_NONE);
+    // fix table
+    CHECK(bubble_fix(BPH_MINE, BBA_NONE, 0, true) == BF_NUDGE);
+    CHECK(bubble_fix(BPH_MINE, BBA_NONE, 0, false) == BF_RESUME);
+    CHECK(bubble_fix(BPH_SEEK, BBA_RETARGET, 0, false) == BF_SKIP);
+    CHECK(bubble_fix(BPH_SEEK, BBA_REPLAN, 0, false) == BF_REPLAN);
+    CHECK(bubble_fix(BPH_WAYPOINT, BBA_REPLAN, 0, false) == BF_WAYPOINT);
+    CHECK(bubble_fix(BPH_WAYPOINT, BBA_REPLAN, 1, false) == BF_WAYPOINT);
+    CHECK(bubble_fix(BPH_WAYPOINT, BBA_REPLAN, 2, false) == BF_SKIP);
+    CHECK(bubble_fix(BPH_ORE, BBA_REPLAN, 0, false) == BF_WAYPOINT);
+    CHECK(bubble_fix(BPH_ORE, BBA_REPLAN, 2, false) == BF_SKIP);
+    // activation gate
+    {
+        BubbleState bs;
+        CHECK(bubble_gate(bs, true, true, BW_ACTIVE, false) == BGT_SKIP && bs.why == 4);   // warp wait: why unchanged
+        CHECK(bubble_gate(bs, false, false, BW_AUTOPILOT, false) == BGT_ERASE && bs.why == BW_AUTOPILOT);
+        bs = BubbleState();
+        bs.wp = 2;
+        CHECK(bubble_gate(bs, false, false, BW_IDLE, false) == BGT_SKIP && bs.wp == 0);    // idle, not braking, no resume: wp reset
+        bs.wp = 2; bs.resume = true;
+        CHECK(bubble_gate(bs, false, false, BW_IDLE, false) == BGT_SKIP && bs.wp == 2);    // resuming: wp kept
+        bs = BubbleState();
+        bs.braking = true;
+        CHECK(bubble_gate(bs, false, false, BW_IDLE, false) == BGT_RUN);                   // idle but braking: run
+        bs = BubbleState();
+        CHECK(bubble_gate(bs, false, true, BW_ACTIVE, true) == BGT_SKIP);                  // paused, not braking
+        bs.braking = true;
+        CHECK(bubble_gate(bs, false, true, BW_ACTIVE, true) == BGT_RUN);                   // braking always finishes
+        bs = BubbleState();
+        bs.wp = 2;
+        CHECK(bubble_gate(bs, false, false, BW_ACTIVE, false) == BGT_RUN && bs.wp == 0);   // no job: wp reset
+        bs.wp = 2;
+        CHECK(bubble_gate(bs, false, true, BW_ACTIVE, false) == BGT_RUN && bs.wp == 2);    // job: wp kept
+    }
+    // resume step
+    CHECK(bubble_resume_step(false, false, 10.0) == BRS_NONE);
+    CHECK(bubble_resume_step(true, true, 10.0) == BRS_NONE);
+    CHECK(bubble_resume_step(true, false, 30.0) == BRS_ARRIVED);
+    CHECK(bubble_resume_step(true, false, 31.0) == BRS_FLY);
+    // hit decision
+    {
+        BubbleState bs;
+        const double p[3] = {0, 0, 0}, fw[3] = {1, 0, 0};
+        double dn = -1.0;
+        bs.prev_id = 7;
+        CHECK(bubble_hit_decide(bs, 0, p, fw, p, 5.0, dn) == 0 && dn == 0.0 && bs.prev_id == 0);   // clear
+        const double behind[3] = {-100, 0, 0}, ahead[3] = {100, 0, 0};
+        CHECK(bubble_hit_decide(bs, 3, p, fw, behind, 5.0, dn) == 0 && bs.prev_id == 3 && bs.prev_d == dn);   // behind: no brake
+        bs = BubbleState();
+        CHECK(bubble_hit_decide(bs, 3, p, fw, ahead, 5.0, dn) == 3 && bs.prev_id == 3 && NEARB(bs.prev_d, 100.0, 1e-9) && NEARB(dn, 100.0, 1e-9));   // first sight, moving
+        bs.prev_d = 120.0;
+        CHECK(bubble_hit_decide(bs, 3, p, fw, ahead, 0.0, dn) == 3);                        // same blocker closing: keeps the id
+        bs.prev_d = 100.0;
+        CHECK(bubble_hit_decide(bs, 3, p, fw, ahead, 0.0, dn) == 0);                        // same distance: no brake
+    }
+    // pass: store the blocker while not braking, phase only then, wp reset on a new rock
+    {
+        BubbleState bs;
+        const double c[3] = {1, 2, 3}, c2[3] = {9, 9, 9};
+        CHECK(bubble_pass(bs, 4, BPH_SEEK, 12.5, c, 8.0, 77, 5.0) == BBA_BRAKE);
+        CHECK(bs.blk == 4 && NEARB(bs.blk_d, 12.5, 1e-12) && bs.blk_c[0] == 1.0 && bs.blk_c[2] == 3.0 && NEARB(bs.blk_rr, 8.0, 1e-12) && bs.phase == BPH_SEEK);
+        CHECK(bubble_pass(bs, 5, BPH_ORE, 1.0, c2, 2.0, 77, 5.0) == BBA_NONE);             // braking: blocker updated, phase kept
+        CHECK(bs.blk == 5 && bs.phase == BPH_SEEK && bs.blk_c[0] == 9.0);
+        bs.wp = 2;
+        CHECK(bubble_pass(bs, 0, BPH_NONE, 0.0, c, 0.0, 88, 0.0) == BBA_NONE && bs.wp == 0 && bs.rock == 88);   // new rock
+    }
+    // plan: engine event per fix
+    {
+        BubblePlan p1 = bubble_plan(BPH_SEEK, BBA_REPLAN, 0, false, false, false);
+        CHECK(p1.fix == BF_REPLAN && p1.ev == BEV_REPLAN);
+        CHECK(bubble_plan(BPH_SEEK, BBA_RETARGET, 0, false, false, false).ev == BEV_SKIP);
+        CHECK(bubble_plan(BPH_WAYPOINT, BBA_REPLAN, 0, false, false, true).ev == BEV_SKIP);   // no destination
+        CHECK(bubble_plan(BPH_WAYPOINT, BBA_REPLAN, 0, false, true, false).ev == BEV_SKIP);   // no blocker geometry
+        BubblePlan w = bubble_plan(BPH_WAYPOINT, BBA_REPLAN, 0, false, true, true);
+        CHECK(w.fix == BF_WAYPOINT && w.ev == BEV_FLY && w.reason == BFR_WAYPOINT);
+        BubblePlan n = bubble_plan(BPH_MINE, BBA_NONE, 0, true, false, false);
+        CHECK(n.ev == BEV_FLY && n.reason == BFR_NUDGE);
+        BubblePlan r = bubble_plan(BPH_MINE, BBA_NONE, 0, false, false, false);
+        CHECK(r.fix == BF_RESUME && r.ev == BEV_NONE);
+    }
+    // nudge point: 100 m along p - nc; degenerate p == nc stays put
+    {
+        double wp[3];
+        const double p[3] = {0, 0, 0}, nc[3] = {100, 0, 0};
+        bubble_nudge_point(p, nc, wp);
+        NEAR(wp[0], -100.0, 1e-9); NEAR(wp[1], 0.0, 1e-9); NEAR(wp[2], 0.0, 1e-9);
+        const double nc2[3] = {0, 30, 40};
+        bubble_nudge_point(p, nc2, wp);
+        NEAR(wp[0], 0.0, 1e-9); NEAR(wp[1], -60.0, 1e-9); NEAR(wp[2], -80.0, 1e-9);
+        bubble_nudge_point(p, p, wp);
+        CHECK(std::isfinite(wp[0]) && std::isfinite(wp[1]) && std::isfinite(wp[2]));
+        NEAR(wp[0], 0.0, 1e-9); NEAR(wp[1], 0.0, 1e-9); NEAR(wp[2], 0.0, 1e-9);
+    }
+    // fly point: chunk + raw loc of a flight target; border carry into the next chunk
+    {
+        const int64_t ch0[3] = {1, 2, 3};
+        const double loc0[3] = {0, 0, 0}, ps[3] = {0, 0, 0}, wp[3] = {10, 0, 0};
+        int64_t ch[3] = {0, 0, 0};
+        double loc[3] = {0, 0, 0};
+        bubble_fly_point(ps, wp, ch0, loc0, ch, loc);                       // 10 m = 655360 raw, same chunk
+        CHECK(ch[0] == 1 && ch[1] == 2 && ch[2] == 3 && NEARB(loc[0], 655360.0, 1e-6));
+        const double loc1[3] = {134217728.0 - 327680.0, 0, 0};             // 5 m short of the chunk border
+        bubble_fly_point(ps, wp, ch0, loc1, ch, loc);                       // +10 m crosses it
+        CHECK(ch[0] == 2 && ch[1] == 2 && NEARB(loc[0], 327680.0, 1e-6));
+    }
+    // ship radius from the game read
+    CHECK(NEARB(ship_r_from_flight(true, 65536 * 8), 8.0, 1e-12));
+    CHECK(NEARB(ship_r_from_flight(false, 65536 * 8), 12.0, 1e-12));
+    CHECK(NEARB(ship_r_from_flight(true, 0), 12.0, 1e-12));
+    CHECK(NEARB(ship_r_from_flight(true, -5), 12.0, 1e-12));
+}
+
 int main()
 {
     std::string why;
@@ -427,6 +577,7 @@ int main()
     t_aim_and_rloc();
     t_qcal_and_frame();
     t_move_abi();
+    t_bubble();
 
     std::printf("test_shipcontrol: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
