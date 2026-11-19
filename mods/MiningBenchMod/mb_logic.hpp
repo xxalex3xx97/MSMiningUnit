@@ -758,6 +758,8 @@ namespace
     inline bool shield_dropped(int32_t baseline, int32_t s) { return s >= 0 && hull_dropped(baseline, s); }
     // WHAT: whole shield units from the GetShields double. Negative / NaN = -1 (unreadable). Floors, so regeneration never looks like a drop; clamps to INT32_MAX.
     inline int32_t shield_whole(double v) { if (!(v >= 0.0)) return -1; if (v > 2147483647.0) return 2147483647; return static_cast<int32_t>(v); }
+    // WHAT: whole shield units from the raw PNum Value (Q16 fixed point, 65536 = 1 unit). Negative raw = -1 (unreadable).
+    inline int32_t shield_from_raw(int64_t raw) { return shield_whole(static_cast<double>(raw) / 65536.0); }
     // WHAT: flee dock candidates. With cargo the cargo candidates stay; with empty cargo (no ore lists match) every ore dock list, then refuel docks, in order, no duplicates.
     inline std::vector<int> flee_fallback_docks(std::vector<int> cargo_cands,
             const std::vector<std::vector<int>>& ore_docks, const std::vector<int>& refuel)
@@ -832,6 +834,62 @@ namespace
         const double t = std::clamp(l2 < 1e-12 ? 0.0 : (w[0] * d[0] + w[1] * d[1] + w[2] * d[2]) / l2, 0.0, 1.0);
         const double p[3] = {a[0] + d[0] * t, a[1] + d[1] * t, a[2] + d[2] * t};
         return std::sqrt((c[0] - p[0]) * (c[0] - p[0]) + (c[1] - p[1]) * (c[1] - p[1]) + (c[2] - p[2]) * (c[2] - p[2]));
+    }
+
+    // WHAT: BEAM_MARGIN_M = extra width (m) around a ship's hull that counts as inside a firing ship's laser; BEAM_CLEAR_S = how long the beam must be clear before the laser resumes (s).
+    // WHY: a ship crossing a mining beam is damaged by it (no attacker in the log); the firing ship holds fire while another ship is in the beam.
+    constexpr double BEAM_MARGIN_M = 8.0;
+    constexpr double BEAM_CLEAR_S = 1.0;
+
+    // WHAT: true when ship centre p is inside the beam a->b: distance to the segment < ship_r + BEAM_MARGIN_M (m).
+    // WHY: the segment is clamped to its ends, so the ship at the firing end and the rock end both count.
+    inline bool ship_in_beam(const double a[3], const double b[3], const double p[3], double ship_r) { return seg_point_dist(a, b, p) < ship_r + BEAM_MARGIN_M; }
+
+    // WHAT: next held state of one firing ship. hit -> held at once (clear timer reset). Not held -> stays released. Held -> released after BEAM_CLEAR_S clear.
+    // WHY: one clear tick must not flip the laser back on while the victim still crosses the beam.
+    inline bool beam_hold_next(bool held, bool hit, double& clear_t, double dt)
+    {
+        if (hit) { clear_t = 0.0; return true; }
+        if (!held) return false;
+        clear_t += dt;
+        return clear_t < BEAM_CLEAR_S;
+    }
+
+    // WHAT: ship no-go sphere radius (m) = laser range; the same value is the beam hold distance (a bench ship within it holds the firing laser).
+    // WHY: a mining ship in MS_MINE blocks the other ships' paths like a rock; the laser reach and the sphere share one number.
+    constexpr double SHIP_ZONE_M = 300.0;
+    // WHAT: reg_geom radius for a ship sphere: block_r_m(SHIP_ZONE_RAD_M, clr) = SHIP_ZONE_M + clr.
+    // WHY: block_r_m scales the rock radius by ROCK_BLOCK_SCALE, so the ship radius is pre-divided by it.
+    constexpr double SHIP_ZONE_RAD_M = SHIP_ZONE_M / ROCK_BLOCK_SCALE;
+    // WHAT: a firing laser held this long (s) makes the ship give its rock up (shared zone deadlock breaker).
+    constexpr double BEAM_YIELD_S = 15.0;
+
+    // WHAT: true when centre a is closer than SHIP_ZONE_M (m) to centre c.
+    // WHY: inline sqrt, dist3 lives in mb_math.hpp which this pure file does not include.
+    inline bool in_ship_zone(const double a[3], const double c[3])
+    {
+        const double d[3] = {a[0] - c[0], a[1] - c[1], a[2] - c[2]};
+        return std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]) < SHIP_ZONE_M;
+    }
+
+    // WHAT: true when this ship must HOLD its laser for the other ship inside the zone: the other is not firing, or fired earlier (t, ms), or same t and lower sid.
+    // WHY: first ship to fire in a shared zone keeps firing; the other holds, with a fixed tiebreak so both never hold at once.
+    inline bool zone_hold_for(bool other_fires, uint64_t other_t, int other_sid, uint64_t my_t, int my_sid)
+    {
+        return !other_fires || other_t < my_t || (other_t == my_t && other_sid < my_sid);
+    }
+
+    // WHAT: true when the laser has been held for at least BEAM_YIELD_S (s).
+    inline bool beam_yield_due(double held_s) { return held_s >= BEAM_YIELD_S; }
+
+    // WHAT: true when the asker (a) is already inside the sphere (c, r) (m) and moving away from its centre (b-a . c-a <= 0): that sphere is ignored.
+    // WHY: a ship that starts inside another ship's zone must be able to leave; it must not be blocked by the sphere it is already in.
+    inline bool ship_blk_ignore(const double a[3], const double b[3], const double c[3], double r)
+    {
+        const double ab[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+        const double ac[3] = {c[0] - a[0], c[1] - a[1], c[2] - a[2]};
+        const double dd = std::sqrt((c[0] - a[0]) * (c[0] - a[0]) + (c[1] - a[1]) * (c[1] - a[1]) + (c[2] - a[2]) * (c[2] - a[2]));
+        return dd < r && (ab[0] * ac[0] + ab[1] * ac[1] + ab[2] * ac[2]) <= 0.0;
     }
 
     // WHAT: index of the blocking rock nearest to a along a->b (smallest projection), -1 when none blocks. out_d = its perpendicular distance (m).

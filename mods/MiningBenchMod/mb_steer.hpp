@@ -620,8 +620,8 @@ namespace
         if (mv.t >= approach_timeout_s(MV_APPROACH_TIMEOUT_S, lp, lp_frac)) { mv_finish(sid, STR("error: approach timeout")); return; }
         // 6. surface distance (m) and the per-ship stop distance (m)
         const double surface = (dist - rad) / g_raw_per_m;
-        const double md = parse_distance(eff_cfg(sid).mining_distance);
-        if (md < 0.0) { mv_finish(sid, STR("error: mining_distance unset")); return; }
+        double md = parse_distance(eff_cfg(sid).mining_distance);
+        if (md < 0.0) { if (mv.pt_on) md = 0.0; else { mv_finish(sid, STR("error: mining_distance unset")); return; } }   // a point flight needs no mining distance
         // Approach Throttle profile. WHY: remaining = surface - mining distance (m). Target step = floor(remaining / 25 m) clamped to
         // 1..min(10, steps): full speed above APPROACH_RAMP_M (500 m), linear slow-down to step 1 near the stop distance. Heading error > MV_APPROACH_HEAD_DEG -> 0.
         // Applied step rises by 1 at most every MV_THR_RAMP_S (gradual accel, keeps the 1.1x speed abort far away); it falls straight to target.
@@ -773,7 +773,7 @@ namespace
             m.rock_name = rock_kind(rock);
         }
         // 6. approach needs the stop distance
-        if (cmd == "approach_rock" && parse_distance(eff_cfg(sid).mining_distance) < 0.0) return STR("error: mining_distance unset");
+        if (cmd == "approach_rock" && !pt && parse_distance(eff_cfg(sid).mining_distance) < 0.0) return STR("error: mining_distance unset");
         // 7. start: quaternion for the rate sample, phase 1 (aim)
         quat4(ship, m.qs);
         // WHY: aiming starts at once (no forward-axis test phase before it)

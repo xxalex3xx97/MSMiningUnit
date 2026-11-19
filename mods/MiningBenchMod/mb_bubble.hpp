@@ -80,7 +80,7 @@ namespace
         const double b[3] = {p[0] + f.fw[0] * L, p[1] + f.fw[1] * L, p[2] + f.fw[2] * L};
         reg_area_seeded(sys_id(ship), p);   // unseeded area: the look-ahead below sees the seeded rocks only (logged once per pass)
         double cc[3] = {0, 0, 0};
-        return seg_blocker(sys_id(ship), p, b, skip_id, bubble_clear_m(bubble_ship_r(sid), g_cfg.bubble_clearance_m), false, out_d, cc, out_r);
+        return seg_blocker(sys_id(ship), p, b, skip_id, bubble_clear_m(bubble_ship_r(sid), g_cfg.bubble_clearance_m), false, out_d, cc, out_r, false, sid);
     }
 
     // WHAT: destination (m) of the current flight of a move job: point target or floating ore. false when the job has neither.
@@ -216,6 +216,108 @@ namespace
                      STR(" -> ") + widen(bubble_fix_name(fix)));
         }
         else if (act == BBA_REPLAN || act == BBA_RETARGET) bub_exec(sid, ship, m, bs, act, p, cr);
+    }
+
+    // WHAT: one mining ship's laser this tick: its system and the beam from the ship (a, m) to its rock centre (b, m).
+    struct Beam { int sys = 0; double a[3] = {0, 0, 0}, b[3] = {0, 0, 0}; };
+    std::map<int, Beam> g_beams;           // sid -> beam of every bench ship in MINE with a readable ship and rock (rebuilt each tick)
+    std::map<int, double> g_beam_clear_t;  // sid -> seconds its beam has been clear while its laser is held (s)
+    std::set<int> g_beam_held;             // sids whose laser is held off because another bench ship is in their beam
+    std::map<int, ULONGLONG> g_fire_t;     // sid -> GetTickCount64 when it entered MS_MINE (tiebreak: first to fire keeps firing)
+    std::map<int, double> g_beam_hold_t;   // sid -> seconds its laser has been held (s); BEAM_YIELD_S gives the rock up
+
+    // WHAT: beam pass (cmd_tick 0.25 s block, after bubble_tick). A firing ship's laser is held off while another bench ship is inside its beam
+    //       (ship_in_beam) and resumed after BEAM_CLEAR_S clear (beam_hold_next). Log: 'BEAM hold' / 'BEAM resume'.
+    // WHY: the laser damages every ship in the beam, not only the rock (hull hit with no attacker).
+    // WHAT: a held ship whose beam cannot be built any more (ship or rock unreadable) is released: laser back on, hold state gone.
+    // WHY: otherwise it is skipped by beam_tick for good: laser off, no resume, no yield (code review of PR 54).
+    void beam_release(int sid)
+    {
+        if (!g_beam_held.erase(sid)) return;
+        g_beam_clear_t.erase(sid); g_beam_hold_t.erase(sid);
+        run_cmd(-1, sid, "laser_on");
+        log_line(STR("BEAM resume ship=") + std::to_wstring(sid) + STR(" (beam unreadable)"));
+    }
+
+    void beam_tick(double dt)
+    {
+        std::set<int> prev_blk;
+        for (const auto& kv : g_ship_blk) prev_blk.insert(kv.first);
+        g_ship_blk.clear();
+        g_beams.clear();
+        for (int sid : g_bench_ids)
+        {
+            auto it = g_mine.find(sid);
+            if (it == g_mine.end()) continue;
+            MineSt& m = it->second;
+            if (m.st != MS_MINE) { g_beam_held.erase(sid); g_beam_clear_t.erase(sid); g_fire_t.erase(sid); g_beam_hold_t.erase(sid); continue; }
+            UObject* ship = find_by_id(STR("DMSPlayerShipObject"), sid);
+            ActFrame f;
+            if (!alive(ship) || !act_frame(ship, f)) { beam_release(sid); continue; }
+            ShipBlk& sb = g_ship_blk[sid];   // this ship is a no-go sphere for the other ships (path checks)
+            sb.sys = sys_id(ship);
+            for (int i = 0; i < 3; ++i) sb.c[i] = f.loc[i] / MV_UU_PER_M;
+            g_fire_t.emplace(sid, GetTickCount64());
+            double rc[3] = {0, 0, 0}, rr = 0.0;
+            if (m.rock <= 0 || !reg_geom(m.rock, rc, rr)) { beam_release(sid); continue; }
+            Beam bm;
+            bm.sys = sys_id(ship);
+            for (int i = 0; i < 3; ++i) { bm.a[i] = f.loc[i] / MV_UU_PER_M; bm.b[i] = rc[i]; }
+            g_beams[sid] = bm;
+        }
+        for (int sid : prev_blk)
+            if (!g_ship_blk.count(sid)) log_line(STR("SHIPBLOCK remove ship=") + std::to_wstring(sid));
+        for (const auto& kv : g_ship_blk)
+            if (!prev_blk.count(kv.first)) log_line(STR("SHIPBLOCK add ship=") + std::to_wstring(kv.first) + STR(" r=") + std::to_wstring(static_cast<long long>(SHIP_ZONE_M)));
+        for (const auto& kv : g_beams)
+        {
+            const int sid = kv.first;
+            const Beam& bm = kv.second;
+            int victim = 0;
+            for (int vid : g_bench_ids)
+            {
+                if (vid == sid) continue;
+                UObject* vs = find_by_id(STR("DMSPlayerShipObject"), vid);
+                ActFrame vf;
+                if (!alive(vs) || !act_frame(vs, vf) || sys_id(vs) != bm.sys) continue;
+                const double vp[3] = {vf.loc[0] / MV_UU_PER_M, vf.loc[1] / MV_UU_PER_M, vf.loc[2] / MV_UU_PER_M};
+                bool hit = ship_in_beam(bm.a, bm.b, vp, bubble_ship_r(vid));
+                if (!hit && in_ship_zone(bm.a, vp))   // inside the 300 m zone: the earlier firer keeps firing (zone_hold_for)
+                {
+                    const auto ft = g_fire_t.find(vid);
+                    hit = zone_hold_for(g_ship_blk.count(vid) > 0, ft != g_fire_t.end() ? ft->second : 0, vid, g_fire_t[sid], sid);
+                }
+                if (hit) { victim = vid; break; }
+            }
+            const bool held = g_beam_held.count(sid) > 0;
+            const bool now_held = beam_hold_next(held, victim != 0, g_beam_clear_t[sid], dt);
+            double& ht = g_beam_hold_t[sid];
+            ht = now_held ? ht + dt : 0.0;
+            if (now_held && !held)
+            {
+                g_beam_held.insert(sid);
+                run_cmd(-1, sid, "laser_off");
+                log_line(STR("BEAM hold ship=") + std::to_wstring(sid) + STR(" victim=") + std::to_wstring(victim));
+            }
+            else if (!now_held && held)
+            {
+                g_beam_held.erase(sid);
+                run_cmd(-1, sid, "laser_on");
+                log_line(STR("BEAM resume ship=") + std::to_wstring(sid));
+            }
+            if (now_held && beam_yield_due(g_beam_hold_t[sid]))
+            {   // held too long in a shared zone: this ship gives its rock up and seeks the next one
+                UObject* ys = find_by_id(STR("DMSPlayerShipObject"), sid);
+                MineSt& ym = g_mine[sid];
+                log_line(STR("BEAM yield ship=") + std::to_wstring(sid) + STR(" rock=") + std::to_wstring(ym.rock) +
+                         STR(" held=") + std::to_wstring(static_cast<long long>(g_beam_hold_t[sid])) + STR(" s"));
+                g_path_skip[sid].insert(ym.rock);
+                g_beam_held.erase(sid); g_beam_hold_t.erase(sid); g_beam_clear_t.erase(sid);
+                if (alive(ys)) begin_collect(ys, sid, ym, 0, STR("shared zone, seeking next rock"));
+                continue;
+            }
+            if (now_held) g_mine[sid].idle_t = 0.0;   // a held laser is not a depleted rock
+        }
     }
 
     // WHAT: bubble tick (cmd_tick 0.25 s block, before mining_tick). Every bench ship in SEEK / MINE / COLLECT / SWEEP gets one check per tick
