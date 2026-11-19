@@ -921,8 +921,16 @@ namespace
         // 2. ship
         UObject* ship = find_by_id(STR("DMSPlayerShipObject"), sid);
         if (!alive(ship)) return STR("error: ship not found");
+        // SC6 policy: the ship must be claimed by mining (dev commands claim it here too); refused = error, no legacy path
+        if (!g_sc_held.count(sid))
+        {
+            std::wstring w;
+            if (!sc_policy_ok()) return std::wstring(STR("error: ")) + SC_NEED_TEXT;
+            if (!sc_claim_ship(sid, &w)) return STR("error: ") + w;
+        }
         // ShipControl path (SC2b): when it is usable for this ship, ShipControl reads the steps and the console itself (steps 3-4 are legacy only)
         const bool sc = sc_move_ready(sid);
+        if (!sc) return std::wstring(STR("error: ")) + SC_NEED_TEXT;
         MoveJob m;
         m.kind = cmd;
         m.sid = sid;
