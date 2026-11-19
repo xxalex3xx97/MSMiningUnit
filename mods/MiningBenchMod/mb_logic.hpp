@@ -834,6 +834,25 @@ namespace
         return std::sqrt((c[0] - p[0]) * (c[0] - p[0]) + (c[1] - p[1]) * (c[1] - p[1]) + (c[2] - p[2]) * (c[2] - p[2]));
     }
 
+    // WHAT: BEAM_MARGIN_M = extra width (m) around a ship's hull that counts as inside a firing ship's laser; BEAM_CLEAR_S = how long the beam must be clear before the laser resumes (s).
+    // WHY: a ship crossing a mining beam is damaged by it (no attacker in the log); the firing ship holds fire while another ship is in the beam.
+    constexpr double BEAM_MARGIN_M = 8.0;
+    constexpr double BEAM_CLEAR_S = 1.0;
+
+    // WHAT: true when ship centre p is inside the beam a->b: distance to the segment < ship_r + BEAM_MARGIN_M (m).
+    // WHY: the segment is clamped to its ends, so the ship at the firing end and the rock end both count.
+    inline bool ship_in_beam(const double a[3], const double b[3], const double p[3], double ship_r) { return seg_point_dist(a, b, p) < ship_r + BEAM_MARGIN_M; }
+
+    // WHAT: next held state of one firing ship. hit -> held at once (clear timer reset). Not held -> stays released. Held -> released after BEAM_CLEAR_S clear.
+    // WHY: one clear tick must not flip the laser back on while the victim still crosses the beam.
+    inline bool beam_hold_next(bool held, bool hit, double& clear_t, double dt)
+    {
+        if (hit) { clear_t = 0.0; return true; }
+        if (!held) return false;
+        clear_t += dt;
+        return clear_t < BEAM_CLEAR_S;
+    }
+
     // WHAT: index of the blocking rock nearest to a along a->b (smallest projection), -1 when none blocks. out_d = its perpendicular distance (m).
     // WHY pointer + count: the caller keeps one reused scratch array (no copy of the rock list per check).
     inline int path_first_blocker(const double a[3], const double b[3], const PathRock* rocks, size_t n, double& out_d)

@@ -218,6 +218,65 @@ namespace
         else if (act == BBA_REPLAN || act == BBA_RETARGET) bub_exec(sid, ship, m, bs, act, p, cr);
     }
 
+    // WHAT: one mining ship's laser this tick: its system and the beam from the ship (a, m) to its rock centre (b, m).
+    struct Beam { int sys = 0; double a[3] = {0, 0, 0}, b[3] = {0, 0, 0}; };
+    std::map<int, Beam> g_beams;           // sid -> beam of every bench ship in MINE with a readable ship and rock (rebuilt each tick)
+    std::map<int, double> g_beam_clear_t;  // sid -> seconds its beam has been clear while its laser is held (s)
+    std::set<int> g_beam_held;             // sids whose laser is held off because another bench ship is in their beam
+
+    // WHAT: beam pass (cmd_tick 0.25 s block, after bubble_tick). A firing ship's laser is held off while another bench ship is inside its beam
+    //       (ship_in_beam) and resumed after BEAM_CLEAR_S clear (beam_hold_next). Log: 'BEAM hold' / 'BEAM resume'.
+    // WHY: the laser damages every ship in the beam, not only the rock (hull hit with no attacker).
+    void beam_tick(double dt)
+    {
+        g_beams.clear();
+        for (int sid : g_bench_ids)
+        {
+            auto it = g_mine.find(sid);
+            if (it == g_mine.end()) continue;
+            MineSt& m = it->second;
+            if (m.st != MS_MINE) { g_beam_held.erase(sid); g_beam_clear_t.erase(sid); continue; }
+            UObject* ship = find_by_id(STR("DMSPlayerShipObject"), sid);
+            ActFrame f;
+            double rc[3] = {0, 0, 0}, rr = 0.0;
+            if (!alive(ship) || !act_frame(ship, f) || m.rock <= 0 || !reg_geom(m.rock, rc, rr)) continue;
+            Beam bm;
+            bm.sys = sys_id(ship);
+            for (int i = 0; i < 3; ++i) { bm.a[i] = f.loc[i] / MV_UU_PER_M; bm.b[i] = rc[i]; }
+            g_beams[sid] = bm;
+        }
+        for (const auto& kv : g_beams)
+        {
+            const int sid = kv.first;
+            const Beam& bm = kv.second;
+            int victim = 0;
+            for (int vid : g_bench_ids)
+            {
+                if (vid == sid) continue;
+                UObject* vs = find_by_id(STR("DMSPlayerShipObject"), vid);
+                ActFrame vf;
+                if (!alive(vs) || !act_frame(vs, vf) || sys_id(vs) != bm.sys) continue;
+                const double vp[3] = {vf.loc[0] / MV_UU_PER_M, vf.loc[1] / MV_UU_PER_M, vf.loc[2] / MV_UU_PER_M};
+                if (ship_in_beam(bm.a, bm.b, vp, bubble_ship_r(vid))) { victim = vid; break; }
+            }
+            const bool held = g_beam_held.count(sid) > 0;
+            const bool now_held = beam_hold_next(held, victim != 0, g_beam_clear_t[sid], dt);
+            if (now_held && !held)
+            {
+                g_beam_held.insert(sid);
+                run_cmd(-1, sid, "laser_off");
+                log_line(STR("BEAM hold ship=") + std::to_wstring(sid) + STR(" victim=") + std::to_wstring(victim));
+            }
+            else if (!now_held && held)
+            {
+                g_beam_held.erase(sid);
+                run_cmd(-1, sid, "laser_on");
+                log_line(STR("BEAM resume ship=") + std::to_wstring(sid));
+            }
+            if (now_held) g_mine[sid].idle_t = 0.0;   // a held laser is not a depleted rock
+        }
+    }
+
     // WHAT: bubble tick (cmd_tick 0.25 s block, before mining_tick). Every bench ship in SEEK / MINE / COLLECT / SWEEP gets one check per tick
     //       when it moves by our steering or faster than BUBBLE_BRAKE_V. Game autopilot, docking autopilot and warp travel are never touched.
     void bubble_tick(double dt)

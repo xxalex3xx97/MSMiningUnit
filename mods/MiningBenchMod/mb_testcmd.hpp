@@ -288,6 +288,8 @@ namespace
             probe_power_tick(step);   // MiningProbePower.txt watch (probe_power_watch), idle unless a watch runs
             set_last_step(STR("bubble_tick"));   // bubble reflex for every manual move (mb_bubble.hpp): before the state machines, so a flown waypoint resumes first
             bubble_tick(step);
+            set_last_step(STR("beam_tick"));   // laser hold while another bench ship is in a mining beam (mb_bubble.hpp)
+            beam_tick(step);
             set_last_step(STR("mining_tick"));   // per-ship labels are set inside (mine ship=N state)
             mining_tick(step);
             set_last_step(STR("registry_frame"));   // rock registry (mb_registry.hpp): one updater per 0.25 s
