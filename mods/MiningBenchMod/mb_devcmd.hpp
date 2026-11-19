@@ -55,9 +55,11 @@ namespace
     {
         UObject* ship = find_by_id(STR("DMSPlayerShipObject"), sid);
         if (!alive(ship)) return STR("error: ship not found");
-        int32_t steps = 0, cur = -1;
-        if (!call_int(ship, STR("GetThrottleSteps"), steps)) return STR("error: GetThrottleSteps unreadable");
-        if (!get_int_prop(ship, STR("Throttle"), cur)) return STR("error: Throttle unreadable");
+        MsFlight sfl;
+        const int sfr = ms_flight_read(sid, FL_STATE, sfl);
+        if (sfr != 1 || !(sfl.flags & FF_STEPS)) return STR("error: GetThrottleSteps unreadable");
+        if (!(sfl.flags & FF_THROTTLE)) return STR("error: Throttle unreadable");
+        const int32_t steps = sfl.steps, cur = sfl.throttle;
         const int n = cmd == "thr_up" ? std::min(cur + 1, steps) : (cmd == "thr_down" ? std::max(cur - 1, 0) : 0);
         const SpeedMon sm = spd_get(sid);
         if (sm.have && sm.lim > 0.0 && sm.v / sm.lim > MV_SPEED_ABORT)
@@ -65,7 +67,8 @@ namespace
             zero_all(ship);
             return STR("error: speed above 1.1x limit, throttle zeroed");
         }
-        const bool wrote = set_int_prop(ship, STR("Throttle"), n);
+        std::wstring werr;
+        const bool wrote = ms_set_throttle(sid, n, werr);
         g_thr_chk = ThrCheck{true, sid, n};
         tlog(STR("thr cmd=") + widen(cmd) + STR(" Throttle was=") + std::to_wstring(cur) + STR(" steps=") + std::to_wstring(steps) +
              STR(" wrote=") + std::to_wstring(n) + STR(" ok=") + (wrote ? STR("1") : STR("0")));
@@ -78,10 +81,9 @@ namespace
     {
         if (!g_thr_chk.pending) return;
         g_thr_chk.pending = false;
-        UObject* ship = find_by_id(STR("DMSPlayerShipObject"), g_thr_chk.sid);
-        int32_t rb = -1;
-        const bool ok = alive(ship) && get_int_prop(ship, STR("Throttle"), rb);
-        tlog(STR("thr readback=") + (ok ? std::to_wstring(rb) : std::wstring(STR("n/a"))) + STR(" wrote=") + std::to_wstring(g_thr_chk.want));
+        MsFlight sfl;
+        const int sfr = ms_flight_read(g_thr_chk.sid, FL_STATE, sfl);
+        tlog(STR("thr readback=") + ms_throttle_text(sfr, sfl) + STR(" wrote=") + std::to_wstring(g_thr_chk.want));
     }
 
     // ---------------- Dev Menu Stations tab ----------------
@@ -1475,7 +1477,7 @@ namespace
         auto* c = static_cast<PowerWatchCtx*>(p);
         bool lp = false;
         bool known = false;
-        lp = power_dead(c->ship, power_grid(c->ship), known);   // no power on the grid (flag fallback)
+        lp = power_dead(power_grid(c->ship), known);   // no power on the grid (flag fallback)
         std::wstring buf;
         for (UStruct* st = c->ship->GetClassPrivate(); st && st->GetName() != STR("Object"); st = st->GetSuperStruct())
             for (FProperty* pr : st->ForEachProperty())

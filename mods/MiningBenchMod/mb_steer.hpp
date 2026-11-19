@@ -79,8 +79,8 @@ namespace
     // WHAT: sign applied to the pitch offset. +1 is the sign that works in game (steering confirmed, brief Update 28).
     constexpr double MV_VIEW_PITCH_SIGN = 1.0;
 
-    // WHAT: forward declaration of view_send (defined further down in this file, see raw helpers).
-    // WHY: view_zero and mv_finish call it before its definition.
+    // WHAT: forward declaration of view_send (defined further down in this file, wraps MSCore_view_send).
+    // WHY: mv_finish calls it before its definition.
     bool view_send(int cid, int64_t yaw_raw, int64_t pitch_raw, std::wstring& err);
 
     // WHAT: speed monitor state. Sampled every poll step (CMD_POLL_S) for g_cmd.ship by spd_update.
@@ -150,12 +150,14 @@ namespace
 
     // ---------------- stop and console helpers ----------------
 
-    // WHAT: stop the ship's drive: Throttle = 0 and RotationImpulseInput xyz = 0 (rot_zero). Does nothing when the ship is not alive.
-    // WHY: one stop used by every job end and by stop_all, so every path stops the ship the same way.
-    //      ImpulseInput is never touched here.
+    // WHAT: stop the ship's drive: MSCore_ship_zero (Throttle = 0, rotation = 0). When that export is missing or fails, the legacy writes:
+    //       Throttle = 0 and RotationImpulseInput xyz = 0 (rot_zero). Does nothing when the ship is not alive.
+    // WHY: one stop used by every job end and by stop_all, so every path stops the ship the same way. The fallback keeps Stop working
+    //      when MSCore is older. ImpulseInput is never touched here.
     void zero_all(UObject* ship)
     {
         if (!alive(ship)) return;
+        if (ms_zero_ship(obj_id(ship))) return;
         set_int_prop(ship, STR("Throttle"), 0);
         rot_zero(ship);
     }
@@ -276,7 +278,7 @@ namespace
         catch (...) { return 0; }
     }
 
-    // WHAT: host ore_loc: location (uu) of a floating ore actor. 1 = ok. Same read as the legacy aim_calc_ore. Never throws.
+    // WHAT: ShipControl host callback ore_loc: location (uu, K2_GetActorLocation) of a floating ore actor for the ore aim. 1 = ok. Never throws.
     int sc_host_ore_loc(int sid, void* handle, double* out3_uu)
     {
         (void)sid;
@@ -365,29 +367,22 @@ namespace
         return m;
     }
 
-    // ---------------- low power (FlightModel LowPowerThrottle / MaxLowPowerSpeed, ship flag bInLowPowerMode or bLowPower) ----------------
-    // WHAT: a numeric property (Int, Int64, Float or Double) as double; false when missing or another type.
-    bool get_num_prop(UObject* o, const TCHAR* prop, double& out)
-    {
-        FProperty* p = o ? o->GetPropertyByNameInChain(prop) : nullptr;
-        if (!p) return false;
-        const uint8_t* base = reinterpret_cast<const uint8_t*>(o) + p->GetOffset_Internal();
-        if (CastField<FFloatProperty>(p)) { out = *reinterpret_cast<const float*>(base); return true; }
-        if (CastField<FDoubleProperty>(p)) { out = *reinterpret_cast<const double*>(base); return true; }
-        if (CastField<FIntProperty>(p)) { out = *reinterpret_cast<const int32_t*>(base); return true; }
-        if (CastField<FInt64Property>(p)) { out = static_cast<double>(*reinterpret_cast<const int64_t*>(base)); return true; }
-        return false;
-    }
-
-    // WHAT: power grid of ship (ship.PowerGrid): TotalProduction, TotalConsumption, ConsumerEfficiency. ok = all three readable.
-    struct PowerGridRead { bool ok = false; double prod = 0.0, cons = 0.0, eff = 0.0; };
+    // ---------------- low power (ShipControl rule: sc_logic_steer.hpp power_dead_from) ----------------
+    // WHAT: power state of a ship from one FL_POWER flight read (MSCore API 10). ok = grid numbers read (FF_GRID).
+    //       lp_known / lp_on = low-power flag readable (FF_LP_KNOWN) / on (FF_LP_ON). All false when the read failed.
+    struct PowerGridRead { bool ok = false; double prod = 0.0, cons = 0.0, eff = 0.0; bool lp_known = false, lp_on = false; };
     PowerGridRead power_grid(UObject* ship)
     {
         PowerGridRead g;
-        UObject* grid = get_obj_prop(ship, STR("PowerGrid"));
-        if (!alive(grid)) return g;
-        g.ok = get_num_prop(grid, STR("TotalProduction"), g.prod) && get_num_prop(grid, STR("TotalConsumption"), g.cons) &&
-               get_num_prop(grid, STR("ConsumerEfficiency"), g.eff);
+        if (!alive(ship)) return g;
+        MsFlight f;
+        if (ms_flight_read(obj_id(ship), FL_POWER, f) != 1) return g;
+        g.ok = (f.flags & FF_GRID) != 0;
+        g.prod = f.grid_prod;
+        g.cons = f.grid_cons;
+        g.eff = f.grid_eff;
+        g.lp_known = (f.flags & FF_LP_KNOWN) != 0;
+        g.lp_on = (f.flags & FF_LP_ON) != 0;
         return g;
     }
 
@@ -410,21 +405,10 @@ namespace
         return out;
     }
 
-    // WHAT: low-power flag of ship into out. false when the ship is gone or has no such flag (out untouched).
-    bool lp_flag(UObject* ship, bool& out)
+    // WHAT: no power now: power_dead_from on the flight power read (grid when readable, else the low-power flag). known = a source was readable.
+    bool power_dead(const PowerGridRead& g, bool& known)
     {
-        if (!alive(ship)) return false;
-        const TCHAR* name = ship->GetPropertyByNameInChain(STR("bInLowPowerMode")) ? STR("bInLowPowerMode") : ship->GetPropertyByNameInChain(STR("bLowPower")) ? STR("bLowPower") : nullptr;
-        return name && get_bool_prop(ship, name, out);
-    }
-
-    // WHAT: no power now (power_no_power on the grid). known = a source was readable: the grid, else the low-power flag when the ship has one.
-    bool power_dead(UObject* ship, const PowerGridRead& g, bool& known)
-    {
-        if (g.ok) { known = true; return power_no_power(g.cons, g.prod, g.eff); }
-        bool on = false;
-        known = lp_flag(ship, on);
-        return known && on;
+        return power_dead_from(g.ok, g.prod, g.cons, g.eff, g.lp_known, g.lp_on, known);
     }
 
     // WHAT: move job tick, every engine tick while a job runs: ShipControl's jobs (sc_on) only. One tick of all of them (sc_tick_frame), then the

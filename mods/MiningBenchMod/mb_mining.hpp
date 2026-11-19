@@ -1271,7 +1271,9 @@ namespace
         }
         ActFrame f;
         // undocked ship outside the player's zone: its chunk may not be streamed (actor null, act_frame then uses the stale object frame). Hold that one chunk.
-        if (!obj_prop(ship, STR("Actor")) && !ship_docked(ship)) chunk_hold_update(sid, ship, true);
+        MsFlight sfp;
+        const bool has_actor = ms_flight_read(sid, FL_POSE, sfp) == 1 && (sfp.flags & FF_HAS_ACTOR) != 0;
+        if (!has_actor && !ship_docked(ship)) chunk_hold_update(sid, ship, true);
         if (!act_frame(ship, f))
         {
             act_fail_log_once(sid, m.chunk_txt); m.st = MS_OFF; m.chk_t = 0.0; mset(sid, m, act_fail_text()); return;
@@ -2634,10 +2636,11 @@ namespace
             w.ssec = ss ? ss->id : 0;
             w.dsec = ds ? ds->id : 0;
         }
-        bool trav = false, ap = false, dap = false;
-        get_bool_prop(ship, STR("bTravelling"), trav);
-        get_bool_prop(ship, STR("bAutopilot"), ap);
-        get_bool_prop(ship, STR("bDockingAutopilot"), dap);
+        MsFlight sfs;
+        const bool sfs_ok = ms_flight_read(sid, FL_STATE, sfs) == 1;
+        const bool trav = sfs_ok && (sfs.flags & FF_TRAVELLING) != 0;
+        const bool ap = sfs_ok && (sfs.flags & FF_AUTOPILOT) != 0;
+        const bool dap = sfs_ok && (sfs.flags & FF_DOCK_AP) != 0;
         int32_t drive = 0;
         call_int(ship, STR("GetAvailableJumpFuel"), drive);
         return flight_warp_why(dist_m, c.warp_trip_km, ssys == dsys, w.ssec, w.dsec, ship_docked(ship), trav, ap || dap, player_flies(ship),
@@ -3458,7 +3461,7 @@ namespace
         return STR("absent");
     }
 
-    // WHAT: POWER monitor, once per status second (mine_sample). lp = the low-power flag (lp_flag). Seconds in low power go to lp_t (el per sample).
+    // WHAT: POWER monitor, once per status second (mine_sample). lp = no power (power_dead). Seconds in low power go to lp_t (el per sample).
     //       On change: "POWER lost|restored" to MiningCombat.txt (combat_log) and the Log tab. The lost line carries the state, speed, Throttle,
     //       fuel cargo and thresholds, and the power fields (PowerGenRate, PowerDraw, ThrusterPowerDraw; absent when the build has no such name).
     // WHY: 2026-11-04: a ship crawled in low power for 12 min with no log line and never refuelled. A restore clears lp_trip (the low-power trip is over).
@@ -3481,7 +3484,7 @@ namespace
     {
         const PowerGridRead g = power_grid(ship);
         bool known = false;
-        const bool lp = power_dead(ship, g, known);
+        const bool lp = power_dead(g, known);
         if (!known) return;
         if (lp) m.lp_t += el; else m.lp_t = 0.0;
         const bool bo = g.ok && power_brownout(g.cons, g.prod, g.eff);
@@ -3504,8 +3507,8 @@ namespace
             mlog(sid, STR("Low power restored"));
             return;
         }
-        int32_t thr = 0;
-        get_int_prop(ship, STR("Throttle"), thr);
+        MsFlight sfl;
+        const int sfr = ms_flight_read(sid, FL_STATE, sfl);
         const Config c = eff_cfg(sid);
         std::wstring fuel, th;
         for (int i = 0; i < N_FUEL; ++i)
@@ -3516,7 +3519,7 @@ namespace
             th += (i ? STR("/") : STR("")) + std::to_wstring(c.fuel[i].threshold);
         }
         combat_log(STR("POWER lost ship=") + std::to_wstring(sid) + STR(" ") + g_bench_names[sid] + STR(" state=") + mine_state_name(m.st) +
-                   STR(" speed=") + std::to_wstring(m.spd) + STR(" throttle=") + std::to_wstring(thr) + STR(" prod=") + std::to_wstring(g.prod) +
+                   STR(" speed=") + std::to_wstring(m.spd) + STR(" throttle=") + ms_throttle_text(sfr, sfl) + STR(" prod=") + std::to_wstring(g.prod) +
                    STR(" cons=") + std::to_wstring(g.cons) + STR(" eff=") + std::to_wstring(g.eff) + STR(" ") + reactor_text(ship) + STR(" fuel:") + fuel +
                    STR(" thresholds=") + th);
         mlog(sid, STR("Low power: the ship lost power"));

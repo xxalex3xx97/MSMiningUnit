@@ -71,13 +71,9 @@ namespace
         { F_CORE, RK_CLASS, "Item", "", "", "", false },
         // STEER
         { F_STEER, RK_PROP, "DMSPlayerShipObject", "Throttle", "", "IntProperty", true },
-        { F_STEER, RK_FUNC, "DMSPlayerShipObject", "GetThrottleSteps", "", "", false },
         { F_STEER, RK_FUNC, "DMSPlayerShipObject", "GetMaxSpeed", "", "", false },
         { F_STEER, RK_FUNC, "DMSPlayerShipObject", "GetModifiedMaxSpeed", "", "", false },
-        { F_STEER, RK_CLASS, "ViewInput", "", "", "", false },
-        { F_STEER, RK_FUNC, "ViewInput", "CreateInputView", "", "", false },
         { F_STEER, RK_CLASS, "PilotConsoleObject", "", "", "", false },
-        { F_STEER, RK_PROP, "DMSPlayerController", "InputView", "", "StructProperty", true },
         { F_STEER, RK_PROP, "DMSPlayerShipObject", "RotationImpulseInput", "", "StructProperty", false },
         // WEAPONS
         { F_WEAPONS, RK_CLASS, "ShipFiringInput", "", "", "", false },
