@@ -22,6 +22,7 @@ if ($Mod -eq 'MiningBenchMod') {
     Copy-Item "$src\mods\ShipControl\sc_logic_path.hpp" -Destination $mirror -Force   # mb_logic.hpp includes the path/warp geometry
     Copy-Item "$src\mods\ShipControl\sc_logic_steer.hpp" -Destination $mirror -Force  # mb_logic.hpp includes the approach/low-power rules
     Copy-Item "$src\mods\ShipControl\sc_logic_bubble.hpp" -Destination $mirror -Force  # mb_logic.hpp includes the bubble ladder rules (SC3-C)
+    Copy-Item "$src\mods\ShipControl\sc_flight_abi.h" -Destination $mirror -Force     # MsFlight ABI copy (SC6-D3a), mining reads flights through it
 }
 
 # ShipControl is not in the mirror's cppmods\CMakeLists.txt yet: add it once
