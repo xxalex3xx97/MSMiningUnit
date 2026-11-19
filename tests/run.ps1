@@ -60,6 +60,7 @@ function Run-Py($step, $script) {
 }
 Run-Py 'test_gen_paste' 'tests\test_gen_paste.py'
 Run-Py 'test_asset_refs' 'tests\test_asset_refs.py'
+Run-Py 'test_fleet_ui' 'tests\test_fleet_ui.py'
 Run-Py 'test_abi' 'tests\test_abi.py'
 
 # ---- 4. Lua syntax (luac -p) ----
