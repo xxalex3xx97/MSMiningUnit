@@ -5,17 +5,22 @@
 // DEPENDS ON: mods/ShipControl/sc_owner.hpp (pure std, no UE headers).
 // NOTE: CHECK counts failures and keeps going; the summary line prints the pass and fail counts.
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <vector>
 
 #include "sc_logic_path.hpp"
 #include "sc_owner.hpp"
 #include "sc_speed.hpp"   // SC2a: speed judge (pure part); includes sc_mscore.hpp (windows.h only)
+#include "sc_logic_steer.hpp"   // SC2b A1: moved steering rules
+#include "sc_frame.hpp"         // SC2b A1: frame, aim, calibration
 
 static int g_pass = 0;
 static int g_fail = 0;
 #define NEAR(a, b, eps) CHECK(std::fabs((double)(a) - (double)(b)) <= (eps))
+#define NEARB(a, b, eps) (std::fabs((double)(a) - (double)(b)) <= (eps))   // value form, for use inside CHECK(...)
 
 #define CHECK(c) do { if (c) ++g_pass; else { ++g_fail; std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #c); } } while (0)
 
@@ -128,6 +133,183 @@ static void t_tune_geom_path()
     CHECK(path_first_blocker(a, b, pr + 1, 1, dd) == -1);
 }
 
+// SC2b A1: moved steering rules (sc_logic_steer.hpp) and frame / aim maths (sc_math.hpp, sc_frame.hpp).
+// Vectors: approach_throttle, approach_timeout_s, lowpower_throttle_cap, power_no_power = test_logic.cpp.
+static void t_moved_steer()
+{
+    CHECK(approach_throttle(5000.0, 40.0, 10) == 10);
+    CHECK(approach_throttle(500.0, 40.0, 10) == 10);
+    CHECK(approach_throttle(250.0, 40.0, 10) == 5);
+    CHECK(approach_throttle(250.0, 40.0, 4) == 2);
+    CHECK(approach_throttle(1.0, 0.0, 10) == 1);
+    CHECK(approach_throttle(0.0, 0.0, 10) == 0);
+    CHECK(approach_throttle(-3.0, 0.0, 10) == 0);
+    CHECK(approach_throttle(250.0, 40.0, 0) == 0);
+    for (double d = 1.0; d < 600.0; d += 7.0) { const int t = approach_throttle(d, 0.0, 10); CHECK(t >= 1 && t <= 10); }
+    NEAR(approach_timeout_s(300.0, true, 0.333), 300.0 / 0.333, 1e-9);
+    CHECK(approach_timeout_s(300.0, false, 0.333) == 300.0);
+    CHECK(approach_timeout_s(300.0, true, 0.0) == 300.0);
+    CHECK(approach_timeout_s(300.0, true, 1.0) == 300.0);
+    CHECK(lowpower_throttle_cap(10, true, 5) == 5);
+    CHECK(lowpower_throttle_cap(3, true, 5) == 3);
+    CHECK(lowpower_throttle_cap(10, false, 5) == 10);
+    CHECK(lowpower_throttle_cap(10, true, 0) == 10);
+    CHECK(power_no_power(40.0, 0.0, 0.0));
+    CHECK(!power_no_power(0.0, 0.0, 0.0));
+    CHECK(!power_no_power(200.0, 80.0, 0.4));
+}
+
+static void t_lp_state_from()
+{
+    bool lp = false;
+    int thr = -1;
+    double frac = -1.0;
+    CHECK(lp_state_from(true, 0.0, 40.0, 0.0, false, false, true, 5, 0.333, lp, thr, frac) && lp && thr == 5);   // grid dead, limits ok
+    NEAR(frac, 0.333, 1e-12);
+    CHECK(!lp_state_from(true, 80.0, 200.0, 0.4, false, false, true, 5, 0.333, lp, thr, frac) && !lp && thr == 0 && frac == 0.0);   // brown-out
+    CHECK(lp_state_from(false, 0.0, 0.0, 0.0, true, true, true, 5, 0.333, lp, thr, frac) && lp && thr == 5);   // no grid, flag known and on
+    CHECK(!lp_state_from(false, 0.0, 0.0, 0.0, false, false, true, 5, 0.333, lp, thr, frac) && !lp);          // flag unknown
+    CHECK(!lp_state_from(true, 0.0, 40.0, 0.0, false, false, false, 5, 0.333, lp, thr, frac) && !lp && thr == 0 && frac == 0.0);   // dead, limits unreadable
+}
+
+static void t_phase1_steer()
+{
+    CHECK(phase1_decide(false, 1.9, 0.0) == P1_FACE_OK);
+    CHECK(phase1_decide(false, 5.0, 30.0) == P1_FACE_TIMEOUT);
+    CHECK(phase1_decide(false, 5.0, 29.9) == P1_NONE);
+    CHECK(phase1_decide(true, 9.9, 0.0) == P1_TO_PHASE2);
+    CHECK(phase1_decide(true, 10.0, 0.0) == P1_NONE);
+}
+
+static void t_approach_step()
+{
+    ApproachOut o = approach_step(5000.0, 0.0, 0.0, 10, false, 0, 0, 0.0, 0.25);
+    CHECK(o.target == 10 && o.thr == 0 && NEARB(o.thr_t, 0.25, 1e-12));          // ramp not yet
+    ApproachOut o2 = approach_step(5000.0, 0.0, 0.0, 10, false, 0, o.thr, o.thr_t, 0.25);
+    CHECK(o2.thr == 1 && o2.thr_t == 0.0);                                       // 0.5 s: one step up
+    o = approach_step(100.0, 0.0, 0.0, 10, false, 0, 5, 0.3, 0.25);
+    CHECK(o.target == 2 && o.thr == 2 && o.thr_t == 0.0);                       // falls straight to target
+    o = approach_step(0.0, 5.0, 0.0, 10, false, 0, 3, 0.2, 0.25);
+    CHECK(o.target == -2 && o.thr == -2 && !o.done);                             // past stop, still moving: brake
+    o = approach_step(-10.0, 5.0, 0.0, 10, false, 0, 3, 0.2, 0.25);
+    CHECK(o.target == -2 && o.thr == -2 && !o.done);
+    o = approach_step(0.0, 0.5, 0.0, 10, false, 0, -2, 0.0, 0.25);
+    CHECK(o.done);                                                               // nearly stopped: done
+    o = approach_step(5000.0, 0.0, 12.0, 10, false, 0, 5, 0.0, 0.25);
+    CHECK(o.target == 0 && o.thr == 0);                                          // heading error > 10 deg
+    o = approach_step(5000.0, 0.0, 0.0, 4, false, 0, 0, 0.5, 0.5);
+    CHECK(o.target == 4 && o.thr == 1);                                          // steps cap
+    int thr = 0;
+    double tt = 0.0;
+    for (int i = 0; i < 100; ++i)
+    {
+        o = approach_step(5000.0, 0.0, 0.0, 10, true, 3, thr, tt, 0.25);
+        thr = o.thr;
+        tt = o.thr_t;
+        CHECK(o.target <= 3 && thr <= 3);                                        // low-power cap 3
+    }
+    CHECK(thr == 3);
+    o = approach_step(5000.0, 0.0, 0.0, 10, false, 0, -2, 0.0, 0.25);
+    CHECK(o.thr == 0);                                                           // pushed back out: restart from 0
+}
+
+static void t_view_and_ore()
+{
+    CHECK(!ore_refresh_due(150.0, false, 0.0));
+    CHECK(ore_refresh_due(50.0, false, 0.0));
+    CHECK(ore_refresh_due(50.0, true, 1.0));
+    CHECK(!ore_refresh_due(50.0, true, 0.5));
+    double yaw = -1.0, pit = -1.0;
+    bool aligned = false;
+    const double up[3] = {0, 0, 1}, dn[3] = {0, -1, 0}, zero[3] = {0, 0, 0};
+    CHECK(view_offset(1.9, up, yaw, pit, aligned) && aligned && yaw == 0.0 && pit == 0.0);
+    CHECK(view_offset(5.0, up, yaw, pit, aligned) && !aligned && NEARB(yaw, 12.0, 1e-9) && NEARB(pit, 0.0, 1e-9));
+    CHECK(view_offset(5.0, dn, yaw, pit, aligned) && NEARB(yaw, 0.0, 1e-9) && NEARB(pit, 12.0, 1e-9));
+    CHECK(view_offset(18.0, up, yaw, pit, aligned) && NEARB(yaw, 20.0, 1e-9));
+    CHECK(view_offset(5.0, zero, yaw, pit, aligned) && yaw == 0.0 && pit == 0.0);
+    const double ship[3] = {0, 0, 0}, tgt[3] = {300, 400, 0};
+    NEAR(remain_dist_m(ship, tgt, 100.0), 400.0, 1e-9);
+}
+
+static void t_aim_and_rloc()
+{
+    ScFrame f;   // at the origin, nose +X, right +Y, up +Z
+    ScAim r;
+    const double ahead[3] = {1000, 0, 0}, behind[3] = {-1000, 0, 0}, right[3] = {0, 1000, 0}, above[3] = {0, 0, 1000}, here[3] = {0, 0, 0};
+    CHECK(aim_pt(f, ahead, r) && NEARB(r.err_deg, 0.0, 1e-9) && NEARB(r.dist_m, 10.0, 1e-9));
+    CHECK(aim_pt(f, behind, r) && NEARB(r.err_deg, 180.0, 1e-6));
+    CHECK(aim_pt(f, right, r) && NEARB(r.err_deg, 90.0, 1e-6) && r.a_body[2] > 0.99);   // right: turn axis +U
+    CHECK(aim_pt(f, above, r) && r.a_body[1] < -0.99);                                 // above: turn axis -R
+    CHECK(!aim_pt(f, here, r));                                                        // point at the ship: degenerate
+
+    ScFrame g;
+    g.loc[0] = 1000; g.loc[1] = 2000; g.loc[2] = 3000;
+    const int64_t c0[3] = {0, 0, 0};
+    const double l0[3] = {0, 0, 0};
+    const double tl[3] = {655360.0, 0, 0};   // 10 m raw
+    double rl[3] = {0, 0, 0};
+    CHECK(pt_rloc_calc(g, 5, c0, l0, 5, c0, tl, rl));
+    NEAR(rl[0], 2000.0, 1e-9); NEAR(rl[1], 2000.0, 1e-9); NEAR(rl[2], 3000.0, 1e-9);   // same chunk: loc + 1000 uu
+    const int64_t c1[3] = {1, 0, 0};
+    const double z[3] = {0, 0, 0};
+    CHECK(pt_rloc_calc(g, 5, c0, l0, 5, c1, z, rl));
+    NEAR(rl[0], 1000.0 + 204800.0, 1e-6);                                                  // one chunk: + 2048 m
+    CHECK(!pt_rloc_calc(g, 5, c0, l0, 6, c0, tl, rl));                                     // other system
+}
+
+static void t_qcal_and_frame()
+{
+    const double q[4] = {0.8660254037844386, 0.16666666666666666, 0.3333333333333333, 0.3333333333333333};   // unit, generic axis
+    double fw[3], R[3], U[3];
+    qcal_out(q, 0, 0, fw);
+    qcal_out(q, 0, 2, R);
+    qcal_out(q, 0, 4, U);
+    int qm = -1, ax[3] = {-1, -1, -1};
+    CHECK(qcal_pick(q, fw, R, U, qm, ax) && qm == 0 && ax[0] == 0 && ax[1] == 2 && ax[2] == 4);
+    const double ident[4] = {1, 0, 0, 0}, X[3] = {1, 0, 0}, Y[3] = {0, 1, 0}, Z[3] = {0, 0, 1};
+    CHECK(!qcal_pick(q, X, Y, Z, qm, ax));                                                  // axes not from this quat
+    double a2[3], b2[3], c2[3];
+    qcal_apply(q, 0, ax, a2, b2, c2);
+    NEAR(dot3(a2, b2), 0.0, 1e-9); NEAR(norm3(a2), 1.0, 1e-9);
+    NEAR(quat_angle_deg(ident, ident), 0.0, 1e-9);
+    const double half = std::sqrt(0.5);
+    const double quarter[4] = {half, 0, 0, half};   // 90 deg about Z
+    NEAR(quat_angle_deg(ident, quarter), 90.0, 1e-6);
+
+    MsFlight f;
+    std::memset(&f, 0, sizeof(f));
+    ScFrame out;
+    std::wstring why;
+    f.flags = FF_ACTOR_FRAME;
+    f.act_loc[0] = 1; f.act_loc[1] = 2; f.act_loc[2] = 3;
+    f.fw[0] = 0; f.fw[1] = 1; f.fw[2] = 0;
+    f.R[0] = -1; f.R[1] = 0; f.R[2] = 0;
+    f.U[2] = 1;
+    CHECK(frame_from_flight(f, out, why) && out.loc[2] == 3.0 && out.fw[1] == 1.0 && out.R[0] == -1.0);   // actor frame copied
+    std::memset(&f, 0, sizeof(f));
+    f.flags = FF_OBJ_POSE;
+    CHECK(!frame_from_flight(f, out, why) && why == L"ship frame unreadable");          // object pose, no calibration
+    f.ch[0] = 1; f.ch[1] = 2; f.ch[2] = 3;
+    f.loc_raw[0] = 65536.0 * 5; f.loc_raw[2] = 65536.0 * 7;
+    f.quat[0] = 1.0;
+    g_calib = ScCalib();
+    g_calib.ok = true;
+    CHECK(frame_from_flight(f, out, why) && NEARB(out.loc[0], 205300.0, 1e-6) && NEARB(out.loc[1], 409600.0, 1e-6) && NEARB(out.loc[2], 615100.0, 1e-6));
+    g_calib = ScCalib();
+
+    std::memset(&f, 0, sizeof(f));
+    f.flags = FF_ACTOR_FRAME | FF_OBJ_POSE;
+    f.quat[0] = q[0]; f.quat[1] = q[1]; f.quat[2] = q[2]; f.quat[3] = q[3];
+    qcal_out(q, 0, 0, f.fw);
+    qcal_out(q, 0, 2, f.R);
+    qcal_out(q, 0, 4, f.U);
+    CHECK(sc_calib_learn(f) && g_calib.ok && g_calib.qmode == 0 && g_calib.ax[0] == 0 && g_calib.ax[1] == 2 && g_calib.ax[2] == 4);
+    CHECK(!sc_calib_learn(f));                                                              // learned once
+    g_calib = ScCalib();
+    f.flags = FF_OBJ_POSE;
+    CHECK(!sc_calib_learn(f) && !g_calib.ok);                                               // no actor frame: cannot teach
+}
+
 int main()
 {
     std::string why;
@@ -226,6 +408,14 @@ int main()
         CHECK(!o.may_act(5, "mining", why) && why == "owned by attack");
         CHECK(o.may_act(5, "attack", why));            // holder may act
     }
+
+    t_moved_steer();
+    t_lp_state_from();
+    t_phase1_steer();
+    t_approach_step();
+    t_view_and_ore();
+    t_aim_and_rloc();
+    t_qcal_and_frame();
 
     std::printf("test_shipcontrol: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
