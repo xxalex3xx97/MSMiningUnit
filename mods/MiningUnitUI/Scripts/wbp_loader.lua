@@ -574,6 +574,7 @@ local function taggedDocks()
     local id = trim(p[1] or "")
     if id ~= "" then
       if trim(p[5] or "") == "1" then by.park = by.park or {}; by.park[#by.park + 1] = id end
+      if trim(p[6] or "") == "1" then by.refuel = by.refuel or {}; by.refuel[#by.refuel + 1] = id end
       if trim(p[3] or "") == "1" then
         by.misc = by.misc or {}; by.misc[#by.misc + 1] = id
       else
@@ -789,7 +790,7 @@ local function udRender()
   setVis(w("Pnl_UDockCard_" .. UD_PARK.k), 0)
   dynDocks("UDock_" .. UD_PARK.k, function() return S.ud and S.ud[UD_PARK.ini] or {} end, udSave, "Parking dock", docks, "Pnl_UDockCard_" .. UD_PARK.k, function() return tagged.park or {} end)
   setVis(w("Pnl_RDockCard"), 0)
-  dynDocks("RDock", function() return S.rd end, udSave, "Refuel dock", docks)
+  dynDocks("RDock", function() return S.rd end, udSave, "Refuel dock", docks, "Pnl_RDockCard", function() return tagged.refuel or {} end)
   S.warn = (not S.all and nodock == #UD_ORES) and "No unload dock set for any ore" or ""
   M.setText("Txt_ShipWarn", S.warn)
   setVis(w("Txt_ShipWarn"), S.warn ~= "" and 0 or 1)
@@ -1267,7 +1268,7 @@ end
 local shipStatus  -- defined below
 local function logFw(f, name) S.logFw = S.logFw or {}; local k = name; if not ok(S.logFw[k]) then local c = w("Pnl_LogCard_" .. f); S.logFw[k] = c and deepFind(c, name) or false end; return S.logFw[k] or nil end
 local function logPaintAll(lines, dn)
-  local rows, cards, key = (S.all and S.fleet and S.fleet.rows) or (function() local r = benchShips(); for _, o in ipairs(r) do shipStatus(o) end return r end)(), {}, {}
+  local rows, cards, key = (S.all and S.fleet and S.fleet.rows) or (function() local out = {}; for _, o in ipairs(benchShips()) do if S.all or tostring(o.id) == tostring(S.sid) then shipStatus(o); out[#out + 1] = o end end return out end)(), {}, {}
   local anyOn = false
   -- destroyed ships (not on the bench) take the free cards after the bench ships: log view only, never in the selector, cards or fan-out
   local bench, gone = {}, {}
