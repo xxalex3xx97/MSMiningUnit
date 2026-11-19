@@ -16,6 +16,7 @@
 #include "sc_speed.hpp"   // SC2a: speed judge (pure part); includes sc_mscore.hpp (windows.h only)
 #include "sc_logic_steer.hpp"   // SC2b A1: moved steering rules
 #include "sc_frame.hpp"         // SC2b A1: frame, aim, calibration
+#include "sc_move.hpp"          // SC2b A2: move jobs (ABI via sc_api.h, sc_view_raw)
 
 static int g_pass = 0;
 static int g_fail = 0;
@@ -310,6 +311,15 @@ static void t_qcal_and_frame()
     CHECK(!sc_calib_learn(f) && !g_calib.ok);                                               // no actor frame: cannot teach
 }
 
+// SC2b A2: move-job ABI sizes (also checked by static_asserts in sc_api.h) and the pure view raw conversion of sc_move.hpp.
+static void t_move_abi()
+{
+    CHECK(SC_API_LEVEL == 3);
+    CHECK(sizeof(ScHost) == 80 && SC_HOST_SIZE_L2 == 24);
+    CHECK(sizeof(ScMoveReq) == 128 && sizeof(ScMoveStatus) == 64);
+    CHECK(sc_view_raw(1.0) == 65536 && sc_view_raw(-0.5) == -32768 && sc_view_raw(0.0) == 0);   // llround of deg * 65536
+}
+
 int main()
 {
     std::string why;
@@ -416,6 +426,7 @@ int main()
     t_view_and_ore();
     t_aim_and_rloc();
     t_qcal_and_frame();
+    t_move_abi();
 
     std::printf("test_shipcontrol: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;

@@ -1,10 +1,11 @@
 // FILE: mods/ShipControl/dllmain.cpp
 // WHAT: UE4SS C++ mod entry point for ShipControl. Holds the ship owner registry and exports the C ABI in sc_api.h. SC0: owner registry only, no engine hook.
 // WHY separate: UE4SS needs start_mod and uninstall_mod in the DLL entry file.
-// DEPENDS ON (exact, include order matters): sc_api.h (types only, see below), sc_version.hpp, sc_common.hpp, sc_owner.hpp, sc_speed.hpp (includes sc_mscore.hpp, sc_math.hpp)
+// DEPENDS ON (exact, include order matters): sc_api.h (types only, see below), sc_version.hpp, sc_common.hpp, sc_owner.hpp, sc_speed.hpp (includes sc_mscore.hpp, sc_math.hpp), sc_move.hpp (SC2b move jobs)
 // USED BY: the UE4SS loader (mods.txt line "ShipControl : 1" or enabled.txt), which calls start_mod and uninstall_mod. Other mods load this DLL by LoadLibrary and GetProcAddress (sc_api.h).
 // GAME FACTS: none. Every export catches exceptions and returns a failure code; a failure never reaches the caller as a throw.
 #include <atomic>
+#include <cstring>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -15,13 +16,14 @@
 #include "sc_common.hpp"
 #include "sc_owner.hpp"
 #include "sc_speed.hpp"
+#include "sc_move.hpp"
 
 namespace
 {
-    std::mutex g_mx;                 // guards g_owners (exports may run on any thread)
+    std::recursive_mutex g_mx;       // guards g_owners, g_spd, g_jobs_mv (exports may run on any thread; recursive so host callbacks may call SC_*)
     ScOwners g_owners;
     std::atomic<bool> g_killed{false};   // kill switch: refuses claim/release while true
-    ScHost g_host = {0, nullptr, nullptr};   // host callbacks (SC_set_host); guarded by g_mx
+    ScHost g_host{};                 // host callbacks (SC_set_host); guarded by g_mx
 
     // WHAT: writes one line to the host log (mining's tlog), or to the UE4SS log when no host is set.
     // WHY: speed and watch messages reach the mod that owns the ship.
@@ -65,7 +67,7 @@ namespace
         try
         {
             std::string why;
-            std::lock_guard<std::mutex> lk(g_mx);
+            std::lock_guard<std::recursive_mutex> lk(g_mx);
             if (g_killed.load()) { put_err("ShipControl killed", err, errlen); return 0; }
             if (fn(why)) return 1;
             put_err(why, err, errlen);
@@ -114,18 +116,18 @@ extern "C"
     // WHAT: API level (sc_api.h SC_API_LEVEL). Callers refuse to run below the level they need.
     SHIP_CONTROL_API int SC_api()
     {
-        try { return 2; }
+        try { return 3; }
         catch (...) { return 0; }
     }
 
-    // WHAT: capability bits. bit 0 = owner registry. bit 1 = speed monitor (MSCore API >= 10 bound now).
+    // WHAT: capability bits. bit 0 = owner registry. bit 1 = speed monitor (MSCore API >= 10 bound now). bit 2 (value 4) = move jobs (API 3, MSCore view_send bound).
     SHIP_CONTROL_API int SC_caps()
     {
         try
         {
-            std::lock_guard<std::mutex> lk(g_mx);
+            std::lock_guard<std::recursive_mutex> lk(g_mx);
             std::wstring why;
-            return 1 | (ms_load(why) ? 2 : 0);
+            return 1 | (ms_load(why) ? (2 | 4) : 0);
         }
         catch (...) { return 0; }
     }
@@ -162,7 +164,7 @@ extern "C"
         {
             std::string who;
             {
-                std::lock_guard<std::mutex> lk(g_mx);
+                std::lock_guard<std::recursive_mutex> lk(g_mx);
                 who = g_owners.owner_of(ship);
             }
             if (who.empty()) { if (out && outlen > 0) out[0] = 0; return 0; }
@@ -178,7 +180,9 @@ extern "C"
         return run_export([&](std::string& why) {
             std::string who;
             if (!owner_arg(owner, who, why)) return false;
-            return g_owners.release(ship, who, why);
+            if (!g_owners.release(ship, who, why)) return false;
+            drop_job(ship, who, g_host);   // SC2b: the owner's move job on this ship ends (no callback)
+            return true;
         }, err, errlen);
     }
 
@@ -189,25 +193,28 @@ extern "C"
         {
             std::string why, who;
             if (!owner_arg(owner, who, why)) { put_err(why, err, errlen); return -1; }
-            std::lock_guard<std::mutex> lk(g_mx);
+            std::lock_guard<std::recursive_mutex> lk(g_mx);
             if (g_killed.load()) { put_err("ShipControl killed", err, errlen); return -1; }
-            return g_owners.release_all(who);
+            const int n = g_owners.release_all(who);
+            drop_jobs_owned(who, g_host);   // SC2b: the owner's move jobs end (no callback)
+            return n;
         }
         catch (const std::exception& e) { put_err(std::string("exception: ") + e.what(), err, errlen); }
         catch (...) { put_err("exception: unknown", err, errlen); }
         return -1;
     }
 
-    // WHAT: installs the host callbacks. size must equal sizeof(ScHost). 1 = ok, 0 = refused.
-    // WHY: mining gets its log and its abort callback here; ShipControl never calls game code for them.
+    // WHAT: installs the host callbacks. size = SC_HOST_SIZE_L2 (24, API 2 layout) or sizeof(ScHost) (80). 1 = ok, 0 = refused.
+    // WHY: mining gets its log, its abort callback and (API 3) the move callbacks here; the rest of the struct stays zero (null callbacks).
     SHIP_CONTROL_API int SC_set_host(const ScHost* host)
     {
         try
         {
-            if (!host || host->size != static_cast<int32_t>(sizeof(ScHost))) return 0;
-            std::lock_guard<std::mutex> lk(g_mx);
+            if (!host || (host->size != SC_HOST_SIZE_L2 && host->size != static_cast<int32_t>(sizeof(ScHost)))) return 0;
+            std::lock_guard<std::recursive_mutex> lk(g_mx);
             if (g_killed.load()) return 0;
-            g_host = *host;
+            g_host = ScHost{};
+            std::memcpy(&g_host, host, static_cast<size_t>(host->size));
             return 1;
         }
         catch (...) { return 0; }
@@ -219,7 +226,7 @@ extern "C"
         try
         {
             if (!tune || tune->size != static_cast<int32_t>(sizeof(ScTune))) return 0;
-            std::lock_guard<std::mutex> lk(g_mx);
+            std::lock_guard<std::recursive_mutex> lk(g_mx);
             if (g_killed.load()) return 0;
             g_spd.speed_k = tune->speed_k;
             return 1;
@@ -235,7 +242,7 @@ extern "C"
         {
             if (!owner || !*owner) return 0;
             const std::string who = owner;
-            std::lock_guard<std::mutex> lk(g_mx);
+            std::lock_guard<std::recursive_mutex> lk(g_mx);
             if (g_killed.load()) return 0;
             std::string why;
             if (!g_owners.may_act(sid, who, why)) { host_say(g_host, L"SC_watch refused ship=" + std::to_wstring(sid) + L": " + widen(why)); return 0; }
@@ -254,10 +261,10 @@ extern "C"
     {
         std::vector<SpeedAbort> fresh;
         int n = -1;
-        ScHost h = {0, nullptr, nullptr};
+        ScHost h{};
         try
         {
-            std::lock_guard<std::mutex> lk(g_mx);
+            std::lock_guard<std::recursive_mutex> lk(g_mx);
             if (g_killed.load()) return -1;
             n = speed_tick(dt, fresh);
             h = g_host;
@@ -278,7 +285,7 @@ extern "C"
         try
         {
             if (!out || out->size != static_cast<int32_t>(sizeof(ScSpeed))) return 0;
-            std::lock_guard<std::mutex> lk(g_mx);
+            std::lock_guard<std::recursive_mutex> lk(g_mx);
             if (g_killed.load() || !g_spd.watch.count(sid)) return 0;
             auto m = g_spd.mon.find(sid);
             if (m == g_spd.mon.end()) return 0;
@@ -291,6 +298,98 @@ extern "C"
         catch (...) { return 0; }
     }
 
+    // WHAT: starts a move job (face_rock / approach_rock) of ship sid for owner. 1 = started (req->out_cid, out_steps set), 0 = refused: err holds 'error: ...'.
+    // WHY: the job is stepped by SC_tick_frame; preconditions are read before the first write. The legacy path stays in MiningBenchMod until SC6.
+    SHIP_CONTROL_API int SC_move_start(const char* owner, int sid, ScMoveReq* req, wchar_t* err, int errlen)
+    {
+        try
+        {
+            if (!owner || !*owner || !req) { put_err("error: bad move request", err, errlen); return 0; }
+            if (req->size != static_cast<int32_t>(sizeof(ScMoveReq))) { put_err("error: bad move request size", err, errlen); return 0; }
+            const std::string who = owner;
+            std::lock_guard<std::recursive_mutex> lk(g_mx);
+            if (g_killed.load()) { put_err("error: ShipControl killed", err, errlen); return 0; }
+            std::string why;
+            if (!g_owners.may_act(sid, who, why)) { put_err("error: ship " + why, err, errlen); return 0; }
+            std::wstring w;
+            if (!move_start_job(who, sid, *req, g_host, w)) { if (err && errlen > 0) { std::wstring c = w.substr(0, static_cast<size_t>(errlen - 1)); std::memcpy(err, c.c_str(), (c.size() + 1) * sizeof(wchar_t)); } return 0; }
+            return 1;
+        }
+        catch (const std::exception& e) { put_err(std::string("exception: ") + e.what(), err, errlen); }
+        catch (...) { put_err("exception: unknown", err, errlen); }
+        return 0;
+    }
+
+    // WHAT: cancels the move job of ship sid for owner: aim offset stopped, job erased, no zero, no callback.
+    //       1 = cancelled or none, 0 = other owner or killed.
+    SHIP_CONTROL_API int SC_move_cancel(const char* owner, int sid)
+    {
+        try
+        {
+            if (!owner || !*owner) return 0;
+            const std::string who = owner;
+            std::lock_guard<std::recursive_mutex> lk(g_mx);
+            if (g_killed.load()) return 0;
+            return move_cancel_job(who, sid, g_host);
+        }
+        catch (...) { return 0; }
+    }
+
+    // WHAT: 1 = a move job of ship sid runs, 0 = none (or killed).
+    SHIP_CONTROL_API int SC_move_active(int sid)
+    {
+        try
+        {
+            std::lock_guard<std::recursive_mutex> lk(g_mx);
+            if (g_killed.load()) return 0;
+            return g_jobs_mv.count(sid) ? 1 : 0;
+        }
+        catch (...) { return 0; }
+    }
+
+    // WHAT: status of the move job of ship sid into out (size must be sizeof(ScMoveStatus)). 1 = ok (active 0 when no job), 0 = refused.
+    SHIP_CONTROL_API int SC_move_status(int sid, ScMoveStatus* out)
+    {
+        try
+        {
+            if (!out || out->size != static_cast<int32_t>(sizeof(ScMoveStatus))) return 0;
+            std::lock_guard<std::recursive_mutex> lk(g_mx);
+            if (g_killed.load()) return 0;
+            fill_status(sid, *out);
+            return 1;
+        }
+        catch (...) { return 0; }
+    }
+
+    // WHAT: one tick of every move job (dt in s). >= 0 = jobs stepped, -1 = killed or MSCore unusable (every job is ended first: no game
+    //       writes when killed, 'error: MSCore flight unavailable' when MSCore is unusable). on_move_done runs per ended job after the lock is released.
+    SHIP_CONTROL_API int SC_tick_frame(double dt)
+    {
+        std::vector<Done> done;
+        ScHost h{};
+        int n = -1;
+        try
+        {
+            std::lock_guard<std::recursive_mutex> lk(g_mx);
+            h = g_host;
+            if (g_killed.load()) finish_all(L"error: ShipControl killed", h, done, false);
+            else
+            {
+                std::wstring why;
+                if (!ms_load(why)) finish_all(L"error: MSCore flight unavailable", h, done, false);
+                else n = sc_move_tick(dt, h, done);
+            }
+        }
+        catch (...) { n = -1; }
+        // callbacks run without the registry lock: the host may call back into SC_move_* / SC_zero.
+        for (const Done& d : done)
+        {
+            if (!h.on_move_done) continue;
+            try { h.on_move_done(d.sid, d.seq, d.res.c_str()); } catch (...) {}
+        }
+        return n;
+    }
+
     // WHAT: zeroes Throttle and rotation of ship for owner (MSCore_ship_zero). Refused when another owner holds the ship. 1 = zeroed, 0 = refused or failed.
     // WHY: the owner check keeps one behaviour from stopping a ship another behaviour is flying.
     SHIP_CONTROL_API int SC_zero(const char* owner, int sid)
@@ -299,7 +398,7 @@ extern "C"
         {
             if (!owner || !*owner) return 0;
             const std::string who = owner;
-            std::lock_guard<std::mutex> lk(g_mx);
+            std::lock_guard<std::recursive_mutex> lk(g_mx);
             if (g_killed.load()) return 0;
             std::string why;
             if (!g_owners.may_act(sid, who, why)) { host_say(g_host, L"SC_zero refused ship=" + std::to_wstring(sid) + L": " + widen(why)); return 0; }

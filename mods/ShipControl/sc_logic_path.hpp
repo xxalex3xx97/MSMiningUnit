@@ -72,7 +72,7 @@ namespace
     }
 
     // WHAT: blocking radius (m) of a rock: its radius x ROCK_BLOCK_SCALE + clear_m (clearance, m).
-    inline double block_r_m(double rock_r, double clear_m) { return std::max(0.0, rock_r) * ROCK_BLOCK_SCALE + clear_m; }
+    inline double block_r_m(double rock_r, double clear_m) { return (std::max)(0.0, rock_r) * ROCK_BLOCK_SCALE + clear_m; }   // (max): windows.h macro guard
 
     // WHAT: waypoint candidate beside a blocker: point at distance off (m) from its centre c, perpendicular to the ship->target direction dir (unit),
     //       on side (+1 / -1). The perpendicular is dir x Z (+Y when dir is along Z).
