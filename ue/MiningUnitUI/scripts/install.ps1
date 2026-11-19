@@ -1,10 +1,12 @@
 # Install pakchunk98-MiningUnitUI_P into the game Paks dir. Refuses if the game is running.
 # Backs up any existing pakchunk98 files first. Does not touch saves.
-# Usage: .\install.ps1 [-PaksDir <path>] [-Name pakchunk98-MiningUnitUI_P]
+# Usage: .\install.ps1 [-PaksDir <path>] [-Name pakchunk98-MiningUnitUI_P] [-OutDir <path>]
 # Default Paks dir = $env:MS_GAME_DIR\Content\Paks (see README "Configuration").
+# Default -OutDir = build\out (pack.ps1). FleetUI: -Name pakchunk103-FleetUI_P -OutDir build\out-fleet (pack_fleet.ps1).
 param(
     [string]$PaksDir = $(if ($env:MS_GAME_DIR) { "$env:MS_GAME_DIR\Content\Paks" } else { 'F:\SteamLibrary\steamapps\common\Main Sequence Demo\Windows\MainSequence\Content\Paks' }),
-    [string]$Name = 'pakchunk98-MiningUnitUI_P'
+    [string]$Name = 'pakchunk98-MiningUnitUI_P',
+    [string]$OutDir = (Join-Path $PSScriptRoot '..\build\out')
 )
 $ErrorActionPreference = 'Stop'
 
@@ -12,7 +14,7 @@ if (Get-Process -Name 'MainSequence*' -ErrorAction SilentlyContinue) { throw 'Ga
 if (-not (Test-Path $PaksDir)) { throw "Paks dir not found: $PaksDir" }
 
 $proj = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$out = Join-Path $proj 'build\out'
+$out = $OutDir
 $exts = '.pak', '.ucas', '.utoc'
 $files = $exts | ForEach-Object { Join-Path $out "$Name$_" }
 foreach ($f in $files) { if (-not (Test-Path $f)) { throw "missing build output: $f (run pack.ps1)" } }

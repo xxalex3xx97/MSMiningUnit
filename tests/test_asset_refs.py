@@ -15,6 +15,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 UE = os.path.join(ROOT, "ue", "MiningUnitUI")
 OWN = "/Game/MiningUnitUI/"
 LUA_ALLOWED = (OWN,)
+FLEET_WIN = os.path.join(ROOT, "mods", "FleetUI", "Scripts", "fleet_win.lua")
+FLEET_ALLOWED = ("/Game/FleetUI/", "/Game/MiningUnitUI/")
 GAME_RE = re.compile(r"/Game/[A-Za-z0-9_./-]+")
 GAME_RE_B = re.compile(rb"/Game/[A-Za-z0-9_./-]+")
 
@@ -57,23 +59,36 @@ def test_lua_game_paths():
     assert not bad, "game paths in Lua: %s" % bad
 
 
-def scan_cooked(d):
+def test_fleet_lua_game_paths():
+    assert os.path.exists(FLEET_WIN), "missing " + FLEET_WIN
+    with open(FLEET_WIN, encoding="utf-8") as f:
+        txt = f.read()
+    bad = sorted({p for p in re.findall(r'"(/Game/[^"]+)"', txt) if not p.startswith(FLEET_ALLOWED)})
+    assert not bad, "game paths in fleet_win.lua: %s" % bad
+
+
+def scan_cooked(d, allow=()):
     """Return 'file: /Game/... ' hits for cooked files outside our package. NULs stripped so UTF-16 names match too."""
     hits = []
+    # own prefix follows the scanned folder (.../FleetUI -> /Game/FleetUI/); default mining
+    own = next(("/Game/%s/" % x for x in reversed(os.path.normpath(os.path.abspath(d)).split(os.sep))
+                if x in ("FleetUI", "MiningUnitUI")), OWN)
     for dp, _, fs in os.walk(d):
         for f in fs:
             if not f.lower().endswith((".uasset", ".uexp")):
                 continue
             data = open(os.path.join(dp, f), "rb").read().replace(b"\x00", b"")
             for m in sorted({m.decode("ascii") for m in GAME_RE_B.findall(data)}):
-                if not (m == OWN[:-1] or m.startswith(OWN)):
+                if not any(m == a.rstrip("/") or m.startswith(a) for a in (own,) + tuple(allow)):
                     hits.append("%s: %s" % (f, m))
     return hits
 
 
 if __name__ == "__main__":
-    if len(sys.argv) == 3 and sys.argv[1] == "--cooked":
-        hits = scan_cooked(sys.argv[2])
+    if len(sys.argv) >= 3 and sys.argv[1] == "--cooked":
+        rest = sys.argv[3:]
+        allow = [rest[i + 1] for i in range(0, len(rest) - 1) if rest[i] == "--allow"]
+        hits = scan_cooked(sys.argv[2], allow)
         for h in hits:
             print(h)
         print("cooked scan: %d hit(s)" % len(hits))

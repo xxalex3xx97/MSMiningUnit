@@ -16,8 +16,7 @@ local LIB = "/Script/UMG.Default__WidgetBlueprintLibrary"
 local LIB_LAYOUT = "/Script/UMG.Default__WidgetLayoutLibrary"
 local WBP_CLS = "/Game/MiningUnitUI/WBP_MiningUnit.WBP_MiningUnit_C"  -- StaticFindObject takes the class path
 local Z = 49                                           -- below dev menu 50
-local FLEET  -- fleet_ui.lua page module (optional, loaded at the end of this file; nil = mining unchanged)
-local TABS = { "Btn_TabShip", "Btn_TabItems", "Btn_TabOperation", "Btn_TabLog", "Btn_TabDocks", "Btn_TabFleet", "Btn_TabRole" }  -- PageSwitcher index 0..6
+local TABS = { "Btn_TabShip", "Btn_TabItems", "Btn_TabOperation", "Btn_TabLog", "Btn_TabDocks" }  -- PageSwitcher index 0..4
 -- linear colors = gen_paste.py lin(): #D49A00 gold (active), #1E1E1E .95 (off), #1A1A1A text on active, white off
 local TAB_ON = { R = 0.658375, G = 0.323143, B = 0.0, A = 1.0 }
 local TAB_OFF = { R = 0.012983, G = 0.012983, B = 0.012983, A = 0.95 }
@@ -39,8 +38,7 @@ local NAMES = { "Panel", "PageSwitcher", "Page_Ship", "Page_Items", "Page_Operat
   "Txt_StatusAction", "PB_Cargo", "Txt_CargoPct", "Txt_Speed", "Txt_NextState", "Txt_Status",
   "Txt_Eta", "Btn_EmergencyStop", "Txt_EmergencyStop", "Btn_Dock", "Btn_Undock", "Btn_Refuel", "Btn_Unload", "Btn_Collect", "Txt_Collect", "Btn_Park", "Txt_Park", "Btn_RemoteAll", "Pnl_AllWarn", "Txt_AllWarn",
   "Txt_TabLog", "Pnl_PageLog", "Txt_LogHint", "Row_LogScroll", "Row_StatusMine", "Txt_StatusMine", "Img_StatusOre", "Pnl_LogAll", "Row_LogAllScroll",
-  "Btn_TabDocks", "Txt_TabDocks", "Pnl_PageDocks", "Txt_DocksHdr", "Row_DocksScroll", "Txt_AmountHint",
-  "Btn_TabFleet", "Txt_TabFleet", "Btn_TabRole", "Txt_TabRole", "Pnl_PageFleet", "Pnl_PageRole", "Pnl_FleetLeft", "Pnl_FleetStatus" }
+  "Btn_TabDocks", "Txt_TabDocks", "Pnl_PageDocks", "Txt_DocksHdr", "Row_DocksScroll", "Txt_AmountHint" }
 -- Mining line of every card (Card/Fleet): label + ore icon + ore name; log card pool (Pnl_LogCard_<f>, LOGCARD_ROWS lines each)
 for i = 1, 20 do
   for _, P in ipairs({ "Card", "Fleet" }) do
@@ -123,9 +121,7 @@ local WALK_NAMES = { Btn_TabDocks = true, Txt_TabDocks = true, Pnl_PageDocks = t
   Dyn_Docks = true, Btn_DocksHelp = true, Pnl_DocksLegend = true, Btn_Collect = true, Txt_Collect = true, Btn_Park = true, Txt_Park = true,
   Pnl_UDockCard_Misc = true, Btn_UDockAdd_Misc = true,
   Pnl_UDockCard_Park = true, Btn_UDockAdd_Park = true,
-  Edt_PresetName = true, Btn_PresetSave = true, Btn_PresetApply = true, Btn_PresetDel = true,
-  Btn_TabFleet = true, Txt_TabFleet = true, Btn_TabRole = true, Txt_TabRole = true, Pnl_PageFleet = true, Pnl_PageRole = true,
-  Pnl_FleetLeft = true, Pnl_FleetStatus = true, }
+  Edt_PresetName = true, Btn_PresetSave = true, Btn_PresetApply = true, Btn_PresetDel = true, }
 local WALK_NODES = 2600   -- hard cap of one index walk
 -- ONE bounded walk per window open (S.wc = name -> widget for WALK_NAMES). Stops early when all are found. Logs time + nodes.
 local function buildIndex()
@@ -1892,7 +1888,6 @@ local function refresh()
     else allRun = nil end
   end
   fleetPaint()
-  try("fleetTick", function() if FLEET then FLEET.tick() end end)
   local cargo = math.max(0, math.min(100, st.cargo or 0))
   if S.all then cargo = math.max(0, math.min(100, allCargo)) end
   if S.pend then   -- real state confirms, or 6 s timeout -> show the real state
@@ -1989,7 +1984,6 @@ function M.close()
   try("rename flush", function() if renameFlush then renameFlush(true) end end)   -- a pending ship-name rewrite must not be lost
   S.gen = S.gen + 1  -- stops the status loop
   if BIND and BIND.clear then BIND.clear() end  -- drop button callbacks + global layout hook
-  if FLEET then try("fleet close", FLEET.onClose) end
   S.sid = nil
   S.mode = nil
   S.all = false
@@ -2042,7 +2036,6 @@ function M.setTab(i)
   if i == 2 then try("itemsLoad", itemsLoad) end
   if i == 3 then try("opsLoad", opsLoad) end
   if i == 5 then S.docksKey = nil; try("docksPaint", docksPaint) end
-  if FLEET then try("fleet onTab", FLEET.onTab, i) end
   L("tab " .. i)
 end
 
@@ -2369,7 +2362,6 @@ function M.open(ship)
         local b = w(n); if b then try("bind " .. n, function() BIND.onClick(b, fn2) end) end
       end
       for i, n in ipairs(TABS) do bind(n, function() M.setTab(i) end) end
-      if FLEET then try("fleet bind", FLEET.bind) end
       bind("Btn_Close", M.close)
       for f = 1, FN do local b = logFw(f, "Btn_LogFold_" .. f); if b then try("bind fold", function() BIND.onClick(b, function() local sid = S.logSid and S.logSid[f]; if not sid then return end; S.logFold = S.logFold or {}; S.logFold[sid] = not S.logFold[sid]; S.logKey = nil; logPaint() end) end) end end
       for f = 1, FN do
@@ -2545,16 +2537,5 @@ end
 function M.fKey()
   if M.isOpen() and S.mode == "mu" and os.clock() - (S.t0 or 0) > 0.5 and not typing() then M.close() end
 end
-
--- ===== optional Fleet menu page module (fleet_ui.lua). Failure = mining unchanged. =====
-M.api = { w = w, setVis = setVis, setText = M.setText, try = try, ok = ok, rd = rd, L = L, deepFind = deepFind, dynList = dynList,
-  groupList = groupList, modalSelect = modalSelect, shipIcons = shipIcons, benchShips = benchShips, reading = reading,
-  holdReads = holdReads, setTab = M.setTab, onClick = function(b, f) if BIND and BIND.onClick then BIND.onClick(b, f) end end,
-  src = SRC, data = M.DATA }
-local okF, F = pcall(dofile, SRC .. "fleet_ui.lua")
-FLEET = okF and F or nil
--- no new locals here: the main chunk is at Lua's 200-local limit. F holds the error when dofile/init fails
-if FLEET then okF, F = pcall(FLEET.init, M.api); if not okF then FLEET = nil end end
-if not FLEET then L("fleet_ui load failed " .. tostring(F)) end
 
 return M

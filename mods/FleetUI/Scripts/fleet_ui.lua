@@ -1,11 +1,11 @@
--- Fleet menu page (Fleet tab = page 6, Role tab = page 7). Fleet-specific layout and wiring only.
+-- Fleet window pages (tab 1 Fleet, 2 Role, 3 Escort; standalone window, see fleet_win.lua). Fleet-specific layout and wiring only.
 -- Generic helpers: ui_core.lua. Layout/names: fleet-ui-widget-spec.md. Every command calls a named stub in fleet_stubs.lua.
 local SRC = debug.getinfo(1, "S").source:match("^@(.*[/\\])") or ""
 local UI = dofile(SRC .. "ui_core.lua")
 local M = {}
 local api, FS
 local S
-local TAB_FLEET, TAB_ROLE = 6, 7
+local TAB_FLEET, TAB_ROLE, TAB_ESC = 1, 2, 3
 local CLEAR = { R = 0, G = 0, B = 0, A = 0 }
 local GOLD = "#C38800"
 -- role colours from spec section 0 (override fleet_stubs ROLES colours)
@@ -20,37 +20,39 @@ local ESC_DIST_DEF = 300
 
 -- every find() name used in this file (spec sections 2-4). scripts/*.py must generate each one.
 M.NAMES = {
-  "Pnl_FleetLeft", "Sel_FlGroup", "Txt_SelFlGroup", "Btn_FlEmergencyStop", "Btn_FlStart", "Btn_FlHold",
+  "PageSwitcher", "Btn_FlClose", "Btn_TabFleet", "Btn_TabRole", "Btn_TabEscort", "Txt_TabFleet", "Txt_TabRole", "Txt_TabEscort",
+  "Pnl_PageFleet", "Pnl_PageRole", "Pnl_PageEscort", "Pnl_FleetLeft", "Pnl_FleetStatus",
+  "Pnl_Modal", "Txt_ModalTitle", "Btn_ModalClose", "Btn_ModalOutside", "Opt_Modal_1", "Txt_ModalC1_1",
+  "Sel_FlGroup", "Txt_SelFlGroup", "Btn_FlEmergencyStop", "Btn_FlStart", "Btn_FlHold",
   "Btn_FlDock", "Btn_FlUndock", "Btn_FlRefuel", "Btn_FlRecallL",
-  "Pnl_PageFleet", "Txt_FlMainTitle", "Btn_FlSubOverview", "Btn_FlSubEscort", "Txt_FlSubOverview", "Txt_FlSubEscort", "Pnl_FlSubSwitcher",
+  "Txt_FlMainTitle",
   "Btn_FlClsAll", "Btn_FlClsMiner", "Btn_FlClsHauler", "Btn_FlClsFighter", "Btn_FlClsFrigate", "Btn_FlClsCapital",
   "Txt_FlClsCntAll", "Txt_FlClsCntMiner", "Txt_FlClsCntHauler", "Txt_FlClsCntFighter", "Txt_FlClsCntFrigate", "Txt_FlClsCntCapital",
   "Bdr_FlClsSelAll", "Bdr_FlClsSelMiner", "Bdr_FlClsSelHauler", "Bdr_FlClsSelFighter", "Bdr_FlClsSelFrigate", "Bdr_FlClsSelCapital",
   "Bdr_FlSelBar", "Txt_FlSelCount", "Sel_FlRole", "Txt_SelFlRole", "Btn_FlApply", "Btn_FlNewGroup",
   "Dyn_FlList", "Pnl_FlEmpty", "Btn_FlSelect", "Btn_FlRecall", "Btn_FlHold2", "Btn_FlDockBtn", "Btn_FlSend", "Btn_FlUnselectAll",
-  "Fg_Root", "Btn_FgHdr", "Txt_FgName", "Txt_FgSummary", "Fr_RowFrame", "Bdr_FrSel", "Btn_FrRow", "Chk_FrSel", "Img_FrHolo",
-  "Txt_FrName", "Bdr_FrChip", "Img_FrRoleIcon", "Txt_FrRole", "Txt_FrDoing", "PB_FrHull", "Txt_FrHullPct", "PB_FrHull_Cell",
+  "Fg_Root", "Btn_FgHdr", "Txt_FgArrow", "Txt_FgName", "Txt_FgSummary", "Fr_RowFrame", "Chk_FrSel", "Img_FrHolo",
+  "Txt_FrName", "Bdr_FrChip", "Txt_FrRole", "Txt_FrDoing", "PB_FrHull", "Txt_FrHullPct",
   "PB_FrCargo", "Txt_FrCargoPct", "Txt_FrNoCargo", "Btn_FrRemove", "Btn_FrGoto", "Txt_FrLostHint",
-  "Pnl_FlEscort", "Txt_FlFollowName", "Sel_FlFollow", "Txt_SelFlFollow", "Sel_FlDist", "Txt_SelFlDist", "Btn_FlStopAll",
+  "Txt_FlFollowName", "Sel_FlFollow", "Txt_SelFlFollow", "Sel_FlDist", "Txt_SelFlDist", "Btn_FlStopAll",
   "Dyn_FlTargets", "Txt_FlAssignedTitle", "Dyn_FlAssigned", "Dyn_FlFree", "Btn_FlESelect", "Btn_FlEDock", "Btn_FlERecall",
   "Btn_FlEHold", "Btn_FlESend", "Btn_FlEUnselect",
-  "Img_FeHolo", "Txt_FeName", "Bdr_FeChip", "Img_FeRoleIcon", "Txt_FeRole", "Txt_FeDoing", "PB_FeHull", "Txt_FeHullPct",
+  "Img_FeHolo", "Txt_FeName", "Bdr_FeChip", "Txt_FeRole", "Txt_FeDoing", "PB_FeHull", "Txt_FeHullPct",
   "Txt_FeDist", "Btn_FePin", "Btn_FeAction", "Img_FtHolo", "Txt_FtName", "Btn_FtPick",
-  "Pnl_FleetStatus", "Img_FlStatHolo", "Txt_FlStatName", "Bdr_FlStatChip", "Img_FlStatRoleIcon", "Txt_FlStatRole",
-  "Txt_FlStatAction", "Img_FlStatState", "Txt_FlStatNext", "Txt_FlStatSpeed", "Txt_FlStatCargoPct", "PB_FlStatCargo",
+  "Img_FlStatHolo", "Txt_FlStatName", "Bdr_FlStatChip", "Txt_FlStatRole",
+  "Txt_FlStatAction", "Txt_FlStatNext", "Txt_FlStatSpeed", "Txt_FlStatCargoPct", "PB_FlStatCargo",
   "Txt_FlStatHullPct", "PB_FlStatHull", "Txt_FlStatShieldPct", "PB_FlStatShield", "Btn_FlSetRole", "Btn_FlRecallS", "Btn_FlHoldS",
-  "Pnl_PageRole", "Pnl_RlDefend", "Pnl_RlHaul", "Pnl_RlAttack", "Pnl_RlEscort", "Btn_RlDefendRecall", "Btn_RlDefendHold",
+  "Pnl_RlDefend", "Pnl_RlHaul", "Pnl_RlAttack", "Pnl_RlEscort", "Btn_RlDefendRecall", "Btn_RlDefendHold",
   "Btn_RlDefendDefault", "Btn_RlHaulRecall", "Btn_RlHaulHold", "Btn_RlHaulDefault", "Btn_RlAttackRecall", "Btn_RlAttackHold",
   "Btn_RlAttackDefault", "Btn_RlEscortRecall", "Btn_RlEscortHold", "Btn_RlEscortDefault", "Btn_RlHAddRow",
-  "Bdr_RlDefendChip", "Img_RlDefendRoleIcon", "Txt_RlDefendRole", "Txt_RlDefendStateTxt", "Txt_RlDefendDoing", "Img_RlDefendHolo",
-  "Bdr_RlHaulChip", "Img_RlHaulRoleIcon", "Txt_RlHaulRole", "Txt_RlHaulStateTxt", "Txt_RlHaulDoing", "Img_RlHaulHolo",
-  "Bdr_RlAttackChip", "Img_RlAttackRoleIcon", "Txt_RlAttackRole", "Txt_RlAttackStateTxt", "Txt_RlAttackDoing", "Img_RlAttackHolo",
-  "Bdr_RlEscortChip", "Img_RlEscortRoleIcon", "Txt_RlEscortRole", "Txt_RlEscortStateTxt", "Txt_RlEscortDoing", "Img_RlEscortHolo",
+  "Bdr_RlDefendChip", "Txt_RlDefendRole", "Txt_RlDefendStateTxt", "Txt_RlDefendDoing", "Img_RlDefendHolo",
+  "Bdr_RlHaulChip", "Txt_RlHaulRole", "Txt_RlHaulStateTxt", "Txt_RlHaulDoing", "Img_RlHaulHolo",
+  "Bdr_RlAttackChip", "Txt_RlAttackRole", "Txt_RlAttackStateTxt", "Txt_RlAttackDoing", "Img_RlAttackHolo",
+  "Bdr_RlEscortChip", "Txt_RlEscortRole", "Txt_RlEscortStateTxt", "Txt_RlEscortDoing", "Img_RlEscortHolo",
   "Sel_RlDAnchor", "Edt_RlDRadius", "Edt_RlDGiveUp", "Edt_RlDFlee", "Sel_RlDPick", "Chk_RlDReturn",
   "Sel_RlHFrom", "Sel_RlHTo", "Sel_RlHItem", "Edt_RlHAmount", "Chk_RlHRepeat",
   "Sel_RlASearch", "Sel_RlAPick", "Edt_RlAFlee", "Sel_RlAIdle",
   "Sel_RlEFollow", "Sel_RlESlot", "Edt_RlEDist", "Chk_RlEWarp",
-  "Btn_TabFleet", "Btn_TabRole", "Btn_FlOpenShip",
 }
 
 -- role-page fields (one table drives the four cards). k = sel|edit|check, key = stub arg name, num = number box, def = default
@@ -86,15 +88,20 @@ local FIELDS = {
 
 local function fresh()
   return { sel = {}, fold = {}, rv = {}, rowsF = {}, rowsA = {}, rowsC = {}, rowsT = {}, icons = {}, painted = {},
-    entF = setmetatable({}, { __mode = "k" }), hid = nil, follow = nil, dist = nil, cur = nil,
-    page = nil, sub = 0, cls = "All", roleSel = nil, etarget = nil, sig = nil, tAt = 0 }
+    entF = setmetatable({}, { __mode = "k" }), follow = nil, dist = nil, cur = nil,
+    page = nil, diag = setmetatable({}, { __mode = "k" }), ndiag = 0, cls = "All", roleSel = nil, etarget = nil, sig = nil, tAt = 0 }
 end
 S = fresh()
 
 local function hullColour(p) return (p and p < 30) and "FFCC33" or "6AA8FF" end
 local function setBrush(o, hex) local c = UI.col(hex); if c and api.ok(o) then pcall(function() o:SetBrushColor(c) end) end end
 local function bgOf(o, hex) local c = UI.col(hex); if c and api.ok(o) then pcall(function() o:SetBackgroundColor(c) end) end end
-local function brushTex(o, tex) if api.ok(o) and tex then pcall(function() o:SetBrushFromTexture(tex, true) end) end end
+-- only a real texture; otherwise the python placeholder stays. White tint so the texture shows undimmed.
+local function brushTex(o, tex)
+  if not (api.ok(o) and api.ok(tex)) then return end
+  pcall(function() o:SetBrushFromTexture(tex, true) end)
+  UI.imgtint(o, "#FFFFFF")
+end
 local function pct(v) return v and (tostring(v) .. "%") or "-" end
 
 -- ship list from the stub provider; without fleet data, every bench ship is listed with role None
@@ -144,11 +151,12 @@ end
 local function escortArgs() return { follow = S.follow, dist = S.dist or DEF_DIST } end
 
 -- ===== Fleet overview list: group header entries (Fg_Root shown) + ship entries (Fr_RowFrame shown) =====
-local function paintRow(r, f)
+local function paintRow(r, f, i, entry)
   local hdr = r.k == "hdr"
   api.setVis(f("Fg_Root"), hdr and 0 or 1)
   api.setVis(f("Fr_RowFrame"), hdr and 1 or 0)
   if hdr then
+    UI.text(f("Txt_FgArrow"), r.folded and ">" or "v")
     UI.text(f("Txt_FgName"), string.format("%s (%d)", r.name, r.count))
     UI.text(f("Txt_FgSummary"), "")
     return
@@ -156,8 +164,8 @@ local function paintRow(r, f)
   local s = r.item
   UI.text(f("Txt_FrName"), s.name)
   UI.text(f("Txt_FrDoing"), s.status)
-  UI.chip(f, "Bdr_FrChip", "Img_FrRoleIcon", "Txt_FrRole", s.role, ROLE_COL[s.role] or "A0A0A0")
-  api.setVis(f("PB_FrHull_Cell"), s.hull and 0 or 1)
+  UI.chip(f, "Bdr_FrChip", "Txt_FrRole", s.role, ROLE_COL[s.role] or "A0A0A0")
+  api.setVis(f("PB_FrHull"), s.hull and 0 or 1)
   UI.bar(f("PB_FrHull"), (s.hull or 0) / 100, hullColour(s.hull))
   UI.text(f("Txt_FrHullPct"), pct(s.hull))
   api.setVis(f("PB_FrCargo"), s.cargo and 0 or 1)
@@ -167,10 +175,19 @@ local function paintRow(r, f)
   brushTex(f("Img_FrHolo"), S.icons[s.id])
   UI.check_field(f, "Chk_FrSel", s.sel)
   setBrush(f("Fr_RowFrame"), s.sel and "33291A" or "2B2B2B")
-  api.setVis(f("Bdr_FrSel"), s.sel and 0 or 1)
   api.setVis(f("Btn_FrRemove"), 1)
   api.setVis(f("Btn_FrGoto"), 1)
   api.setVis(f("Txt_FrLostHint"), 1)
+  -- first paint of an entry: log what the game made of it (ship rows reported missing in the old window)
+  if entry and not S.diag[entry] and S.ndiag < 5 then
+    S.diag[entry] = true
+    S.ndiag = S.ndiag + 1
+    local fr, nm = f("Fr_RowFrame"), f("Txt_FrName")
+    local vis = api.rd(fr, "Visibility")
+    local ds = select(2, pcall(function() local d = entry:GetDesiredSize(); return tostring(d.X) .. "x" .. tostring(d.Y) end))
+    local tx = select(2, pcall(function() return nm:GetText():ToString() end))
+    api.L("diag row " .. tostring(i) .. " entry=" .. tostring(api.ok(entry)) .. " frameVis=" .. tostring(vis) .. " desired=" .. tostring(ds) .. " name=" .. tostring(tx))
+  end
 end
 
 -- the only place that changes selection: S.sel and FS.select_ship stay in step
@@ -179,7 +196,10 @@ local function setSel(id, on)
   FS.select_ship(id, on)
 end
 
-local function toggleSel(id) setSel(id, not S.sel[id]) end
+local function toggleSel(id)
+  setSel(id, not S.sel[id])
+  if S.sel[id] then S.cur = id end
+end
 
 -- select the given ids; ids already selected are skipped (no re-select)
 local function selectAll(ids)
@@ -198,15 +218,6 @@ local function bindFleetEntry(e, f, idx)
     if r and r.k == "hdr" then UI.fold(S.fold, r.key); FS.toggle_group(r.key); M.repaint() end
   end)
   S.entF[f] = idx
-  -- Chk_FrSel sits inside Btn_FrRow: the row click only flips the box, M.pollChecks() is the one toggle
-  UI.bind_button(f, "Btn_FrRow", function()
-    local r = S.rowsF[idx()]
-    if not (r and r.item) then return end
-    S.cur = r.item.id
-    UI.check_field(f, "Chk_FrSel", not r.item.sel)
-    M.pollChecks()
-    M.repaint()
-  end)
   UI.bind_button(f, "Btn_FrGoto", function()
     local r = S.rowsF[idx()]
     if r and r.item then S.cur = r.item.id; selectAll({ r.item.id }); M.repaint() end
@@ -214,11 +225,11 @@ local function bindFleetEntry(e, f, idx)
   UI.bind_button(f, "Btn_FrRemove", function() local r = S.rowsF[idx()]; if r and r.item then FS.set_role(r.item.id, "None") end end)
 end
 
--- ===== Escort page lists (inside Pnl_PageFleet, sub-switcher index 1) =====
+-- ===== Escort page lists (Pnl_PageEscort) =====
 local function paintEsc(r, f)
   local s = r.item
   UI.text(f("Txt_FeName"), s.name)
-  UI.chip(f, "Bdr_FeChip", "Img_FeRoleIcon", "Txt_FeRole", s.role, ROLE_COL[s.role] or "A0A0A0")
+  UI.chip(f, "Bdr_FeChip", "Txt_FeRole", s.role, ROLE_COL[s.role] or "A0A0A0")
   UI.text(f("Txt_FeDoing"), s.status)
   UI.text(f("Txt_FeDist"), "-")
   UI.bar(f("PB_FeHull"), (s.hull or 0) / 100, hullColour(s.hull))
@@ -271,7 +282,7 @@ end
 local function statusPaint(s)
   local p = UI.index("Pnl_FleetStatus")
   UI.text(p("Txt_FlStatName"), s and s.name or "-")
-  UI.chip(p, "Bdr_FlStatChip", "Img_FlStatRoleIcon", "Txt_FlStatRole", s and s.role or "-", ROLE_COL[s and s.role or ""] or "A0A0A0")
+  UI.chip(p, "Bdr_FlStatChip", "Txt_FlStatRole", s and s.role or "-", ROLE_COL[s and s.role or ""] or "A0A0A0")
   UI.text(p("Txt_FlStatAction"), s and s.status or "")
   UI.text(p("Txt_FlStatNext"), "")
   UI.text(p("Txt_FlStatSpeed"), "")
@@ -286,33 +297,14 @@ end
 
 local function repaintFleet(ships)
   local pf = UI.index("Pnl_PageFleet")
-  S.icons = api.shipIcons() or {}
   S.rowsF = groupsOf(clsFilter(ships))
   UI.list{ key = "fleet", anchor = "Pnl_PageFleet", box = "Dyn_FlList", rows = S.rowsF, rowFn = paintRow, bindFn = bindFleetEntry }
-
   local nSel = 0
-  local assigned, free = {}, {}
-  for _, s in ipairs(ships) do
-    if s.sel then nSel = nSel + 1 end
-    if s.role == "Escort" then assigned[#assigned + 1] = s else free[#free + 1] = s end
-  end
-  S.rowsA, S.rowsC = items(assigned), items(free)
-  S.rowsT = items(ships)
-  UI.list{ key = "escA", anchor = "Pnl_PageFleet", box = "Dyn_FlAssigned", rows = S.rowsA, rowFn = paintEsc, bindFn = bindEsc(true, "rowsA") }
-  UI.list{ key = "escC", anchor = "Pnl_PageFleet", box = "Dyn_FlFree", rows = S.rowsC, rowFn = paintEsc, bindFn = bindEsc(false, "rowsC") }
-  UI.list{ key = "escT", anchor = "Pnl_PageFleet", box = "Dyn_FlTargets", rows = S.rowsT, rowFn = paintTarget, bindFn = bindTarget }
-  UI.text(pf("Txt_FlAssignedTitle"), string.format("Escorting you - %d ships", #assigned))
-
+  for _, s in ipairs(ships) do if s.sel then nSel = nSel + 1 end end
   UI.text(pf("Txt_FlMainTitle"), string.format("Fleet Control - %d selected", nSel))
   UI.text(pf("Txt_FlSelCount"), string.format("%d selected", nSel))
   api.setVis(pf("Bdr_FlSelBar"), nSel > 0 and 0 or 1)
   api.setVis(pf("Pnl_FlEmpty"), #ships == 0 and 0 or 1)
-  -- sub-tabs: active one gets the gold/dark tab colouring
-  for _, k in ipairs({ "Overview", "Escort" }) do
-    local on = S.sub == (k == "Overview" and 0 or 1)
-    bgOf(pf("Btn_FlSub" .. k), on and "#3A3A3A" or "#262626")
-    UI.tint(pf("Txt_FlSub" .. k), on and "#F2B01E" or "#BBBBBB")
-  end
   -- class strip: "All" = every ship; other classes count ships whose state carries ship.class, else 0
   local cc = {}
   for _, s in ipairs(ships) do if s.class then cc[s.class] = (cc[s.class] or 0) + 1 end end
@@ -322,7 +314,21 @@ local function repaintFleet(ships)
   end
   UI.sel_field(pf, "Sel_FlRole", { title = "Role", options = roleOpts, get = function() return S.roleSel end,
     display = function(v) return v or "-" end, set = function(v) S.roleSel = v; FS.pick_role("role") end })
-  UI.sel_field(pf, "Sel_FlFollow", { title = "Follow",
+end
+
+local function repaintEscort(ships)
+  local pe = UI.index("Pnl_PageEscort")
+  local assigned, free = {}, {}
+  for _, s in ipairs(ships) do
+    if s.role == "Escort" then assigned[#assigned + 1] = s else free[#free + 1] = s end
+  end
+  S.rowsA, S.rowsC = items(assigned), items(free)
+  S.rowsT = items(ships)
+  UI.list{ key = "escA", anchor = "Pnl_PageEscort", box = "Dyn_FlAssigned", rows = S.rowsA, rowFn = paintEsc, bindFn = bindEsc(true, "rowsA") }
+  UI.list{ key = "escC", anchor = "Pnl_PageEscort", box = "Dyn_FlFree", rows = S.rowsC, rowFn = paintEsc, bindFn = bindEsc(false, "rowsC") }
+  UI.list{ key = "escT", anchor = "Pnl_PageEscort", box = "Dyn_FlTargets", rows = S.rowsT, rowFn = paintTarget, bindFn = bindTarget }
+  UI.text(pe("Txt_FlAssignedTitle"), string.format("Escorting you - %d ships", #assigned))
+  UI.sel_field(pe, "Sel_FlFollow", { title = "Follow",
     get = function() return S.follow or CAPTAIN end,
     display = function(v)
       if v == CAPTAIN then return "You (Captain)" end
@@ -336,7 +342,7 @@ local function repaintFleet(ships)
     end,
     repaint = function() M.repaint() end,
     set = function(v) S.follow = v ~= CAPTAIN and v or nil; sendEscort() end })
-  UI.sel_field(pf, "Sel_FlDist", { title = "Distance", get = function() return S.dist or DEF_DIST end,
+  UI.sel_field(pe, "Sel_FlDist", { title = "Distance", get = function() return S.dist or DEF_DIST end,
     display = function(v)
       for _, d in ipairs(DIST) do if d[1] == v then return d[2] end end
       return tostring(v)
@@ -348,9 +354,6 @@ local function repaintFleet(ships)
     end,
     repaint = function() M.repaint() end,
     set = function(v) S.dist = v; sendEscort() end })
-  statusPaint(firstSel(ships))
-  local pl = UI.index("Pnl_FleetLeft")
-  UI.text(pl("Txt_SelFlGroup"), "All ships")
 end
 
 local function repaintRole(ships)
@@ -360,7 +363,7 @@ local function repaintRole(ships)
   for _, role in ipairs(CARD_ROLES) do
     api.setVis(pr("Pnl_Rl" .. role), (not show or show == role) and 0 or 1)
     if first then
-      UI.chip(pr, "Bdr_Rl" .. role .. "Chip", "Img_Rl" .. role .. "RoleIcon", "Txt_Rl" .. role .. "Role", first.role, ROLE_COL[first.role] or "A0A0A0")
+      UI.chip(pr, "Bdr_Rl" .. role .. "Chip", "Txt_Rl" .. role .. "Role", first.role, ROLE_COL[first.role] or "A0A0A0")
       UI.text(pr("Txt_Rl" .. role .. "StateTxt"), first.status)
       UI.text(pr("Txt_Rl" .. role .. "Doing"), first.status)
       brushTex(pr("Img_Rl" .. role .. "Holo"), S.icons[first.id])
@@ -404,13 +407,6 @@ local function collect(role)
   return vals
 end
 
-local function sub(n)
-  S.sub = n
-  local sw = UI.index("Pnl_PageFleet")("Pnl_FlSubSwitcher")
-  if api.ok(sw) then pcall(function() sw:SetActiveWidgetIndex(n) end) end
-  M.repaint()
-end
-
 local function pickRoleModal(ids, title)
   FS.pick_role("role")
   api.modalSelect{ title = title, options = roleOpts(), id = nil, onPick = function(id) FS.set_role(ids, id) end }
@@ -419,6 +415,7 @@ end
 -- ===== bindings (once per window open; the widgets are new each open) =====
 function M.bind()
   local pf = UI.index("Pnl_PageFleet")
+  local pe = UI.index("Pnl_PageEscort")
   local pl = UI.index("Pnl_FleetLeft")
   local ps = UI.index("Pnl_FleetStatus")
   local pr = UI.index("Pnl_PageRole")
@@ -432,9 +429,7 @@ function M.bind()
   cmd(pl, "Btn_FlRefuel", FS.refuel)
   cmd(pl, "Btn_FlRecallL", FS.recall)
   UI.bind_button(pl, "Sel_FlGroup", function() FS.set_filter("group") end)
-  -- fleet page: sub-tabs, class strip, selection bar, action bar
-  UI.bind_button(pf, "Btn_FlSubOverview", function() sub(0) end)
-  UI.bind_button(pf, "Btn_FlSubEscort", function() sub(1) end)
+  -- fleet page: class strip, selection bar, action bar
   for _, k in ipairs(CLASSES) do
     UI.bind_button(pf, "Btn_FlCls" .. k, function() S.cls = k; FS.set_filter(k); M.repaint() end)
   end
@@ -446,17 +441,16 @@ function M.bind()
   cmd(pf, "Btn_FlDockBtn", FS.dock)
   UI.bind_button(pf, "Btn_FlSend", sendEscort)
   UI.bind_button(pf, "Btn_FlUnselectAll", function() S.sel = {}; FS.unselect_all(); M.repaint() end)
-  -- escort page (inside Pnl_PageFleet)
-  UI.bind_button(pf, "Btn_FlStopAll", function()
+  -- escort page (Pnl_PageEscort)
+  UI.bind_button(pe, "Btn_FlStopAll", function()
     for _, r in ipairs(S.rowsA) do FS.escort_remove(r.item.id) end
   end)
-  UI.bind_button(pf, "Btn_FlESelect", selectCur)
-  cmd(pf, "Btn_FlEDock", FS.dock)
-  cmd(pf, "Btn_FlERecall", FS.recall)
-  cmd(pf, "Btn_FlEHold", FS.hold)
-  UI.bind_button(pf, "Btn_FlESend", sendEscort)
-  UI.bind_button(pf, "Btn_FlEUnselect", function() S.sel = {}; FS.unselect_all(); M.repaint() end)
-  UI.bind_button(pf, "Btn_FlOpenShip", function() api.setTab(1) end)
+  UI.bind_button(pe, "Btn_FlESelect", selectCur)
+  cmd(pe, "Btn_FlEDock", FS.dock)
+  cmd(pe, "Btn_FlERecall", FS.recall)
+  cmd(pe, "Btn_FlEHold", FS.hold)
+  UI.bind_button(pe, "Btn_FlESend", sendEscort)
+  UI.bind_button(pe, "Btn_FlEUnselect", function() S.sel = {}; FS.unselect_all(); M.repaint() end)
   -- status box
   UI.bind_button(ps, "Btn_FlSetRole", function() pickRoleModal(selIds(), "Choose role for selected") end)
   cmd(ps, "Btn_FlRecallS", FS.recall)
@@ -476,54 +470,30 @@ function M.bind()
   cmd(pr, "Btn_RlHAddRow", function(ids) FS.haul_set(ids, { add_row = true }) end)
 end
 
--- Tab switch (called for every setTab; i = 1..7). Pages 6 and 7 show the fleet left column and status box.
--- mining windows hidden on Fleet/Role tabs (Pnl_Fleet = Fleet Control; Row_Win<key> = window() roots); previous visibility restored after
-local MINING_WIN = { "Pnl_Fleet", "RowWinControl", "RowWinActions", "RowWinStatus" }
-local function winName(n) return (n:gsub("RowWin", "Row_Win")) end
-local function hideMining(hide)
-  if hide and not S.hid then
-    S.hid = {}
-    for _, n in ipairs(MINING_WIN) do
-      local o = api.w(winName(n))
-      if api.ok(o) then
-        local s, v = pcall(function() return o:GetVisibility() end)
-        S.hid[n] = s and v or 0
-        api.setVis(o, 1)
-      end
-    end
-  elseif not hide and S.hid then
-    for n, v in pairs(S.hid) do
-      local o = api.w(winName(n))
-      if api.ok(o) then pcall(function() o:SetVisibility(v) end) end
-    end
-    S.hid = nil
-  end
-end
-
+-- Tab switch (called for every setTab; i = 1..3 = Fleet, Role, Escort)
 function M.onTab(i)
-  local on = (i == TAB_FLEET or i == TAB_ROLE)
-  api.setVis(api.w("Pnl_FleetLeft"), on and 0 or 1)
-  api.setVis(api.w("Pnl_FleetStatus"), on and 0 or 1)
-  hideMining(on)
-  S.page = on and i or nil
+  S.page = i
   S.sig = nil
   M.repaint()
 end
 
 -- repaint the page currently shown (after a click). ships = the list already built this tick, else built here
 function M.repaint(ships)
+  if not S.page then return end
   ships = ships or shipsNow()
-  if S.page == TAB_FLEET then repaintFleet(ships) elseif S.page == TAB_ROLE then repaintRole(ships) end
+  S.icons = api.shipIcons() or {}
+  if S.page == TAB_FLEET then repaintFleet(ships) elseif S.page == TAB_ROLE then repaintRole(ships) elseif S.page == TAB_ESC then repaintEscort(ships) end
+  statusPaint(firstSel(ships))
+  UI.text(UI.index("Pnl_FleetLeft")("Txt_SelFlGroup"), "All ships")
 end
 
 function M.onClose()
-  hideMining(false)
   S = fresh()
   UI.reset()
 end
 
 -- checkboxes have no click event: poll them (page visible only) and call the stub on change. Returns the change count.
--- Fleet: selection toggles happen only here (Chk_FrSel inside Btn_FrRow). Role: card checks call the card's setter.
+-- Fleet: selection toggles happen only here (Chk_FrSel). Role: card checks call the card's setter.
 local CHK_SETTER = { Defend = "defend_set", Haul = "haul_set", Attack = "attack_set" }
 function M.pollChecks()
   local n = 0
@@ -565,7 +535,7 @@ function M.pollChecks()
   return n
 end
 
--- called from the refresh loop: repaints only when the ship list text changed (page 6 or 7 open)
+-- called from the refresh loop: repaints only when the ship list text changed (window open)
 function M.tick()
   if not S.page then return end
   if os.clock() - S.tAt < 1 then return end

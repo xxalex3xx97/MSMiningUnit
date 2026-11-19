@@ -3,6 +3,7 @@ Idempotent (existing name -> returned). Lua-found widgets are var=True; SizeBox 
 Usage: `from uicomp import *` in an UnrealEditor-Cmd -ExecutePythonScript run (editor closed). Not run by the build."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import uew
 from uew import *
 
 FONTS = (11, 10, 13)  # body, small, header
@@ -31,12 +32,20 @@ def _sz(w, name, parent, wd=None, ht=None, **slot_kw):
     return s
 
 
-def _img(w, name, parent, icon, size, hex_=TEXT):
-    """Image `name`; icon = texture asset name under /Game/MiningUnitUI (e.g. 'T_IconTrash') or None (Lua sets it)"""
+def _img(w, name, parent, icon, size, hex_=TEXT, color=None):
+    """Image `name`; icon = texture asset name under /Game/MiningUnitUI (e.g. 'T_IconTrash'), REQUIRED (an Image without a brush is a white square); color = widget colour hex"""
+    if not icon:
+        raise ValueError('_img %s: icon required' % name)
     im = add(w, U.Image, name, parent)
-    if icon:
-        im.set_editor_property('brush', image_brush('%s/%s.%s' % (ASSETS, icon, icon), lin(hex_), float(size)))
+    im.set_editor_property('brush', image_brush('%s/%s.%s' % (ASSETS, icon, icon), lin(hex_), float(size)))
+    if color:
+        im.set_editor_property('color_and_opacity', lin(color))
     return im
+
+
+def _ship_img(w, name, parent, size):
+    """placeholder ship image: T_IconShip dimmed 666666 (Lua sets white colour when a real texture arrives)"""
+    return _img(w, name, parent, 'T_IconShip', size, 'FFFFFF', '666666')
 
 
 def _btn(w, name, parent, hex_=BUTTON, var=True, **slot_kw):
@@ -92,23 +101,23 @@ def _sel_btn(w, name, txt_name, parent, label='', **slot_kw):
     return b
 
 
-def box(w, name, parent, title=None, title_name=None, body=BODY, pad=5):
-    """Spec box: Border `name`(1C1C1C pad2) > VBox `name`_Col { Border `name`_HdrBdr(gold, Txt title_name 13 111111); Border `name`_Line(2px F2B01E); Border `name`_Body(body, pad) > VBox `name`_In }. Children go in parent=`name`_In. title=None -> no header/line."""
+def box(w, name, parent, title=None, title_name=None, body=BODY, pad=5, fill=False):
+    """Spec box: Border `name`(1C1C1C pad2) > VBox `name`_Col { Border `name`_HdrBdr(gold, Txt title_name 13 111111); Border `name`_Line(2px F2B01E); Border `name`_Body(body, pad, fill 1.0 when fill) > VBox `name`_In }. Children go in parent=`name`_In. title=None -> no header/line. fill=True: Body takes the leftover height of `name`_Col (the box itself still needs fill in its own parent slot)."""
     if _find(w, name):
         return _find(w, name)
     r = _bdr(w, name, parent, OUTLINE, (2, 2, 2, 2), var=True)
-    _vb(w, name + '_Col', name)
+    _vb(w, name + '_Col', name, h='Fill', v='Fill')
     if title is not None:
         _bdr(w, name + '_HdrBdr', name + '_Col', GOLD, (8, 2, 8, 2), h='Fill')
         _t(w, title_name or name + '_Title', name + '_HdrBdr', FONTS[2], DARKTXT, label=title)
         _bdr(w, name + '_Line', name + '_Col', ACCENT, (0, 1, 0, 1), h='Fill')
-    _bdr(w, name + '_Body', name + '_Col', body, (pad,) * 4, h='Fill', v='Fill')
-    _vb(w, name + '_In', name + '_Body', var=True)
+    _bdr(w, name + '_Body', name + '_Col', body, (pad,) * 4, h='Fill', v='Fill', **({'fill': 1.0} if fill else {}))
+    _vb(w, name + '_In', name + '_Body', var=True, h='Fill', v='Fill')
     return r
 
 
-def chip(w, name, parent, icon_name, text_name, text='', hex=None, icon=None, px=None):
-    """Border `name`(hex or neutral) > HBox `name`_Row > Img icon_name (12x12) + Txt text_name (10 bold 111111); px = fixed width via SizeBox `name`_Sz."""
+def chip(w, name, parent, text_name, text='', hex=None, px=None):
+    """Border `name`(hex or neutral; the colour IS the role icon) > HBox `name`_Row > Txt text_name (10 111111); px = fixed width via SizeBox `name`_Sz."""
     if _find(w, name):
         return _find(w, name)
     cont = parent
@@ -117,8 +126,6 @@ def chip(w, name, parent, icon_name, text_name, text='', hex=None, icon=None, px
         cont = name + '_Sz'
     b = _bdr(w, name, cont, hex or NEUTRAL, (6, 1, 6, 1), var=True, v='Center')
     _hb(w, name + '_Row', name)
-    im = _img(w, icon_name, name + '_Row', icon, 12, DARKTXT)
-    slot(im, pad=(0, 0, 3, 0), v='Center')
     _t(w, text_name, name + '_Row', FONTS[1], DARKTXT, label=text, v='Center')
     return b
 
@@ -188,14 +195,14 @@ def page(main, name, parent='PageSwitcher'):
     return p
 
 
-def group_header(w, name, parent, hdr_btn, arrow_img, name_txt, summary_txt=None, collapsed=True, arrow_icon=None):
-    """HBox `name`(var, collapsed) > Button hdr_btn(4A4A4A fill) > HBox `hdr_btn`_Row { Img arrow_img 12x12 + Txt name_txt (12) + Txt summary_txt (10, fill, right) }."""
+def group_header(w, name, parent, hdr_btn, arrow_txt, name_txt, summary_txt=None, collapsed=True):
+    """HBox `name`(var, collapsed) > Button hdr_btn(4A4A4A fill) > HBox `hdr_btn`_Row { Txt arrow_txt ('v', 12) + Txt name_txt (12) + Txt summary_txt (10, fill, right) }."""
     if _find(w, name):
         return _find(w, name)
     r = _hb(w, name, parent, var=True, h='Fill')
     _btn(w, hdr_btn, name, BUTTON, fill=1.0, h='Fill', v='Fill')
     _hb(w, hdr_btn + '_Row', hdr_btn)
-    slot(_img(w, arrow_img, hdr_btn + '_Row', arrow_icon, 12), pad=(8, 2, 6, 2), v='Center')
+    _t(w, arrow_txt, hdr_btn + '_Row', FONTS[0] + 1, TEXT, label='v', pad=(8, 2, 6, 2), v='Center')
     _t(w, name_txt, hdr_btn + '_Row', FONTS[0] + 1, TEXT, pad=(0, 2, 6, 2), v='Center')
     if summary_txt:
         _t(w, summary_txt, hdr_btn + '_Row', FONTS[1], DIM, pad=(0, 2, 8, 2), fill=1.0, h='Right', v='Center')
@@ -239,7 +246,7 @@ def class_strip(w, prefix, parent, keys, px=78, no_img=('All',)):
             _t(w, 'Txt_%sAll%s' % (prefix, k), bn + '_Col', FONTS[2], TEXT, label=k.upper(), h='Center')
         else:
             _sz(w, 'Sz_%s%s' % (prefix, k), bn + '_Col', 34, 22, h='Center')
-            _img(w, 'Img_%s%s' % (prefix, k), 'Sz_%s%s' % (prefix, k), None, 22)
+            _ship_img(w, 'Img_%s%s' % (prefix, k), 'Sz_%s%s' % (prefix, k), 22)
         _hb(w, bn + '_Lines', bn + '_Col', h='Center')
         _t(w, 'Txt_%sName%s' % (prefix, k), bn + '_Lines', FONTS[1], TEXT, label=k, pad=(0, 0, 3, 0))
         _t(w, 'Txt_%sCnt%s' % (prefix, k), bn + '_Lines', FONTS[1], 'CCCCCC', label='0')
@@ -287,43 +294,59 @@ def tile(w, name, parent, txt_name, text, hex=None):
     return b
 
 
-def _cell(w, c, parent):
-    name, kind, fill = c[0], c[1], c[2]
-    extra = c[3] if len(c) > 3 else None
+def _cell_box(w, c, parent, prefix=''):
+    """the `<prefix><name>_Cell` wrapper (fixed px -> SizeBox > HBox `_CellIn`, else HBox with fill); returns the inner container name"""
+    name, fill = prefix + c[0], c[2]
     px = c[4] if len(c) > 4 else None
     cell = name + '_Cell'
     if px:
         _sz(w, cell, parent, px, None, v='Center')
         _hb(w, cell + 'In', cell)
-        cell = cell + 'In'
-    else:
-        _hb(w, cell, parent, fill=fill or 1.0, h='Fill', v='Center')
+        return cell + 'In'
+    _hb(w, cell, parent, fill=fill or 1.0, h='Fill', v='Center')
+    return cell
+
+
+def col_head(w, parent, columns, labels, row='Row_ColHead', prefix='Hd_'):
+    """Column header row built from the SAME `columns` list as list_row_wbp: HBox `row` (var, pad 6,2,6,2) in `parent`, one cell per column (same px/fill), Txt `Txt_<prefix><name>` (11 DIM) = labels.get(name, '')."""
+    if _find(w, row):
+        return _find(w, row)
+    r = _hb(w, row, parent, var=True, h='Fill', pad=(6, 2, 6, 2))
+    for c in columns:
+        _t(w, 'Txt_' + prefix + c[0], _cell_box(w, c, row, prefix), FONTS[0], DIM, var=False, label=labels.get(c[0], ''), v='Center', fill=1.0, h='Left')
+    return r
+
+
+def _cell(w, c, parent):
+    name, kind = c[0], c[1]
+    extra = c[3] if len(c) > 3 else None
+    cell = _cell_box(w, c, parent)
     if kind == 'text':
-        t = _t(w, name, cell, FONTS[0], TEXT, v='Center', fill=1.0, h='Fill')
+        t = _t(w, name, cell, extra or FONTS[0], TEXT, v='Center', fill=1.0, h='Fill')
         try:
             t.set_editor_property('text_overflow_policy', U.TextOverflowPolicy.ELLIPSIS)
         except Exception:
             pass
     elif kind == 'chip':
-        chip(w, name, cell, extra[0], extra[1])
+        chip(w, name, cell, extra[1])
     elif kind == 'bar':
         bar(w, name, cell, BARGREEN, 6, extra)
     elif kind == 'img':
         sz = extra or (20, 20)
         _sz(w, name + '_Sz', cell, sz[0], sz[1], v='Center')
-        _img(w, name, name + '_Sz', None, sz[1])
+        _ship_img(w, name, name + '_Sz', sz[1])
     elif kind == 'btn':
         _btn(w, name, cell, BUTTON, v='Center')
         _t(w, extra, name, FONTS[1], TEXT, pad=(6, 2, 6, 2), h='Center', v='Center')
     elif kind == 'check':
         slot(add(w, U.CheckBox, name, cell, True), v='Center')
     elif kind == 'icontext':
-        slot(_img(w, extra[0], cell, None, 12), pad=(0, 0, 4, 0), v='Center')
+        _t(w, extra[0], cell, FONTS[0], TEXT, label='o', pad=(0, 0, 4, 0), v='Center')  # state glyph, Lua sets text + colour
         _t(w, extra[1], cell, FONTS[0], TEXT, v='Center', fill=1.0, h='Fill')
 
 
 def list_row_wbp(wbp_name, root, data_row, columns, root_kind='vbox', group=None, frame=None, hex=INSET):
-    """Build row WBP wbp_name (returns the WBP). root (var) = 'vbox' VerticalBox or 'border'(hex). group=dict(name,hdr,arrow,name_txt,summary) adds a collapsed group_header first (vbox only). frame=(frame_border, sel_border, row_button) wraps the data row as Border>Border>Button>HBox. columns=[(name,kind,fill[,extra[,px]])], kind text|chip|bar|img|btn|check|icontext, extra = chip (icon,text) / bar pct name / img (w,h) / btn txt name / icontext (img,txt), px = fixed width; cell wrapper `<name>_Cell`."""
+    """Build row WBP wbp_name (returns the WBP). root (var) = 'vbox' VerticalBox or 'border'(hex). group=dict(name,hdr,arrow,name_txt,summary) adds a collapsed group_header first (vbox only; arrow = TextBlock name). frame=name of a Border (hex) wrapping the data row (Border>HBox, no Button). columns=[(name,kind,fill[,extra[,px]])], kind text|chip|bar|img|btn|check|icontext, extra = text size / chip (unused,text) / bar pct name / img (w,h) / btn txt name / icontext (state TextBlock name, txt), px = fixed width; cell wrapper `<name>_Cell`."""
     w = new_wbp(wbp_name)
     if root_kind == 'border':
         _bdr(w, root, '', hex, (0, 0, 0, 0), var=True)
@@ -334,12 +357,8 @@ def list_row_wbp(wbp_name, root, data_row, columns, root_kind='vbox', group=None
         if group:
             group_header(w, group['name'], root, group['hdr'], group['arrow'], group['name_txt'], group.get('summary'))
         if frame:
-            _bdr(w, frame[0], root, hex, (0, 0, 0, 0), var=True)
-            _bdr(w, frame[1], frame[0], '000000', (0, 0, 0, 0), var=True).set_editor_property('brush_color', lin('000000', 0.0))
-            b = _btn(w, frame[2], frame[1], '000000')
-            nb = U.SlateBrush(); nb.set_editor_property('draw_as', U.SlateBrushDrawType.NO_DRAW_TYPE)
-            b.set_editor_property('widget_style', button_style(nb, nb, nb))
-            par = frame[2]
+            _bdr(w, frame, root, hex, (0, 0, 0, 0), var=True, h='Fill')
+            par = frame
     _hb(w, data_row, par, var=True, h='Fill', v='Center', pad=(6, 2, 6, 2))
     for c in columns:
         _cell(w, c, data_row)

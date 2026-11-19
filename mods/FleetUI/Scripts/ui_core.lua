@@ -1,4 +1,4 @@
--- Generic UI helpers for MiningUnitUI page modules. No game or fleet words here.
+-- Generic UI helpers for the fleet window pages. No game or fleet words here.
 -- find(name) = widget finder (page index, list entry or nil). Every helper is a no-op for a missing widget.
 local C = {}
 local api
@@ -6,7 +6,7 @@ local PAL = {}                                                   -- name -> "#RR
 local IDX = {}                                                   -- page name -> find(name)
 local BOUND = setmetatable({}, { __mode = "k" })                 -- widget -> click bound once
 local HANDLER = setmetatable({}, { __mode = "k" })               -- widget -> latest click fn
-local WALK_NODES = 2600
+local WALK_NODES = 3000
 
 function C.init(a) api = a end
 
@@ -28,21 +28,28 @@ function C.col(name)
 end
 
 function C.text(o, s)
+  if api.setText then return api.setText(o, s) end
   if not api.ok(o) then return end
   pcall(function() o:SetText(FText(tostring(s or ""))) end)
 end
 
+-- TextBlock colour (SpecifiedColor)
 function C.tint(o, colour)
   local c = C.col(colour)
   if c and api.ok(o) then pcall(function() o:SetColorAndOpacity({ SpecifiedColor = c }) end) end
 end
 
--- chip(find, bdr, icon, txt, text, colour): Border takes the colour, icon and text are dark (111111) on it
-function C.chip(find, bdr, icon, txt, text, colour)
+-- Image colour (white = texture undimmed)
+function C.imgtint(o, colour)
+  local c = C.col(colour)
+  if c and api.ok(o) then pcall(function() o:SetColorAndOpacity(c) end) end
+end
+
+-- chip(find, bdr, txt, text, colour): text only; Border takes the colour, text is dark (111111) on it
+function C.chip(find, bdr, txt, text, colour)
   local b = find(bdr)
   local c = C.col(colour)
   if c and api.ok(b) then pcall(function() b:SetBrushColor(c) end) end
-  C.tint(find(icon), "#111111")
   C.tint(find(txt), "#111111")
   C.text(find(txt), text)
 end
@@ -68,7 +75,7 @@ function C.bind_button(find, name, fn)
   HANDLER[b] = fn
   if not BOUND[b] then
     BOUND[b] = true
-    api.onClick(b, function() local f = HANDLER[b]; if f then f() end end)
+    api.onClick(b, api.guard("click " .. tostring(name), function() local f = HANDLER[b]; if f then f() end end))
   end
   return b
 end
@@ -124,7 +131,7 @@ end
 -- list{key, anchor, box, rows, rowFn(row, find, i, entry), bindFn(entry, find, idxFn)} over api.dynList
 function C.list(sp)
   return api.dynList{ key = sp.key, anchor = sp.anchor, box = sp.box, n = #sp.rows,
-    paint = function(entry, find, i) sp.rowFn(sp.rows[i], find, i, entry) end,
+    paint = api.guard("row " .. tostring(sp.key), function(entry, find, i) sp.rowFn(sp.rows[i], find, i, entry) end),
     bind = sp.bindFn }
 end
 
@@ -148,7 +155,7 @@ function C.index(page)
       if s4 then rec(ct, d + 1) end
     end
   end
-  rec(api.w(page), 0)
+  rec(api.w(page), 0)  -- ponytail: page-local walk (names repeat across pages); capped, once per window
   local function find(name) return map[name] end
   IDX[page] = find
   return find

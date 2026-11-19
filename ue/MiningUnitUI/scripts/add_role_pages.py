@@ -1,11 +1,12 @@
-"""Role page + Escort page content for the Fleet UI (spec fleet-ui-widget-spec.md sections 3 and 4). Runs AFTER add_fleet_tab.py
-(tabs, Pnl_PageRole, Pnl_FlEscort, row WBPs). Only composes uicomp.py factories; role cards = ONE loop over ROLES (FIELDS table).
-Idempotent (uicomp factories return existing widgets; nothing is deleted). Missing slice-c widgets -> printed and skipped.
-Run: UnrealEditor-Cmd <uproject> -ExecutePythonScript=<this file> -unattended -nullrhi (editor closed). Not run by the build."""
+"""Role page + Escort page content for the Fleet window /Game/FleetUI/WBP_FleetWindow (spec fleet-ui-widget-spec.md sections 3 and 4). Runs AFTER add_fleet_window.py
+(imported by it at the end; tabs, Pnl_PageRole, Pnl_PageEscort, row WBPs). Only composes uicomp.py factories; role cards = ONE loop over ROLES (FIELDS table).
+Idempotent (uicomp factories return existing widgets; nothing is deleted). Missing widgets -> printed and skipped.
+Run: normally via add_fleet_window.py (UnrealEditor-Cmd <uproject> -ExecutePythonScript=add_fleet_window.py -unattended -nullrhi, editor closed). Not run by the build."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import uew; uew.OUT = '/Game/FleetUI'
 from uicomp import *
-from uicomp import _find, _hb, _vb, _sz, _img, _bdr, _t
+from uicomp import _find, _hb, _vb, _sz, _img, _ship_img, _bdr, _t
 
 KINDS = {'sel': ('select', 'Sel_'), 'edit': ('number', 'Edt_'), 'check': ('check', 'Chk_')}
 # role -> (letter, [(key, label, kind)]); widget names: Sel_/Edt_/Chk_Rl<letter><key>, Row_Rl<letter><key>, Txt_Rl<letter><key>Lbl, Txt_SelRl<letter><key>
@@ -48,12 +49,11 @@ def role_card(w, parent, role, letter, fields):
     box(w, 'Bx_' + c, 'Pnl_' + c, TITLES[role], 'Txt_%sTitle' % c, INSET, 5)
     inn = 'Bx_%s_In' % c
     _hb(w, 'Row_%sTop' % c, inn)
-    _img(w, 'Img_%sHolo' % c, 'Row_%sTop' % c, None, 47)
+    _ship_img(w, 'Img_%sHolo' % c, 'Row_%sTop' % c, 47)
     _vb(w, 'Col_%sTop' % c, 'Row_%sTop' % c, pad=(8, 0, 0, 0))
-    chip(w, 'Bdr_%sChip' % c, 'Col_%sTop' % c, 'Img_%sRoleIcon' % c, 'Txt_%sRole' % c, 'None')
+    chip(w, 'Bdr_%sChip' % c, 'Col_%sTop' % c, 'Txt_%sRole' % c, 'None')
     _hb(w, 'Row_%sState' % c, 'Col_%sTop' % c, pad=(0, 3, 0, 0))
-    _img(w, 'Img_%sState' % c, 'Row_%sState' % c, None, 12)
-    _t(w, 'Txt_%sStateTxt' % c, 'Row_%sState' % c, FONTS[0], '8FE08E', pad=(4, 0, 0, 0))
+    _t(w, 'Txt_%sStateTxt' % c, 'Row_%sState' % c, FONTS[0], '8FE08E')
     _t(w, 'Txt_%sDoingLbl' % c, inn, FONTS[1], 'AAAAAA', var=False, label='Doing now', pad=(0, 4, 0, 0))
     _t(w, 'Txt_%sDoing' % c, inn, FONTS[0], TEXT).set_editor_property('auto_wrap_text', True)
     for key, label, kind in fields:
@@ -65,7 +65,7 @@ def role_card(w, parent, role, letter, fields):
             fk, pre = KINDS[kind]
             field(w, k, inn, label, fk, lbl='Txt_%sLbl' % k, ctl=pre + k)
     if letter == 'H':
-        _img(w, 'Img_RlHItem', 'Row_RlHItem', None, 24)
+        _ship_img(w, 'Img_RlHItem', 'Row_RlHItem', 24)  # placeholder, Lua sets the item texture
     _hb(w, 'Row_%sBtns' % c, inn, var=True, pad=(0, 6, 0, 0), h='Fill')
     for key, label, icon in (('Recall', 'Recall to me', IC_CALL), ('Hold', 'Hold', IC_HOLD), ('Default', 'Set as default', None)):
         n = c + key
@@ -74,11 +74,11 @@ def role_card(w, parent, role, letter, fields):
 
 
 def main_build():
-    main = U.load_asset(ASSETS + '/WBP_MiningUnit')
-    pr, pe = _find(main, 'Pnl_PageRole'), _find(main, 'Pnl_FlEscort')
-    for n, x in (('Pnl_PageRole', pr), ('Pnl_FlEscort', pe)):
+    main = U.load_asset(uew.OUT + '/WBP_FleetWindow')
+    pr, pe = _find(main, 'Pnl_PageRole'), _find(main, 'Pnl_PageEscort')
+    for n, x in (('Pnl_PageRole', pr), ('Pnl_PageEscort', pe)):
         if not x:
-            print('MISSING (run add_fleet_tab.py first):', n)
+            print('MISSING (run add_fleet_window.py first):', n)
 
     if pr and not _find(main, 'Row_RoleCards'):
         _hb(main, 'Row_RoleCards', 'Pnl_PageRole', var=True, h='Fill', v='Fill')
@@ -86,9 +86,9 @@ def main_build():
             role_card(main, 'Row_RoleCards', role, letter, fields)
 
     if pe and not _find(main, 'Row_FlEscBody'):
-        _hb(main, 'Row_FlEscStrip', 'Pnl_FlEscort', var=True, h='Fill')
+        _hb(main, 'Row_FlEscStrip', 'Pnl_PageEscort', var=True, h='Fill')
         class_strip(main, 'FlE', 'Row_FlEscStrip', CLASSES)
-        _hb(main, 'Row_FlEscBody', 'Pnl_FlEscort', var=True, pad=(0, 6, 0, 0), fill=1.0, h='Fill', v='Fill')
+        _hb(main, 'Row_FlEscBody', 'Pnl_PageEscort', var=True, pad=(0, 6, 0, 0), fill=1.0, h='Fill', v='Fill')
         _vb(main, 'Row_FlEscLeft', 'Row_FlEscBody', var=True, pad=(0, 0, 16, 0), fill=0.2, h='Fill')
         _vb(main, 'Row_FlEscRight', 'Row_FlEscBody', var=True, fill=0.8, h='Fill')
         box(main, 'Bx_FlFollowing', 'Row_FlEscLeft', 'Following')
@@ -97,7 +97,7 @@ def main_build():
         _hb(main, 'Row_FlFollowCard', 'Bdr_FlFollowCard')
         _sz(main, 'Sz_FlFollowStripe', 'Row_FlFollowCard', 3, None, v='Fill')
         _bdr(main, 'Bdr_FlFollowStripe', 'Sz_FlFollowStripe', 'EE66BB', (0, 0, 0, 0), h='Fill', v='Fill')
-        _img(main, 'Img_FlFollowHolo', 'Row_FlFollowCard', None, 28)
+        _ship_img(main, 'Img_FlFollowHolo', 'Row_FlFollowCard', 28)
         _vb(main, 'Col_FlFollowCard', 'Row_FlFollowCard', pad=(8, 0, 0, 0))
         _t(main, 'Txt_FlFollowName', 'Col_FlFollowCard', FONTS[2], TEXT, label='You (Captain)')
         _t(main, 'Txt_FlFollowCount', 'Col_FlFollowCard', FONTS[1], 'AAAAAA')
@@ -113,11 +113,11 @@ def main_build():
         head(main, 'Row_FlFreeHead', 'Bx_FlFree_In', 'FlFreeH')
         for dn, parent, row in (('Dyn_FlTargets', 'Bx_FlOtherTargets_In', 'WBP_FleetTargetRow'), ('Dyn_FlAssigned', 'Bx_FlAssigned_In', 'WBP_FleetEscortRow'),
                                 ('Dyn_FlFree', 'Bx_FlFree_In', 'WBP_FleetEscortRow')):
-            if U.EditorAssetLibrary.does_asset_exist('%s/%s' % (ASSETS, row)):
+            if U.EditorAssetLibrary.does_asset_exist('%s/%s' % (uew.OUT, row)):
                 dyn_list(main, dn, parent, row, spacing=2.0)
             else:
                 print('MISSING row WBP:', row)
-        action_bar(main, 'Bdr_FlEscActionBar', 'Row_FlEscActionBar', 'Pnl_FlEscort', ESC_BAR)
+        action_bar(main, 'Bdr_FlEscActionBar', 'Row_FlEscActionBar', 'Pnl_PageEscort', ESC_BAR)
     save(main)
 
 

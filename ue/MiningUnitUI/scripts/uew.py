@@ -1,7 +1,8 @@
 """Headless UMG authoring helpers (UnrealEditor-Cmd -ExecutePythonScript). Colors/sizes mirror gen_paste.py."""
 import unreal
 
-ASSETS = '/Game/MiningUnitUI'
+ASSETS = '/Game/MiningUnitUI'  # textures / mining assets
+OUT = '/Game/MiningUnitUI'     # where new_wbp / dyn_box put and find WBPs (add_fleet_window sets uew.OUT = '/Game/FleetUI')
 U = unreal
 ELib = unreal.EditorUtilityLibrary
 
@@ -49,12 +50,12 @@ def button_style(normal, hover, pressed):
 
 
 def new_wbp(name):
-    path = '%s/%s' % (ASSETS, name)
+    path = '%s/%s' % (OUT, name)
     if U.EditorAssetLibrary.does_asset_exist(path):
         U.EditorAssetLibrary.delete_asset(path)
     f = U.WidgetBlueprintFactory()
     f.set_editor_property('parent_class', U.UserWidget)
-    return U.AssetToolsHelpers.get_asset_tools().create_asset(name, ASSETS, U.WidgetBlueprint, f)
+    return U.AssetToolsHelpers.get_asset_tools().create_asset(name, OUT, U.WidgetBlueprint, f)
 
 
 def add(wbp, cls, name, parent='', var=True):
@@ -130,7 +131,7 @@ def remove(wbp, name):
 
 def dyn_box(wbp, name, parent, entry_wbp, spacing=6.0):
     d = ELib.find_source_widget_by_name(wbp, name) or add(wbp, U.DynamicEntryBox, name, parent)
-    d.set_editor_property('entry_widget_class', U.load_class(None, '%s/%s.%s_C' % (ASSETS, entry_wbp, entry_wbp)))
+    d.set_editor_property('entry_widget_class', U.load_class(None, '%s/%s.%s_C' % (OUT, entry_wbp, entry_wbp)))
     d.set_editor_property('entry_box_type', U.DynamicBoxType.VERTICAL)
     d.set_editor_property('entry_spacing', U.Vector2D(0.0, spacing))
     d.set_editor_property('entry_horizontal_alignment', U.HorizontalAlignment.H_ALIGN_FILL)
