@@ -171,14 +171,54 @@ namespace
         return false;
     }
 
+    // WHAT: non-fuel items in cargo that have no dedicated dock (non-ore items, ores with an empty dock list); total amount, -1 = layout unreadable, 0 = no Inventory.
+    int64_t cargo_misc_items(UObject* ship, const Config& c, std::vector<UObject*>& items)
+    {
+        items.clear();
+        UObject* inv = get_obj_prop(ship, STR("Inventory"));
+        if (!alive(inv)) return 0;
+        FProperty* tp = inv->GetPropertyByNameInChain(STR("ItemSlots"));
+        auto* ap = tp ? CastField<FArrayProperty>(tp) : nullptr;
+        auto* arr = ap ? inv->GetValuePtrByPropertyNameInChain<TArray<uint8_t>>(STR("ItemSlots")) : nullptr;
+        if (!arr) return 0;
+        FProperty* inner = ap->GetInner();
+        auto* isp = inner ? CastField<FStructProperty>(inner) : nullptr;
+        if (!isp || !isp->GetStruct()) return -1;
+        FProperty* fi = isp->GetStruct()->FindProperty(FName(STR("Item"), FNAME_Add));
+        FProperty* fa = isp->GetStruct()->FindProperty(FName(STR("Amount"), FNAME_Add));
+        const int32_t stride = inner->GetElementSize();
+        if (!fi || !fa || stride <= 0) return -1;
+        UObject* fuel[N_FUEL] = {};
+        for (int i = 0; i < N_FUEL; ++i) { std::wstring w; fuel[i] = item_c(FUEL_ITEM[i], w); }
+        UObject* ore[N_ORE] = {};
+        for (int i = 0; i < N_ORE; ++i) { std::wstring w; ore[i] = item_c(ORE_ITEM[i], w); }
+        int64_t total = 0;
+        for (int32_t i = 0; i < arr->Num(); ++i)
+        {
+            const uint8_t* e = &(*arr)[0] + static_cast<size_t>(i) * static_cast<size_t>(stride);
+            const int32_t amt = *reinterpret_cast<const int32_t*>(e + fa->GetOffset_Internal());
+            if (amt <= 0) continue;
+            UObject* it = *reinterpret_cast<UObject* const*>(e + fi->GetOffset_Internal());
+            if (!alive(it)) continue;
+            bool skip = false;
+            for (UObject* f : fuel) if (f && it == f) skip = true;
+            for (int k = 0; k < N_ORE; ++k) if (ore[k] && it == ore[k] && !c.ore_docks[k].empty()) skip = true;
+            if (skip) continue;
+            if (std::find(items.begin(), items.end(), it) == items.end()) items.push_back(it);
+            total += amt;
+        }
+        return total;
+    }
+
     // WHAT: unload dock for a dock_mining trip. fixed > 0 = the Dock picker's dock; else the first free dock in list order of the ores IN CARGO that have
     //       an unload dock (unload_cand). ores = the ores unloaded at the chosen dock (ORE indices).
     //       Returns 0 with busy=false when no ore has a dock list, or none in cargo has one (caller: "no unload dock set"); busy=true when the dock is taken or every cargo ore's docks are busy.
     // WHY: one trip unloads at one dock (ob_plan_unload takes one dock). An ore not in cargo must not pick the dock: the ship docks, unloads nothing, the cargo check fails.
     //      The Dock picker path is as before: cargo ores first, then the other ores that list the dock.
-    NetVerdict unload_pick(int sid, UObject* ship, const Config& c, int fixed, std::vector<int>& ores, std::string& subject)
+    NetVerdict unload_pick(int sid, UObject* ship, const Config& c, int fixed, std::vector<int>& ores, std::string& subject, std::vector<UObject*>& misc)
     {
         ores.clear();
+        misc.clear();
         std::vector<bool> in_cargo(N_ORE, false), has_docks(N_ORE, false);
         for (int i = 0; i < N_ORE; ++i)
         {
@@ -190,6 +230,14 @@ namespace
         std::vector<int> cands;
         if (fixed > 0) cands = {fixed};
         else for (int i : unload_cand(in_cargo, has_docks)) for (int d : c.ore_docks[i]) add_unique(cands, d);
+        const bool picker_misc = fixed > 0 && std::find(c.misc_docks.begin(), c.misc_docks.end(), fixed) != c.misc_docks.end();
+        std::vector<UObject*> others;
+        const std::vector<int> mores = unload_misc_ores(in_cargo, has_docks);
+        if (!c.misc_docks.empty()) cargo_misc_items(ship, c, others);
+        std::vector<UObject*> nonore;
+        for (UObject* o : others) { bool isore = false; for (int i = 0; i < N_ORE; ++i) { std::wstring w; if (o == item_c(ORE_ITEM[i], w)) isore = true; } if (!isore) nonore.push_back(o); }
+        const bool misc_trip = picker_misc || (fixed <= 0 && unload_misc_trip(cands.size(), mores.size(), nonore.size(), !c.misc_docks.empty()));
+        if (misc_trip && fixed <= 0) cands = c.misc_docks;
         if (fixed <= 0 && g_flee_pick.count(sid))
         {
             std::wstring rw;
@@ -200,7 +248,7 @@ namespace
             // nothing to unload here: a cargo ore with no dock list is a real error (NOT_CONFIGURED), else the cargo has nothing to unload
             NetVerdict v;
             v.k = NetVerdict::ERR; v.reason = NR_NOTHING_TO_UNLOAD;
-            for (int i = 0; i < N_ORE; ++i) if (in_cargo[i] && !has_docks[i]) { v.reason = NR_NOT_CONFIGURED; subject = ORE_KEY[i]; break; }
+            for (int i = 0; i < N_ORE; ++i) if (c.misc_docks.empty() && in_cargo[i] && !has_docks[i]) { v.reason = NR_NOT_CONFIGURED; subject = ORE_KEY[i]; break; }
             return v;
         }
         const Purpose pur = g_flee_pick.count(sid) && !g_flee_dock.count(sid) ? P_FLEE : P_UNLOAD;
@@ -213,6 +261,11 @@ namespace
         if (fixed > 0) for (int i = 0; i < N_ORE; ++i) if (has_docks[i] && !in_cargo[i]) pool.push_back(i);
         for (int i : pool)
             if (std::find(c.ore_docks[i].begin(), c.ore_docks[i].end(), v.dock) != c.ore_docks[i].end()) ores.push_back(i);
+        if (misc_trip && std::find(c.misc_docks.begin(), c.misc_docks.end(), v.dock) != c.misc_docks.end())
+        {
+            for (int i : mores) if (std::find(ores.begin(), ores.end(), i) == ores.end()) ores.push_back(i);
+            for (UObject* o : nonore) misc.push_back(o);
+        }
         return v;
     }
 
@@ -286,9 +339,10 @@ namespace
             else
             {
                 g_unl_ores[sid] = j.unl;
+                g_unl_misc[sid] = j.unlm;
                 std::vector<std::string> ores;
                 for (int i : j.unl) ores.push_back(ORE_ITEM[i]);
-                st = ob_plan_unload(dk, ores, c.wait_seconds);
+                st = ob_plan_unload_misc(dk, ores, j.unlm, c.wait_seconds);
             }
             ob_start(sid, st);
             j.stage = 3;
@@ -343,6 +397,7 @@ namespace
         std::wstring why;
         int dk = 0;
         std::vector<int> unl;   // dock_mining: ore indices unloaded at dk (used in 5b)
+        std::vector<UObject*> unlm;   // misc trip: non-ore items unloaded at dk
         // 3. target dock
         if (cmd == "undock")
         {
@@ -354,6 +409,7 @@ namespace
             const Config c = eff_cfg(sid);
             std::vector<int> cands = refuel_candidates(c, why);
             for (int i = 0; i < N_ORE; ++i) for (int d : c.ore_docks[i]) add_unique(cands, d);
+            for (int d : c.misc_docks) add_unique(cands, d);
             cands.erase(std::remove(cands.begin(), cands.end(), cur_id), cands.end());
             if (cands.empty()) return STR("error: need a second configured dock to leave");
             // an undock never waits: when every candidate is taken, take the first one (old behaviour); it is not a hold
@@ -383,12 +439,12 @@ namespace
             const Config c = eff_cfg(sid);
             const int fixed = (pk != g_dock_pick.end() && pk->second > 0) ? pk->second : 0;
             std::string subject;
-            const NetVerdict v = unload_pick(sid, ship, c, fixed, unl, subject);
+            const NetVerdict v = unload_pick(sid, ship, c, fixed, unl, subject, unlm);
             if (v.k == NetVerdict::ERR) return net_refusal(v, subject);
             { const std::wstring u = undock_first(sid, ship, v.dock, cmd, seq); if (!u.empty()) return u; }
             if (v.k == NetVerdict::WAIT) { tlog(STR("unload dock busy, ship ") + std::to_wstring(sid) + STR(" waits")); return STR("waiting dock"); }
             dk = v.dock;
-            if (unl.empty() && !g_flee_pick.count(sid)) return STR("error: no ore lists this dock");
+            if (unl.empty() && unlm.empty() && !g_flee_pick.count(sid)) return STR("error: no ore lists this dock");
         }
         // 4b. checks dock_order_issue would fail on: a job that would fail must not warp
         if (!int_array(ship, STR("OrderIDs"))) return STR("error: OrderIDs unreadable");
@@ -401,7 +457,7 @@ namespace
         }
         // 5. job record: start position (undock clear check)
         DockJob j;
-        j.sid = sid; j.dock = dk; j.seq = seq; j.cmd = cmd; j.kind = cmd0; j.unl = unl;
+        j.sid = sid; j.dock = dk; j.seq = seq; j.cmd = cmd; j.kind = cmd0; j.unl = unl; j.unlm = unlm;
         get_loc(ship, j.p0);
         // 5a. far dock trip (not undock): the warp comes first, the ship is undocked here. The dock order is issued after the settle (jobs_tick stage 4)
         if (cmd != "undock")

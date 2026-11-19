@@ -1100,6 +1100,21 @@ namespace
         return out;
     }
 
+    // WHAT: ORE indices in cargo with NO unload dock list (they go to a misc dock when one exists).
+    std::vector<int> unload_misc_ores(const std::vector<bool>& in_cargo, const std::vector<bool>& has_docks)
+    {
+        std::vector<int> out;
+        for (size_t i = 0; i < in_cargo.size() && i < has_docks.size(); ++i)
+            if (in_cargo[i] && !has_docks[i]) out.push_back(static_cast<int>(i));
+        return out;
+    }
+
+    // WHAT: a trip uses the misc docks only when no ore dock is a candidate, misc docks exist, and something is left (no-dock ores or non-ore items). WHY: misc docks are the LAST docks in the unload order (user 2026-11-19).
+    bool unload_misc_trip(size_t ore_cands, size_t misc_ores, size_t other_items, bool has_misc)
+    {
+        return ore_cands == 0 && has_misc && (misc_ores + other_items) > 0;
+    }
+
     // WHAT: refuel stalled: items not all delivered, t >= wait_s, and the fuel cargo has not grown for idle_s (idle_s 0 = off).
     bool refuel_stalled(bool done, int idle_s, double t, int wait_s, double hold_idle)
     {

@@ -647,7 +647,7 @@ namespace
     {
         warp_cancel(sid);   // a warp waiting for this undock / aiming is cancelled too (a charging one finishes)
         net_leave_slot(sid);     // a new dock pick follows: the old queue place and reservation go
-        g_unl_ores.erase(sid);
+        g_unl_ores.erase(sid); g_unl_misc.erase(sid);
         bool any = false;
         for (size_t i = 0; i < g_jobs.size();)
         {
@@ -756,8 +756,17 @@ namespace
             UObject* it = item_c(ORE_ITEM[i], w);
             const int64_t have = alive(it) ? inv_total(ship, it) : 0;
             if (have <= 0) continue;
-            if (c.ore_docks[i].empty()) nodock += widen(ORE_KEY[i]) + STR(" ");
+            if (c.ore_docks[i].empty())
+            {
+                if (c.misc_docks.empty()) nodock += widen(ORE_KEY[i]) + STR(" ");   // else the misc scan counts it
+            }
             else { sum += have; names += widen(ORE_KEY[i]) + STR(" "); }
+        }
+        if (!c.misc_docks.empty())
+        {
+            std::vector<UObject*> o;
+            const int64_t m = cargo_misc_items(ship, c, o);
+            if (m > 0) { sum += m; names += STR("misc "); }
         }
         return sum;
     }
@@ -2771,6 +2780,15 @@ namespace
                 const int64_t have = alive(it) ? inv_total(ship, it) : -1;
                 if (have > 0) { done = false; sum += have; left += widen(ORE_KEY[i]) + STR(" ") + i64w(have) + STR(" "); }
             }
+            {
+                const auto mi = g_unl_misc.find(sid);
+                if (mi != g_unl_misc.end())
+                    for (UObject* o : mi->second)
+                    {
+                        const int64_t h = alive(o) ? inv_total(ship, o) : 0;
+                        if (h > 0) { done = false; sum += h; left += STR("misc ") + i64w(h) + STR(" "); }
+                    }
+            }
             // stall: the ore cargo not shrinking (idle_seconds after wait_seconds, 0 = off) -> dock full. A shrink proves the dock takes ore.
             const bool shrank = m.hold_last >= 0 && sum < m.hold_last;
             if (shrank) { m.hold_idle = 0.0; net_full_clear(dock_of(ship)); }
@@ -3595,7 +3613,7 @@ namespace
         }
         g_mine.erase(sid); g_mine_fault_n.erase(sid); g_mine_log.erase(sid); g_state_ring.erase(sid);
         g_sel_rocks.erase(sid); g_item_idx.erase(sid);
-        g_flee_pick.erase(sid); g_dock_pick.erase(sid); g_unl_ores.erase(sid);
+        g_flee_pick.erase(sid); g_dock_pick.erase(sid); g_unl_ores.erase(sid); g_unl_misc.erase(sid);
         g_job_res.erase(sid); g_mv_res.erase(sid); g_skip.erase(sid);
         g_ob.erase(sid); g_pf.erase(sid); g_spds.erase(sid); g_mvs.erase(sid);
         g_warp_wait.erase(sid); g_wr_wait.erase(sid);
@@ -3822,6 +3840,8 @@ namespace
                 UObject* it = item_c(ORE_ITEM[i], w);
                 if (alive(it) && inv_total(ship, it) > 0) has_ore = true;
             }
+            if (!has_ore && std::find(c.misc_docks.begin(), c.misc_docks.end(), d.id) != c.misc_docks.end())
+            { std::vector<UObject*> o; has_ore = cargo_misc_items(ship, c, o) > 0; }
             const HolderState st = net_holder_working(h) ? HS_WORKING : HS_PARKED;
             if (!net_bad_holder(st, has_ore, d.full, static_cast<int>(d.queue.size()), g_now - d.occ_since)) continue;
             const std::wstring ur = job_start(h, "undock", -1);
