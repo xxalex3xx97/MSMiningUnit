@@ -47,6 +47,16 @@ public:
         return n;
     }
 
+    // WHAT: true when owner may drive ship: free, or already held by owner. false = why set ("owned by X").
+    // WHY: SC_zero and SC_watch use it, so one behaviour cannot stop or watch a ship another owner holds.
+    bool may_act(int ship, const std::string& owner, std::string& why) const
+    {
+        const std::string held = owner_of(ship);
+        if (held.empty() || held == owner) return true;
+        why = "owned by " + held;
+        return false;
+    }
+
     // WHAT: owner name of ship, "" when free.
     std::string owner_of(int ship) const
     {
