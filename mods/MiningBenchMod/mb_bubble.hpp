@@ -221,6 +221,7 @@ namespace
     // WHAT: one mining ship's laser this tick: its system and the beam from the ship (a, m) to its rock centre (b, m).
     struct Beam { int sys = 0; double a[3] = {0, 0, 0}, b[3] = {0, 0, 0}; };
     std::map<int, Beam> g_beams;           // sid -> beam of every bench ship in MINE with a readable ship and rock (rebuilt each tick)
+    std::map<int64_t, double> g_beam_near_t;   // diagnostics rate limit
     std::map<int, double> g_beam_clear_t;  // sid -> seconds its beam has been clear while its laser is held (s)
     std::set<int> g_beam_held;             // sids whose laser is held off because another bench ship is in their beam
 
@@ -257,6 +258,18 @@ namespace
                 ActFrame vf;
                 if (!alive(vs) || !act_frame(vs, vf) || sys_id(vs) != bm.sys) continue;
                 const double vp[3] = {vf.loc[0] / MV_UU_PER_M, vf.loc[1] / MV_UU_PER_M, vf.loc[2] / MV_UU_PER_M};
+                {   // diagnostics (2026-11-19): beam geometry vs a ship that got hurt at 33 m without a hold; one line per pair per 2 s while a ship is within 60 m of a beam
+                    const double dd = seg_point_dist(bm.a, bm.b, vp);
+                    double& nt = g_beam_near_t[static_cast<int64_t>(sid) * 1000003 + vid];
+                    nt -= dt;
+                    if (dd < 60.0 && nt <= 0.0)
+                    {
+                        nt = 2.0;
+                        log_line(STR("BEAM near ship=") + std::to_wstring(sid) + STR(" other=") + std::to_wstring(vid) + STR(" d=") + std::to_wstring(dd) +
+                                 STR(" beamLen=") + std::to_wstring(seg_point_dist(bm.a, bm.b, bm.b) + std::sqrt((bm.b[0]-bm.a[0])*(bm.b[0]-bm.a[0]) + (bm.b[1]-bm.a[1])*(bm.b[1]-bm.a[1]) + (bm.b[2]-bm.a[2])*(bm.b[2]-bm.a[2]))) +
+                                 STR(" r=") + std::to_wstring(bubble_ship_r(vid)));
+                    }
+                }
                 if (ship_in_beam(bm.a, bm.b, vp, bubble_ship_r(vid))) { victim = vid; break; }
             }
             const bool held = g_beam_held.count(sid) > 0;
