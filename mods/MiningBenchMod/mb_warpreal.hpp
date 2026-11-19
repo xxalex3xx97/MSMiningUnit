@@ -334,13 +334,14 @@ namespace
         if (g_wr.wacc >= 1.0)
         {
             g_wr.wacc = 0.0;
-            bool ap = false, jts = false;
+            bool jts = false;
             int32_t idx = -1, f = -1;
-            get_bool_prop(ship, STR("bAutopilot"), ap);
+            MsFlight sfs;
+            const int sfr = ms_flight_read(g_wr.sid, FL_STATE, sfs);
             get_int_prop(ship, STR("CurrentOrderIndex"), idx);
             get_bool_prop(ship, STR("bJumpTargetSet"), jts);
             call_int(ship, STR("GetAvailableJumpFuel"), f);
-            log_line(std::wstring(STR("WARPREAL watch variant=")) + kVn[g_wr.var] + STR(" autopilot=") + (ap ? STR("1") : STR("0")) +
+            log_line(std::wstring(STR("WARPREAL watch variant=")) + kVn[g_wr.var] + STR(" autopilot=") + ms_flag_text(sfr, sfs, FF_AUTOPILOT) +
                      STR(" order_idx=") + std::to_wstring(idx) + STR(" jump_set=") + (jts ? STR("1") : STR("0")) +
                      STR(" jump_loc=") + pvec_text(ship, STR("JumpTargetLocation")) + STR(" sys=") + std::to_wstring(sys) +
                      STR(" chunk=") + (cok ? trio_text(c) : std::wstring(STR("n/a"))) + STR(" fuel=") + std::to_wstring(f) + (g_wr.var >= 5 ? STR(" ") + wr_e_state(ship) : std::wstring()));

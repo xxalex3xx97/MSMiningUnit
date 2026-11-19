@@ -8,6 +8,7 @@
 
 #include <map>
 #include <string>
+#include "sc_flight_abi.h"   // MsFlight, FL_*, FF_* (SC6-D3a copy of msc_api.hpp, build.ps1 copies it)
 
 namespace
 {
@@ -68,6 +69,9 @@ namespace
         int (*chunk_ready)(wchar_t*, int) = nullptr;
         int (*cls)(const char*, char*, int) = nullptr;
         int (*ship_shields)(void*, int*, int*) = nullptr;
+        int (*ship_flight)(int, int, MsFlight*) = nullptr;
+        int (*ship_set_throttle)(int, int, wchar_t*, int) = nullptr;
+        int (*ship_zero)(int, wchar_t*, int) = nullptr;
     };
     MsApi g_ms;
 
@@ -111,6 +115,9 @@ namespace
             m.chunk_ready = reinterpret_cast<int (*)(wchar_t*, int)>(GetProcAddress(h, "MSCore_chunk_ready"));
             m.cls = reinterpret_cast<int (*)(const char*, char*, int)>(GetProcAddress(h, "MSCore_class"));
             m.ship_shields = reinterpret_cast<int (*)(void*, int*, int*)>(GetProcAddress(h, "MSCore_ship_shields"));
+            m.ship_flight = reinterpret_cast<int (*)(int, int, MsFlight*)>(GetProcAddress(h, "MSCore_ship_flight"));
+            m.ship_set_throttle = reinterpret_cast<int (*)(int, int, wchar_t*, int)>(GetProcAddress(h, "MSCore_ship_set_throttle"));
+            m.ship_zero = reinterpret_cast<int (*)(int, wchar_t*, int)>(GetProcAddress(h, "MSCore_ship_zero"));
         }
         const bool full = m.api && m.add_input && m.view_send && m.throttle && m.find_item && m.find_dock && m.new_order &&
                           m.update_order && m.delete_order && m.autopilot && m.skip_to && m.filter_send && m.filters_read &&
@@ -185,6 +192,58 @@ namespace
         if (r > 0 && (r & 1)) cur = c;
         if (r > 0 && (r & 2)) mx = m;
         return r;
+    }
+
+    // WHAT: MSCore_ship_flight of ship sid for the FL_* groups in mask, into f (f zeroed, f.size set here). Returns the export's code:
+    //       1 ok (read f.flags for what worked), 0 ship gone, -1 fault, -2 flight module off, -3 bad size, -9 export missing or exception.
+    // WHY: the one read of a ship's flight state (MSCore API 10). Mining reads no game property names for these values. Exceptions never leave.
+    int ms_flight_read(int sid, int mask, MsFlight& f)
+    {
+        f = MsFlight{};
+        f.size = static_cast<int32_t>(sizeof(MsFlight));
+        std::wstring why;
+        if (!ms_load(why) || !g_ms.ship_flight) return -9;
+        try { return g_ms.ship_flight(sid, mask, &f); }
+        catch (...) { return -9; }
+    }
+
+    // WHAT: MSCore_ship_zero for ship sid (Throttle 0, rotation 0). true = zeroed. Missing export or exception = false (caller uses the legacy write).
+    // WHY: a missing export must not make Stop ineffective, so the caller falls back to the property writes.
+    bool ms_zero_ship(int sid)
+    {
+        std::wstring why;
+        if (!ms_load(why) || !g_ms.ship_zero) return false;
+        wchar_t buf[256] = {0};
+        try { return g_ms.ship_zero(sid, buf, 256) == 1; }
+        catch (...) { return false; }
+    }
+
+    // WHAT: MSCore_ship_set_throttle (Throttle = absolute step). true = written. Missing export or exception = false, err says why.
+    bool ms_set_throttle(int sid, int step, std::wstring& err)
+    {
+        std::wstring why;
+        if (!ms_load(why) || !g_ms.ship_set_throttle) { err = L"MSCore flight unavailable"; return false; }
+        wchar_t buf[256] = {0};
+        try
+        {
+            const bool ok = g_ms.ship_set_throttle(sid, step, buf, 256) == 1;
+            if (!ok) err = buf;
+            return ok;
+        }
+        catch (...) { err = L"exception: MSCore_ship_set_throttle"; return false; }
+    }
+
+    // WHAT: log text of one FL_STATE flag bit: "1" / "0" when the state read worked (r == 1), "n/a" otherwise. A bool flag bit is set only when true.
+    std::wstring ms_flag_text(int r, const MsFlight& f, int bit)
+    {
+        if (r != 1) return std::wstring(STR("n/a"));
+        return (f.flags & bit) ? std::wstring(STR("1")) : std::wstring(STR("0"));
+    }
+
+    // WHAT: log text of Throttle: the value when the read gave it (FF_THROTTLE), "n/a" otherwise.
+    std::wstring ms_throttle_text(int r, const MsFlight& f)
+    {
+        return (r == 1 && (f.flags & FF_THROTTLE)) ? std::to_wstring(f.throttle) : std::wstring(STR("n/a"));
     }
 
     // WHAT: copies the export's error text into err when it failed; returns the export's ok flag.

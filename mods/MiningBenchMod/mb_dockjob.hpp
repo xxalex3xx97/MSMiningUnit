@@ -94,10 +94,12 @@ namespace
         const double moved = dist3(me, j.p0);
         const bool free_now = !alive(dock_obj) || did == 0;
         g_undock_state = STR("undocking t=") + std::to_wstring(static_cast<int>(j.t));
+        MsFlight sfl;
+        const int sfr = ms_flight_read(j.sid, FL_STATE, sfl);
         tlog(STR("undock watch t=") + std::to_wstring(j.t) + STR(" Dock=") + (alive(dock_obj) ? std::to_wstring(obj_id(dock_obj)) : std::wstring(STR("null"))) +
              STR(" DockID=") + std::to_wstring(did) + STR(" AutopilotExitDockTimer=") + std::to_wstring(exit_t) +
              STR(" UndockingAnimationTimer=") + prop_int(ship, STR("UndockingAnimationTimer")) + STR(" UndockingVector=") + pvec_text(ship, STR("UndockingVector")) +
-             STR(" bDockingAutopilot=") + prop_bool(ship, STR("bDockingAutopilot")) + STR(" Throttle=") + prop_int(ship, STR("Throttle")) +
+             STR(" bDockingAutopilot=") + ms_flag_text(sfr, sfl, FF_DOCK_AP) + STR(" Throttle=") + ms_throttle_text(sfr, sfl) +
              STR(" moved_m=") + std::to_wstring(moved / g_raw_per_m) + STR(" speed_m_s=") + std::to_wstring(spd_get(j.sid).v / g_raw_per_m));
         // 3. clear of the dock: autopilot off, stop the drive, job ok
         if (free_now && exit_t == 0 && moved > MV_UNDOCK_CLEAR_M * g_raw_per_m)
@@ -670,14 +672,16 @@ namespace
             {
                 j.log_acc = 0.0;
                 UObject* ord = order_by_id(ship, j.new_order);
-                tlog(STR("watch t=") + std::to_wstring(j.t) + STR(" bAutopilot=") + prop_bool(ship, STR("bAutopilot")) +
-                     STR(" bDockingAutopilot=") + prop_bool(ship, STR("bDockingAutopilot")) +
+                MsFlight sfl;
+                const int sfr = ms_flight_read(j.sid, FL_STATE, sfl);
+                tlog(STR("watch t=") + std::to_wstring(j.t) + STR(" bAutopilot=") + ms_flag_text(sfr, sfl, FF_AUTOPILOT) +
+                     STR(" bDockingAutopilot=") + ms_flag_text(sfr, sfl, FF_DOCK_AP) +
                      STR(" Dock=") + std::to_wstring(alive(dock_obj) ? obj_id(dock_obj) : 0) + STR(" DockID=") + prop_int(ship, STR("DockID")) +
                      STR(" TargetDockID=") + prop_int(ship, STR("TargetDockID")) +
                      STR(" DistanceToTarget_raw=") + pnum_raw_text(ship, STR("DistanceToTarget")) +
                      STR(" DistanceToTarget_m=") + dist_target_m(ship) +
                      STR(" AutopilotImpulse=") + pvec_text(ship, STR("AutopilotImpulse")) +
-                     STR(" Throttle=") + prop_int(ship, STR("Throttle")) +
+                     STR(" Throttle=") + ms_throttle_text(sfr, sfl) +
                      STR(" ImpulseInput=") + pvec_text(ship, STR("ImpulseInput")) +
                      STR(" CurrentOrderIndex=") + prop_int(ship, STR("CurrentOrderIndex")) +
                      STR(" order bCurrent=") + prop_bool(ord, STR("bCurrent")) + STR(" bHasUpdated=") + prop_bool(ord, STR("bHasUpdated")) +

@@ -1,20 +1,16 @@
 // FILE: mods/MiningBenchMod/mb_bubble.hpp
-// WHAT: bubble reflex for every manual movement of a ship (our steering, not the game autopilot). Each 0.25 s tick, every bench ship in
-//       SEEK / MINE / COLLECT / SWEEP is checked (one registry first_blocker per ship). Activation and phase: mb_logic.hpp (bubble_why, bubble_phase).
-//       Look-ahead L = max(100 m, 4 s x speed) along the nose; a rock blocks when inside the bubble (ship CollisionRadius + rock radius + 30 m).
-//       The target rock is left out only in the stand-off phase of a rock approach or mining (SEEK / MINE).
-//       Ladder (bubble_step): BRAKE = Throttle 0 (rotation kept) until speed < 3 m/s; then the fix of the phase (bubble_fix):
-//         SEEK: replan = path_guard (blocker in the path skip); skip = path_give_up after 2 replans.
-//         WAYPOINT / ORE: waypoint beside the blocker (max BUBBLE_MAX_WP per flight), the flight is flown again after it; else skip
-//                         (SWEEP leg: sw_nofly + SW_RETURN; ore: SwOre marked done).
-//         MINE (drift): brake only; nudge BUBBLE_NUDGE_M away from the rock when too near it, else resume.
-// WHY: the path check runs before an approach and every PATH_WATCH_S; a rock that comes into view between checks was hit at full speed.
-// STATE: ShipControl holds one BubbleState per ship (SC3); mining reads its status only (bub_ladder). Legacy ladder removed in SC6-D2.
-// BUDGET: one ship pass <= BUBBLE_SLOW_MS (0.2 ms). Over it: 'BUBBLE slow' (once per 30 s) and that ship is not checked for 10 s
-//         (never while it is braking: its pending fix must run).
+// WHAT: mining's side of the bubble reflex. ShipControl runs the reflex (SC3): every ship with a move job or a bubble state is checked each
+//       tick (sc_bubble_run.hpp), the throttle is held on a hit (BRAKE), and the fix (replan, waypoint, skip, nudge, resume) is picked from
+//       sc_logic_bubble.hpp. Mining answers ShipControl's host callbacks (sc_host_* below: first_blocker, bubble_profile, near_rock, on_bubble),
+//       reads the ladder status (bub_ladder) and runs the bubble_status / bubble_sim dev commands.
+// WHY: one reflex for every move (ShipControl). Mining keeps only the mining facts: the rock registry, the job state and the target rock.
+// STATE: ShipControl holds one BubbleState per ship (sc_bubble.hpp). Mining holds no bubble state.
+// SHIP READS: ship flight state (flags, Throttle, CollisionRadius) through ms_flight_read (MSCore API 10, sc_flight_abi.h).
+// BUDGET (ShipControl, sc_bubble_run.hpp): one ship pass <= BUBBLE_SLOW_MS (0.2 ms). Over it: 'BUBBLE slow' (once per 30 s) and that ship
+//         is not checked for 10 s (never while it is braking: its pending fix must run).
 // ORDER: bubble_tick runs in cmd_tick BEFORE mining_tick, so a finished waypoint is flown again before the state machine reads the job.
-// OUTPUT: log 'BUBBLE brake ship= phase= rock= dist= rad= speed= -> replan|waypoint|skip|nudge|resume', 'BUBBLE slow ship= ms='.
-//         Dev: bubble_status:<ship> and bubble_sim:<ship>:<rock_id> (read-only), both write MiningBubble.txt (mb_devcmd.hpp dispatch).
+// OUTPUT (ShipControl): log 'BUBBLE brake ship= phase= rock= ... -> replan|waypoint|skip|nudge|resume', 'BUBBLE slow ship= ms='.
+//         Dev (mining): bubble_status:<ship> and bubble_sim:<ship>:<rock_id> (read-only), both write MiningBubble.txt (mb_devcmd.hpp dispatch).
 // DEPENDS ON (exact, include order): mb_registry.hpp (reg_st, RockReg, reg_eff_rad, reg_abs_m), mb_mining.hpp (MineSt, g_mine, g_bench_ids, standoff_of,
 //          path_guard, path_give_up, rock_actor_by_id, item_c, dock_add_m, sw_phase, SwOre), mb_steer.hpp (g_mvs, move_start, mv_cancel),
 //          mb_logic.hpp (bubble_*).
@@ -35,23 +31,24 @@ namespace
         static std::map<int, double> cache;
         auto it = cache.find(sid);
         if (it != cache.end()) return it->second;
-        UObject* ship = find_by_id(STR("DMSPlayerShipObject"), sid);
-        int64_t raw = 0;
-        if (!alive(ship) || !pnum_prop(ship, STR("CollisionRadius"), raw) || raw <= 0) return BUBBLE_SHIP_R_M;
-        const double r = static_cast<double>(raw) / g_raw_per_m;
-        cache[sid] = r;
+        MsFlight f;
+        const bool ok = ms_flight_read(sid, FL_STATE, f) == 1 && (f.flags & FF_COLL) != 0;
+        const double r = ship_r_from_flight(ok, f.coll_radius_raw);
+        if (ok) cache[sid] = r;
         return r;
     }
 
-    // WHAT: game flags of a ship: autopilot, docking autopilot, travelling (warp). Read-only.
+    // WHAT: game flags of a ship: autopilot, docking autopilot, travelling (warp). Read-only, one FL_STATE flight read.
     struct BubFlags { bool ap = false, dap = false, trav = false; };
-    BubFlags bubble_flags(UObject* ship)
+    BubFlags bubble_flags(int sid)
     {
-        BubFlags f;
-        get_bool_prop(ship, STR("bAutopilot"), f.ap);
-        get_bool_prop(ship, STR("bDockingAutopilot"), f.dap);
-        get_bool_prop(ship, STR("bTravelling"), f.trav);
-        return f;
+        BubFlags b;
+        MsFlight f;
+        if (ms_flight_read(sid, FL_STATE, f) != 1) return b;
+        b.ap = (f.flags & FF_AUTOPILOT) != 0;
+        b.dap = (f.flags & FF_DOCK_AP) != 0;
+        b.trav = (f.flags & FF_TRAVELLING) != 0;
+        return b;
     }
 
     // WHAT: the rock to leave out of the query: the ship target in its stand-off phase (SEEK / MINE only). 0 = none.
@@ -275,14 +272,15 @@ namespace
         std::string out;
         if (!sim)
         {
-            int32_t thr = 0;
-            get_int_prop(ship, STR("Throttle"), thr);
+            MsFlight sfl;
+            const int sfr = ms_flight_read(sid, FL_STATE, sfl);
+            const int thr = (sfr == 1 && (sfl.flags & FF_THROTTLE)) ? sfl.throttle : 0;
             auto mi = g_mine.find(sid);
             const int trock = mi != g_mine.end() ? mi->second.rock : 0;
             auto mj = g_mvs.find(sid);
             const MoveJob* mv = (mj != g_mvs.end() && !mj->second.kind.empty()) ? &mj->second : nullptr;
             const bool thrust = mv && mv->kind == "approach_rock";
-            const BubFlags fl = bubble_flags(ship);
+            const BubFlags fl = bubble_flags(sid);
             const BubbleWhy why = bubble_why(fl.ap, fl.dap, fl.trav, thrust, v);
             const BubblePhase ph = bubble_phase(thrust, mv && mv->pt_on, mv && mv->ore_on, !thrust);
             std::snprintf(buf, sizeof(buf), "ship=%d sys=%d pos=(%.1f,%.1f,%.1f) m speed=%.2f m/s throttle=%d ship_r=%.1f m look_ahead=%.1f m clear=%.1f m\r\n",
