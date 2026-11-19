@@ -62,6 +62,8 @@ if not exists('WBP_FleetTargetRow'):
 main = U.load_asset(uew.OUT + '/WBP_FleetWindow') if exists('WBP_FleetWindow') else new_wbp('WBP_FleetWindow')
 
 # ---- 2. shell (mining look): transparent Panel > Body > Row_Cols { left column | Col_Centre | right column }, 16 px gaps, NO enclosing dark panel
+if not _find(main, 'Root'):
+    add(main, U.CanvasPanel, 'Root', '', var=False)
 if not _find(main, 'Panel'):
     anchor(_clear(_bdr(main, 'Panel', 'Root', '000000', (0, 0, 0, 0), var=True)), 0.10, 0.10, 0.90, 0.90)
     _vb(main, 'Body', 'Panel', var=True, h='Fill', v='Fill')
