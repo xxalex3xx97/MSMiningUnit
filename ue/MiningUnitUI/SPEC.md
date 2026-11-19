@@ -148,6 +148,7 @@ Pnl_Modal = Overlay, Is Variable, Collapsed, 2nd child of Root (anchors like Pan
 - Placeholder names (validator): Img_CardOre_<c>, Txt_CardMineLbl_<c> (c = 1..CN); Img_FleetOre_<f>, Txt_FleetMineLbl_<f> (f = 1..FN).
 
 ## Multi-select card modal (Part 7, 2026-10-29)
+- Log all-ships list: `Btn_LogGrpHdr_<f>`, `Txt_LogGrpName_<f>`, `Btn_LogGrpFold_<f>`, `Txt_LogGrpFold_<f>` (f=1..FN) = group header bar before each Pnl_LogCard_<f> in Row_LogAllScroll; Row_LogGrp_<f> is a Row_ (non-variable); python-built copies are not variables, Lua finds them via a Pnl_LogAll scan + deepFind.
 - CN = 40 now (FN stays 20). Modal card list Row_ModalCardScroll interleaves per slot: Row_CardHdr_<c> (HorizontalBox, Is Variable, Collapsed) > Btn_CardHdr_<c> > Txt_CardHdr_<c> (fleet/All header, gold-or-grey bg by Lua) + Btn_CardFold_<c> > Txt_CardFold_<c> (">"/"v", Collapsed), then Opt_Card_<c>.
 - Btn_ModalDone > Txt_ModalDone (Done button, Collapsed, below Row_ModalCardScroll; multi mode only).
 - Dock card header icons (Image, Hidden, 24x24, Is Variable, Lua sets brush): Img_UDockOre_<ok> (ore icon, now left of the title) in each unload card; Img_RDockFuelDeuterium, Img_RDockFuelHydrogen, Img_RDockFuelWarp in the refuel card. Unload cards are ordered Water Ice, Titanium, Silica, Nickel, Iridium, Graphite, Cobalt.

@@ -710,7 +710,15 @@ def build_tree():
         return S(N("Border", "Pnl_LogCard_%d" % f, [S(v, h="Fill", v="Fill")],
                    props=[("BrushColor", lin("1A1A1A", 0.55)), ("Padding", pad(10, 8, 10, 8)), ("Visibility", "Collapsed")]),
                  pad=(0, 0, 12, 8), h="Fill")
-    log_all_sb = S(N("ScrollBox", "Row_LogAllScroll", [log_card(f) for f in range(1, FN + 1)], var=False, props=[("ConsumeMouseWheel", "WhenScrollingPossible")]), fill=1, h="Fill", v="Fill")
+    def log_grp(f):
+        hb = N("Button", "Btn_LogGrpHdr_%d" % f, [S(tb("Txt_LogGrpName_%d" % f, "", 18, color=DARK_TXT), pad=(12, 6, 12, 6), h="Left", v="Center")],
+               props=[("BackgroundColor", CMB_BG)])
+        fb = N("Button", "Btn_LogGrpFold_%d" % f, [S(tb("Txt_LogGrpFold_%d" % f, "v", 18, color=DARK_TXT), pad=(14, 6, 14, 6), h="Center", v="Center")],
+               props=[("BackgroundColor", CMB_BG)])
+        hr = hrow("Row_LogGrp_%d" % f, [S(hb, fill=1, h="Fill", v="Fill"), S(fb, pad=(6, 0, 0, 0), v="Fill")])
+        hr.props.append(("Visibility", "Collapsed"))
+        return S(hr, pad=(0, 0, 12, 8), h="Fill")
+    log_all_sb = S(N("ScrollBox", "Row_LogAllScroll", [x for f in range(1, FN + 1) for x in (log_grp(f), log_card(f))], var=False, props=[("ConsumeMouseWheel", "WhenScrollingPossible")]), fill=1, h="Fill", v="Fill")
     log_all = S(vbox("Pnl_LogAll", [log_all_sb]), fill=1, h="Fill", v="Fill")
     log_all.props.append(("Visibility", "Collapsed"))
     page_log = S(vbox("Pnl_PageLog", [log_hint, log_sb, log_all]), h="Fill", v="Fill")
