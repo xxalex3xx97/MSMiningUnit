@@ -83,5 +83,6 @@ ORES = ["Cobalt", "Graphite", "Iridium", "Nickel", "Silica", "Titanium", "WaterI
 dyn_list(main, 'Dyn_RDock', 'Row_CardInnerRDock', 'WBP_DockRow', add_btn='Row_Sz_Btn_RDockAdd')
 for k in ORES:
     dyn_list(main, 'Dyn_UDock_' + k, 'Row_CardInnerUD' + k, 'WBP_DockRow', add_btn='Row_Sz_Btn_UDockAdd_' + k)
+dyn_list(main, 'Dyn_UDock_Misc', 'Row_CardInnerUDMisc', 'WBP_DockRow', add_btn='Row_Sz_Btn_UDockAdd_Misc')
 save(main)
 print('LISTS built')
