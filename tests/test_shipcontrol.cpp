@@ -11,6 +11,7 @@
 
 #include "sc_logic_path.hpp"
 #include "sc_owner.hpp"
+#include "sc_speed.hpp"   // SC2a: speed judge (pure part); includes sc_mscore.hpp (windows.h only)
 
 static int g_pass = 0;
 static int g_fail = 0;
@@ -195,6 +196,36 @@ int main()
     t_path_waypoint_geom();
     t_path2_gates();
     t_tune_geom_path();
+
+    // SC2a: speed judge (sc_speed.hpp, pure) and owner refusal for SC_zero / SC_watch (sc_owner.hpp may_act)
+    {
+        SpeedMon sp;
+        double r = 0.0;
+        CHECK(speed_judge(sp, r) == SJ_NONE);          // no valid speed yet
+        sp.have = true; sp.v = 50.0; sp.lim = 100.0;
+        CHECK(speed_judge(sp, r) == SJ_OK && r == 0.5);
+        sp.v = 110.0;                                  // ratio 1.1 is not above the abort ratio
+        CHECK(speed_judge(sp, r) == SJ_OK);
+        sp.v = 120.0;                                  // first step above: report once
+        CHECK(speed_judge(sp, r) == SJ_OVER_NEW && sp.aborted);
+        CHECK(speed_judge(sp, r) == SJ_OVER);          // still over: no second report
+        sp.v = 90.0;                                   // back under 1.0 re-arms the report
+        CHECK(speed_judge(sp, r) == SJ_OK && !sp.aborted);
+        sp.v = 130.0;
+        CHECK(speed_judge(sp, r) == SJ_OVER_NEW);
+        sp.v = 1100.0;                                 // ratio 11 > glitch ratio: sample dropped
+        CHECK(speed_judge(sp, r) == SJ_GLITCH && !sp.have);
+        sp.have = true; sp.lim = 0.0;                  // no limit: no decision
+        CHECK(speed_judge(sp, r) == SJ_NONE);
+    }
+    {
+        ScOwners o;
+        CHECK(o.may_act(5, "mining", why));            // free ship: any owner may act
+        o.claim(5, "attack", why);
+        why.clear();
+        CHECK(!o.may_act(5, "mining", why) && why == "owned by attack");
+        CHECK(o.may_act(5, "attack", why));            // holder may act
+    }
 
     std::printf("test_shipcontrol: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
