@@ -2178,6 +2178,19 @@ static void t_dock_tags()
     Config m; m.ore_docks[3] = {21};
     auto pr = autofilter_pairs({p1, p2, p3, p4}, {m});
     CHECK((pr == std::vector<std::pair<int, int>>{{20, 1}, {21, 3}}));
+    g_cfg.misc_docks = {40, 11};
+    c = eff_cfg(1);
+    CHECK((c.misc_docks == std::vector<int>{11, 40}));
+    CHECK((c.ore_docks[1] == std::vector<int>{11, 40}));
+    CHECK((c.ore_docks[2] == std::vector<int>{9}));
+    g_dock_tags.clear();
+    c = eff_cfg(1);
+    CHECK((c.ore_docks[1] == std::vector<int>{40, 11}));
+    std::map<std::string, std::string> kvm{{"unload_docks_misc", "7,8,x"}};
+    Config kc; apply_kv(kc, kvm, true);
+    CHECK((kc.misc_docks == std::vector<int>{7, 8}));
+    Config m2; m2.misc_docks = {21};
+    CHECK(autofilter_pairs({p2}, {m, m2}).empty());
     reset_globals();
 }
 
