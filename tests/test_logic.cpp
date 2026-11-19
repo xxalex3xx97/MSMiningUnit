@@ -31,6 +31,7 @@ static void reset_globals()
     g_cfg = Config();
     g_ship_kv.clear();
     g_item_idx.clear();
+    g_dock_tags.clear();
 }
 
 // ---------- mb_math.hpp ----------
@@ -2152,6 +2153,34 @@ static void t_power_grid_auto()
     CHECK(!refuel_needs_unload(-1, false));       // unknown cargo: refuel directly
 }
 
+static void t_dock_tags()
+{
+    reset_globals();
+    DockTag a = dock_tag_parse(7, "Main [TITANIUM] [auto-filter]");
+    CHECK((a.ores == std::vector<int>{0}) && a.autof && !a.misc);
+    CHECK((dock_tag_parse(1, "Ice [Water Ice]").ores == std::vector<int>{4}));
+    CHECK(dock_tag_parse(1, "[MISC]").misc);
+    CHECK(dock_tag_parse(1, "Titanium plates").ores.empty());
+    CHECK(dock_tag_parse(1, "[NICKEL").ores.empty());
+    CHECK(dock_tag_parse(1, "[FOO] [x]").ores.empty());
+    CHECK((dock_tag_parse(1, "[titanium][NICKEL]").ores == std::vector<int>{0, 1}));
+    DockTag bad = dock_tag_parse(30, "[AUTO-FILTER] [NICKEL] [COBALT]"); CHECK(dock_tag_invalidate(bad)); CHECK(bad.ores.empty() && !bad.autof);
+    DockTag ok1 = dock_tag_parse(31, "[AUTO-FILTER] [NICKEL]"); CHECK(!dock_tag_invalidate(ok1)); CHECK(ok1.autof && ok1.ores.size() == 1);
+    DockTag ms = dock_tag_parse(32, "[MISC] [NICKEL] [COBALT]"); CHECK(dock_tag_invalidate(ms) && ms.misc);
+    g_dock_tags = {dock_tag_parse(10, "[TITANIUM]"), dock_tag_parse(11, "[MISC]")};
+    g_cfg.ore_docks[0] = {5, 10}; g_cfg.ore_docks[2] = {9};
+    Config c = eff_cfg(1);
+    CHECK((c.ore_docks[0] == std::vector<int>{10, 5}));
+    CHECK((c.ore_docks[1] == std::vector<int>{11}));
+    CHECK((c.ore_docks[2] == std::vector<int>{9}));
+    CHECK((g_cfg.ore_docks[0] == std::vector<int>{5, 10}));
+    DockTag p1 = dock_tag_parse(20, "[AUTO-FILTER] [NICKEL]"), p2 = dock_tag_parse(21, "[AUTO-FILTER]"), p3 = dock_tag_parse(22, "[AUTO-FILTER] [MISC] [TITANIUM]"), p4 = dock_tag_parse(23, "[COBALT]");
+    Config m; m.ore_docks[3] = {21};
+    auto pr = autofilter_pairs({p1, p2, p3, p4}, {m});
+    CHECK((pr == std::vector<std::pair<int, int>>{{20, 1}, {21, 3}}));
+    reset_globals();
+}
+
 int main()
 {
     const Case cases[] = {
@@ -2180,6 +2209,7 @@ int main()
         {"combat_flee", t_combat_flee}, {"combat_log", t_combat_log},
         {"hazard_flee", t_hazard_flee}, {"targett_entry", t_targett_entry},
         {"path_block", t_path_block}, {"path_perf", t_path_perf}, {"path_waypoint", t_path_waypoint}, {"shield_drop", t_shield_drop}, {"safety_net", t_safety_net}, {"flee_guard_shield_units", t_flee_guard_shield_units}, {"flee_fallback_docks", t_flee_fallback_docks}, {"attack_dist_and_flee_class", t_attack_dist_and_flee_class}, {"flee_idle_move", t_flee_idle_move}, {"flee_real_warp_hold", t_flee_real_warp_hold},{"fast_sample", t_fast_sample},
+        {"dock_tags", t_dock_tags},
         {"rock_depleted", t_rock_depleted},
         {"reg_table", t_reg_table}, {"reg_events", t_reg_events}, {"reg_world_track", t_reg_world_track}, {"reg_within_nearest", t_reg_within_nearest}, {"reg_surface_block", t_reg_surface_block_radius},
         {"approach_throttle", t_approach_throttle}, {"bubble", t_bubble}, {"bubble_ladder", t_bubble_ladder}, {"bubble_scope", t_bubble_scope}, {"tune_geom", t_tune_geom}, {"flight_warp", t_flight_warp}, {"sweep_return_flee", t_sweep_return_flee}, {"path2_rules", t_path2_rules},
