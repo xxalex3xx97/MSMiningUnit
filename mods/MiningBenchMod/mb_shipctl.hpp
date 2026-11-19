@@ -63,7 +63,6 @@ namespace
     int sc_host_remain(int sid, const double ship_m[3], double* out_m);
     int sc_host_target_ok(int sid, void* handle);
     int sc_host_ore_loc(int sid, void* handle, double* out3_uu);
-    int sc_host_braking(int sid);
     // bubble ladder callbacks (SC3-C, ScHost level 4): defined in mb_bubble.hpp
     int sc_host_first_blocker(int sid, int sys, int phase, int rock, const double p[3], const double b[3], double clear_m, ScBlockHit* out);
     int sc_host_bubble_profile(int sid, ScBubbleProfile* out);
@@ -74,16 +73,16 @@ namespace
 
     // speed monitor state (level 2)
     std::set<int> g_sc_watch;           // ships ShipControl samples for "mining" (SC_watch on succeeded)
-    std::map<int, double> g_sc_abort;   // fresh speed aborts reported by SC_tick_speed (host callback), consumed by spd_update_dual
+    std::map<int, double> g_sc_abort;   // fresh speed aborts reported by SC_tick_speed (host callback), consumed by spd_update_sc
     double g_sc_speed_k = -1.0;         // speed_k last sent with SC_set_tune (-1 = never)
     int g_sc_last_tick = 0;             // result of the last SC_tick_speed (-1 = MSCore not usable)
-    bool g_sc_speed_on = false;         // ShipControl does the speed monitor this poll (set by spd_update_dual)
+    bool g_sc_speed_on = false;         // ShipControl does the speed monitor this poll (set by spd_update_sc)
     std::wstring g_sc_mode_note;        // last logged speed mode (log once per change)
 
     // WHAT: host callback: ShipControl log lines go to the UE4SS log.
     void sc_host_log(const wchar_t* text) { try { log_line(text); } catch (...) {} }
 
-    // WHAT: host callback: a fresh speed abort (ShipControl already zeroed the ship). Queued for the mining thread (spd_update_dual).
+    // WHAT: host callback: a fresh speed abort (ShipControl already zeroed the ship). Queued for the mining thread (spd_update_sc).
     void sc_host_abort(int sid, double ratio) { g_sc_abort[sid] = ratio; }
 
     // WHAT: loads ShipControl once and resolves the exports (API 1, level 2 speed exports optional). true when ready. A failed try is retried at most every 10 s.
@@ -145,7 +144,7 @@ namespace
             g_sc_host.remain_m = sc_host_remain;
             g_sc_host.target_ok = sc_host_target_ok;
             g_sc_host.ore_loc = sc_host_ore_loc;
-            g_sc_host.braking = sc_host_braking;
+            g_sc_host.braking = nullptr;   // legacy bubble brake removed (SC6-D2); ShipControl tolerates a null callback
             g_sc_host.first_blocker = sc_host_first_blocker;
             g_sc_host.bubble_profile = sc_host_bubble_profile;
             g_sc_host.on_bubble = sc_host_on_bubble;
