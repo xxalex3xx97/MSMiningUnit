@@ -41,6 +41,7 @@ local HOOK = "/Script/UMG.Widget:ForceLayoutPrepass"
 -- (the hook is still registered, so no second RegisterHook is made).
 local hookIds, hookOff, hookOpens = nil, nil, 0
 local function onPrepass(self)
+    if next(BTN) == nil then return end   -- no window buttons: leave at once (the hook stays registered for the session)
     local okn, key = pcall(function() return self:get():GetFullName() end)
     local fn = okn and BTN[key]
     if fn then pcall(ExecuteInGameThread, function() pcall(fn) end) end
@@ -65,10 +66,8 @@ local function onClick(btn, fn)
 end
 local function clearClicks()
     BTN = {}
-    if hookIds and not hookOff then
-        hookOff = true
-        pcall(ExecuteWithDelay, 100, function() pcall(ExecuteInGameThread, hookRemove) end)
-    end
+    -- WHY no UnregisterHook: registering and removing a hook on the same game function from several Lua states (this mod and the dev menu) crashed the game
+    -- (UE4SS access violation in a later tick, seen 2026-11-19). The hook stays registered once made; onPrepass returns at once while BTN is empty.
 end
 W.bind({ onClick = onClick, clear = clearClicks, wbp = WBP })
 
