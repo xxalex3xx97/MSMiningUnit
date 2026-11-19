@@ -2757,6 +2757,15 @@ namespace
                 if (gs != g_net_ships.end()) gs->second.phase = 3;   // cleared: the job is starting
             }
             g_job_res.erase(sid);
+            if (granted && job_running(sid))
+            {   // WHY: the grant arrived while the queue-park job was still flying: end it (keep the reservation) or job_start fails "dock job already running for this ship"
+                for (size_t i = 0; i < g_jobs.size();) { if (g_jobs[i].sid == sid) g_jobs.erase(g_jobs.begin() + static_cast<std::ptrdiff_t>(i)); else ++i; }
+                g_ob.erase(sid); g_pf.erase(sid);
+                std::wstring perr;
+                set_autopilot(sid, false, perr);
+                zero_all(ship);
+                g_job_res.erase(sid);
+            }
             const std::wstring r = job_start(sid, m.trip, -1);
             if (r == STR("waiting dock")) { dock_wait_text(sid, m); return; }
             m.dwait = false;
