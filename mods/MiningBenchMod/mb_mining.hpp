@@ -28,7 +28,7 @@ namespace
     bool chunk_hold_settling(int sid);                // true while the ship's cube was set less than 4 s ago
     void chunk_hold_keep_only(const std::vector<int>& sids);   // release holds of ships no longer on the bench
     // ShipControl claim (mb_shipctl.hpp, defined after this file)
-    void sc_claim_ship(int sid);                      // Start / sweep: claim the ship for "mining" (a refusal is logged, mining goes on)
+    bool sc_claim_ship(int sid, std::wstring* why);   // Start / sweep / move_start: claim the ship for "mining" (false = refused, *why = text; default arg in mb_shipctl.hpp)
     void sc_release_ship(int sid);                    // drop the claim (no-op when not held)
     void sc_sync(int sid, bool active);               // per tick: release the claim when the loop is not active
 
@@ -3854,8 +3854,23 @@ namespace
                 log_line(STR("MINE ship=") + std::to_wstring(sid) + STR(" refused: ") + r);
                 return STR("error: ") + r;
             }
+            if (!sc_policy_ok())
+            {
+                const std::wstring r = SC_NEED_TEXT;
+                mset(sid, m, STR("error"), r);
+                mlog(sid, r);
+                log_line(STR("MINE ship=") + std::to_wstring(sid) + STR(" refused: ") + r);
+                return STR("error: ") + r;
+            }
+            std::wstring w;
+            if (!sc_claim_ship(sid, &w))
+            {
+                mset(sid, m, STR("error"), w);
+                mlog(sid, w);
+                log_line(STR("MINE ship=") + std::to_wstring(sid) + STR(" refused: ") + w);
+                return STR("error: ") + w;
+            }
         }
-        if (start) sc_claim_ship(sid);
         m.run = start;
         if (start)
         {
@@ -3880,7 +3895,17 @@ namespace
         UObject* ship = find_by_id(STR("DMSPlayerShipObject"), sid);
         if (!alive(ship)) return STR("error: ship not found");
         if (!g_compat.ok(F_MINING)) return STR("error: COMPAT: mining disabled");
-        sc_claim_ship(sid);
+        if (!sc_policy_ok())
+        {
+            log_line(STR("SWEEP ship=") + std::to_wstring(sid) + STR(" refused: ") + SC_NEED_TEXT);
+            return STR("error: ") + std::wstring(SC_NEED_TEXT);
+        }
+        std::wstring w;
+        if (!sc_claim_ship(sid, &w))
+        {
+            log_line(STR("SWEEP ship=") + std::to_wstring(sid) + STR(" refused: ") + w);
+            return STR("error: ") + w;
+        }
         MineSt& m = g_mine[sid];
         m.run = false; m.leave = false; m.fin = false; m.btn = true; m.err = false; m.unl_prev = -1; m.unl_undock = false;
         m.sweep = true; m.sw_rescans = 0; m.sw_back = false; m.sw_nofly = false; m.sw_ore = nullptr; m.unl_chk = 0;

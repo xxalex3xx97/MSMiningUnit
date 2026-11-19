@@ -49,6 +49,8 @@ namespace
     std::set<int> g_sc_held;            // ships this mod has claimed and not released yet
     const wchar_t* const kScOwner = L"mining";
     const char* const kScOwnerA = "mining";   // speed monitor / zero owner (narrow, SC_watch / SC_zero take char*)
+    // SC6 policy: Start, sweep and move jobs refuse without ShipControl API 4 (MSCore caps bits 1/2/4/8 checked by the sc_*_block gates)
+    const wchar_t* const SC_NEED_TEXT = L"ShipControl not installed or too old (needs API 4); update MSCore Manager";
 
     // WHAT: ScHost size sent to ShipControl by API level: 112 (API 4), 80 (API 3), 24 (API 2). SC_set_host refuses any other size.
     // WHY: an API 3 ShipControl rejects the 112-byte host, so the size follows the level it reports.
@@ -154,21 +156,35 @@ namespace
         return true;
     }
 
-    // WHAT: claims a ship for "mining". ShipControl missing = nothing happens. Refused = one log line, mining goes on.
-    void sc_claim_ship(int sid)
+    // WHAT: claims a ship for "mining". true = held (now or before). false = refused, failed or ShipControl missing: *why = "ship <err>" (SC_NEED_TEXT when missing).
+    // WHY: SC6 policy: the claim gates Start, sweep and move jobs; the caller stops and shows *why.
+    bool sc_claim_ship(int sid, std::wstring* why = nullptr)
     {
-        if (g_sc_held.count(sid) || !sc_load()) return;
-        wchar_t e[256] = {};
-        try
+        if (g_sc_held.count(sid)) return true;
+        std::wstring w;
+        if (!sc_load()) w = SC_NEED_TEXT;
+        else
         {
-            if (g_sc.claim(kScOwner, sid, e, 256))
+            wchar_t e[256] = {};
+            try
             {
-                g_sc_held.insert(sid);
-                log_line(STR("SHIPCTL claim ship=") + std::to_wstring(sid) + STR(" owner=mining"));
+                if (g_sc.claim(kScOwner, sid, e, 256))
+                {
+                    g_sc_held.insert(sid);
+                    log_line(STR("SHIPCTL claim ship=") + std::to_wstring(sid) + STR(" owner=mining"));
+                    return true;
+                }
+                log_line(STR("SHIPCTL claim refused ship=") + std::to_wstring(sid) + STR(": ") + std::wstring(e));
+                w = std::wstring(STR("ship ")) + e;
             }
-            else log_line(STR("SHIPCTL claim refused ship=") + std::to_wstring(sid) + STR(": ") + std::wstring(e));
+            catch (...)
+            {
+                log_line(STR("SHIPCTL claim exception ship=") + std::to_wstring(sid));
+                w = STR("ship claim exception");
+            }
         }
-        catch (...) { log_line(STR("SHIPCTL claim exception ship=") + std::to_wstring(sid)); }
+        if (why) *why = w;
+        return false;
     }
 
     // WHAT: releases a ship this mod holds. Not held = no-op.
@@ -275,11 +291,11 @@ namespace
         return nullptr;
     }
 
-    // WHAT: true when the move job of ship sid runs in ShipControl: move jobs usable, speed monitor on (g_sc_speed_on), ship claimed by mining.
-    //       The ship is watched first (SC_watch, owner mining) when not yet watched. false = legacy path.
+    // WHAT: true when the move job of ship sid runs in ShipControl: move jobs usable, ship claimed by mining.
+    //       The ship is watched first (SC_watch, owner mining) when not yet watched. false = refused (no legacy path in SC6).
     bool sc_move_ready(int sid)
     {
-        if (sc_move_block() || !g_sc_speed_on || !g_sc_held.count(sid)) return false;
+        if (sc_move_block() || !g_sc_held.count(sid)) return false;
         if (g_sc_watch.count(sid)) return true;
         if (!sc_watch_ship(sid, true)) return false;
         g_sc_watch.insert(sid);
@@ -333,6 +349,9 @@ namespace
         catch (...) { return STR("MSCore flight not usable"); }
         return nullptr;
     }
+
+    // WHAT: the SC6 gate of Start, sweep and move jobs: ShipControl loaded and move, bubble and speed usable (caps). false = refuse with SC_NEED_TEXT.
+    bool sc_policy_ok() { return sc_load() && !sc_move_block() && !sc_bubble_block() && !sc_speed_block(); }
 
     // WHAT: true when the bubble ladder of ship sid runs in ShipControl: ladder usable, speed monitor on (g_sc_speed_on), ship claimed by mining.
     bool sc_bub_on_ship(int sid) { return !sc_bubble_block() && g_sc_speed_on && g_sc_held.count(sid) != 0; }
