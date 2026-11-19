@@ -1,6 +1,6 @@
 // FILE: mods/MiningBenchMod/mb_docktags.hpp
-// WHAT: dock name tags ([TITANIUM], [MISC], [AUTO-FILTER]) read from the dock walk. dock_tags_refresh fills g_dock_tags and writes DockTags.txt and DockFilter.txt next to the dll when their content changed.
-//   DockTags.txt  line: "<id>|<ore keys comma>|<misc 0/1>|<autofilter 0/1>"  (read by the Lua window)
+// WHAT: dock name tags ([TITANIUM], [MISC], [AUTO-FILTER], [PARKING]) read from the dock walk. dock_tags_refresh fills g_dock_tags and writes DockTags.txt and DockFilter.txt next to the dll when their content changed.
+//   DockTags.txt  line: "<id>|<ores>|<misc>|<autofilter>|<park>"  (5 columns, ores = comma keys, misc/autofilter/park 0/1; read by the Lua window)
 //   DockFilter.txt line: "<id>|<ITEM_xxx>"  (read by MiningUnitUI main.lua, which calls MSCore set_dock_filter)
 // WHY separate: the tag walk is its own rule set; it stays out of write_lists (docks.txt).
 // DEPENDS ON: mb_common (alive, log_line, get_dll_dir, write_atomic, u8, widen, STR), mb_ue (obj_id), mb_docks (dock_name), mb_logic (DockTag, dock_tag_parse, autofilter_pairs, g_cfg, g_ship_kv, apply_kv, ORE_KEY, ORE_ITEM).
@@ -30,7 +30,7 @@ namespace
                     if (cn.find(STR("Abandoned")) != std::wstring::npos || cn.find(STR("NPC")) != std::wstring::npos || cn.find(STR("ShipBlockDock")) != std::wstring::npos) continue;
                     DockTag t = dock_tag_parse(obj_id(o), u8(dock_name(o)));
                     if (dock_tag_invalidate(t)) { static std::set<int> warned; if (warned.insert(t.id).second) log_line(STR("DOCK TAGS: dock ") + std::to_wstring(t.id) + STR(" has several ore tags: ignored (one ore tag per dock)")); }
-                    if (t.id > 0 && (t.misc || t.autof || !t.ores.empty())) tags.push_back(t);
+                    if (t.id > 0 && (t.misc || t.autof || t.park || !t.ores.empty())) tags.push_back(t);
                 }
                 std::sort(tags.begin(), tags.end(), [](const DockTag& a, const DockTag& b) { return a.id < b.id; });
                 g_dock_tags = tags;
@@ -40,7 +40,7 @@ namespace
             {
                 std::string keys;
                 if (!t.misc) for (int i : t.ores) keys += (keys.empty() ? "" : ",") + std::string(ORE_KEY[i]);
-                tx += std::to_string(t.id) + "|" + keys + "|" + (t.misc ? "1" : "0") + "|" + (t.autof ? "1" : "0") + "\n";
+                tx += std::to_string(t.id) + "|" + keys + "|" + (t.misc ? "1" : "0") + "|" + (t.autof ? "1" : "0") + "|" + (t.park ? "1" : "0") + "\n";
             }
             std::vector<Config> cfgs{g_cfg};
             for (const auto& kv : g_ship_kv) { Config c = g_cfg; apply_kv(c, kv.second, true); cfgs.push_back(c); }

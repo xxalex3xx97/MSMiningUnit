@@ -91,6 +91,7 @@ namespace
         for (int i = 0; i < N_ORE; ++i)
             f.push_back({widen(std::string("unload_docks_") + ORE_KEY[i]), ids_text(c.ore_docks[i])});
         f.push_back({STR("unload_docks_misc"), ids_text(c.misc_docks)});
+        f.push_back({STR("parking_docks"), ids_text(c.park_docks)});
         f.push_back({STR("refuel_docks"), ids_text(c.refuel_docks)});
         return f;
     }

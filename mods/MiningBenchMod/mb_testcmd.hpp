@@ -34,7 +34,7 @@ namespace
     std::wstring run_cmd(int seq, int sid, const std::string& cmd)
     {
         // dock pick is cleared by stop, loop start/stop and the all-ship commands
-        if (cmd == "stop_all" || cmd == "mine_start" || cmd == "mine_stop") g_dock_pick.erase(sid);
+        if (cmd == "stop_all" || cmd == "mine_start" || cmd == "mine_stop") { g_dock_pick.erase(sid); g_park_pick.erase(sid); }
         if (cmd == "mine_start_all" || cmd == "mine_stop_all") g_dock_pick.clear();
         // 0. Start all / Stop all (sid 0): every bench ship, before any ship lookup
         if (cmd == "mine_start_all" || cmd == "mine_stop_all") return mine_cmd_all(cmd == "mine_start_all");
@@ -107,7 +107,7 @@ namespace
             mine_halt(sid);
             net_leave_slot(sid);             // queue place and dock reservation go (mb_net.hpp)
             g_unl_ores.erase(sid); g_unl_misc.erase(sid);
-            g_dock_pick.erase(sid);     // a Dock picker choice is for the next job only
+            g_dock_pick.erase(sid); g_park_pick.erase(sid);     // a Dock picker choice is for the next job only
             UObject* ship = find_by_id(STR("DMSPlayerShipObject"), sid);
             if (!alive(ship)) return STR("error: ship not found");
             int f1 = 0, f2 = 0;
