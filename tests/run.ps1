@@ -19,7 +19,7 @@ Write-Host "== test_logic" -ForegroundColor Cyan
 cmd /c "`"$bt\VC\Auxiliary\Build\vcvars64.bat`" >nul 2>nul && set" | ForEach-Object {
     if ($_ -match '^([^=]+)=(.*)$') { Set-Item "env:$($Matches[1])" $Matches[2] }
 }
-cl /nologo /EHsc /std:c++17 /W3 /I mods\MiningBenchMod tests\test_logic.cpp /Fe:tests\out\test_logic.exe /Fo:tests\out\
+cl /nologo /EHsc /std:c++17 /W3 /I mods\MiningBenchMod /I mods\ShipControl tests\test_logic.cpp /Fe:tests\out\test_logic.exe /Fo:tests\out\
 if ($LASTEXITCODE -ne 0) {
     Add-Row 'test_logic' 'FAIL' 'compile failed'
 } else {
