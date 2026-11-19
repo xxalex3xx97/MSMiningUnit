@@ -27,6 +27,10 @@ namespace
     void chunk_hold_tick(int sid);                    // forced rock passes at +1 s and +3 s after a set
     bool chunk_hold_settling(int sid);                // true while the ship's cube was set less than 4 s ago
     void chunk_hold_keep_only(const std::vector<int>& sids);   // release holds of ships no longer on the bench
+    // ShipControl claim (mb_shipctl.hpp, defined after this file)
+    void sc_claim_ship(int sid);                      // Start / sweep: claim the ship for "mining" (a refusal is logged, mining goes on)
+    void sc_release_ship(int sid);                    // drop the claim (no-op when not held)
+    void sc_sync(int sid, bool active);               // per tick: release the claim when the loop is not active
 
     constexpr double MINE_FUEL_CHECK_S = 5.0;   // fuel check period while flying out / mining (s)
     constexpr double MINE_HOLD_CHECK_S = 2.0;   // at-dock completion check period (s)
@@ -3768,6 +3772,7 @@ namespace
             else ++i;
         }
         g_mine.erase(sid); g_mine_fault_n.erase(sid); g_mine_log.erase(sid); g_state_ring.erase(sid);
+        sc_release_ship(sid);   // ShipControl claim of a destroyed ship (no-op when not held)
         g_sel_rocks.erase(sid); g_item_idx.erase(sid);
         g_flee_pick.erase(sid); g_park_pick.erase(sid); g_dock_pick.erase(sid); g_unl_ores.erase(sid); g_unl_misc.erase(sid);
         g_job_res.erase(sid); g_mv_res.erase(sid); g_skip.erase(sid);
@@ -3850,6 +3855,7 @@ namespace
                 return STR("error: ") + r;
             }
         }
+        if (start) sc_claim_ship(sid);
         m.run = start;
         if (start)
         {
@@ -3874,6 +3880,7 @@ namespace
         UObject* ship = find_by_id(STR("DMSPlayerShipObject"), sid);
         if (!alive(ship)) return STR("error: ship not found");
         if (!g_compat.ok(F_MINING)) return STR("error: COMPAT: mining disabled");
+        sc_claim_ship(sid);
         MineSt& m = g_mine[sid];
         m.run = false; m.leave = false; m.fin = false; m.btn = true; m.err = false; m.unl_prev = -1; m.unl_undock = false;
         m.sweep = true; m.sw_rescans = 0; m.sw_back = false; m.sw_nofly = false; m.sw_ore = nullptr; m.unl_chk = 0;
@@ -4056,6 +4063,8 @@ namespace
             MineStepCtx sc{sid, &m, dt};
             try { if (!seh_run(mine_step_fn, &sc)) mine_fault(sid, m, g_seh, step); }
             catch (...) { m.st = MS_HALT; m.result = STR("exception in mining step"); log_line(STR("MINE ship=") + std::to_wstring(sid) + STR(" exception")); }
+            try { sc_sync(sid, m.run || m.sweep || (m.st != MS_HALT && m.st != MS_OFF)); }
+            catch (...) {}
         }
         safety_net_tick(dt);
         g_mine_status_acc += dt;
