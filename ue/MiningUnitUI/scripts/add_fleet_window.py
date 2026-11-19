@@ -1,6 +1,6 @@
 """Standalone Fleet window /Game/FleetUI/WBP_FleetWindow (replaces add_fleet_tab.py), composed ONLY from uicomp factories; widget names = fleet-ui-widget-spec.md + plan 2026-11-20-fleet-window-plan.md.
 Builds: row WBPs WBP_FleetShipRow / WBP_FleetEscortRow / WBP_FleetTargetRow (Border > HBox, no Button wrapper), then WBP_FleetWindow:
-Root CanvasPanel > Panel Border (anchors 0.12/0.10-0.88/0.90) > Body VBox { TitleBar (Txt_FlTitle, Btn_FlClose) ; Row_Cols (fill) = SizeBox 230 Pnl_FleetLeft | Col_Centre (Row_TabBar + PageSwitcher: Pnl_PageFleet / Pnl_PageRole / Pnl_PageEscort) | SizeBox 260 Pnl_FleetStatus },
+Root CanvasPanel > Panel (transparent Border, anchors 0.10/0.10-0.90/0.90) > Body VBox > Row_Cols (fill, 16 px gaps) = SizeBox 230 Pnl_FleetLeft | Col_Centre (TitleBar: Txt_FlTitle, Btn_FlClose ; outline > body > inset > Col_CentreIn { Row_TabBar ; PageSwitcher: Pnl_PageFleet / Pnl_PageRole / Pnl_PageEscort }) | SizeBox 260 Pnl_FleetStatus (mining frame look),
 plus collapsed modal Pnl_Modal. Every ancestor of Row_FlListScroll has fill 1. Finally imports add_role_pages (role cards + escort page).
 Idempotent: row WBPs built only when missing (new_wbp deletes an existing asset: delete them to rebuild), every other part skipped when its name exists. Never deletes widgets.
 Run: UnrealEditor-Cmd <uproject> -ExecutePythonScript=<this file> -unattended -nullrhi (editor closed). Not run by the build."""
@@ -8,7 +8,7 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import uew; uew.OUT = '/Game/FleetUI'
 from uicomp import *
-from uicomp import _find, _vb, _hb, _t, _sz, _img, _ship_img, _bdr, _btn, _collapse
+from uicomp import _find, _vb, _hb, _t, _sz, _img, _ship_img, _bdr, _btn, _collapse, _clear, tex_border, hazard_border, HDR_H, M_TAB, M_CAP, M_LINE, TAB_OFF
 
 CLASSES = ['All', 'Miner', 'Hauler', 'Fighter', 'Frigate', 'Capital']
 # ship row columns (name, kind, fill[, extra[, px]]): used by WBP_FleetShipRow AND the column header (col_head)
@@ -61,62 +61,66 @@ if not exists('WBP_FleetTargetRow'):
 
 main = U.load_asset(uew.OUT + '/WBP_FleetWindow') if exists('WBP_FleetWindow') else new_wbp('WBP_FleetWindow')
 
-# ---- 2. shell: Root > Panel > Body { TitleBar ; Row_Cols }
-if not _find(main, 'Root'):
-    add(main, U.CanvasPanel, 'Root', '', var=False)
+# ---- 2. shell (mining look): transparent Panel > Body > Row_Cols { left column | Col_Centre | right column }, 16 px gaps, NO enclosing dark panel
 if not _find(main, 'Panel'):
-    anchor(_bdr(main, 'Panel', 'Root', '262626', (2, 2, 2, 2), var=True), 0.12, 0.10, 0.88, 0.90)
+    anchor(_clear(_bdr(main, 'Panel', 'Root', '000000', (0, 0, 0, 0), var=True)), 0.10, 0.10, 0.90, 0.90)
     _vb(main, 'Body', 'Panel', var=True, h='Fill', v='Fill')
-    _bdr(main, 'TitleBar', 'Body', GOLD, (10, 3, 4, 3), var=True, h='Fill')
-    _hb(main, 'Row_Title', 'TitleBar')
-    txt(main, 'Txt_FlTitle', 'Row_Title', 'Fleet', FONTS[2], DARKTXT, var=True, fill=1.0, v='Center')
-    icon_button(main, 'Btn_FlClose', 'Row_Title', None, None, 'Txt_FlClose', 'X', hex=DANGER, v='Center')
-    _hb(main, 'Row_Cols', 'Body', var=True, fill=1.0, h='Fill', v='Fill', pad=(6, 6, 6, 6))
+    _hb(main, 'Row_Cols', 'Body', var=True, fill=1.0, h='Fill', v='Fill')
 
 # ---- 3. left column Pnl_FleetLeft (SizeBox 230)
 if not _find(main, 'Pnl_FleetLeft'):
-    _sz(main, 'Sz_FleetLeft', 'Row_Cols', 230, None, pad=(0, 0, 6, 0), v='Fill')
+    _sz(main, 'Sz_FleetLeft', 'Row_Cols', 230, None, pad=(0, 0, 16, 0), v='Fill')
     _vb(main, 'Pnl_FleetLeft', 'Sz_FleetLeft', var=True, h='Fill', v='Fill')
-    box(main, 'Bx_FlCtl', 'Pnl_FleetLeft', 'Fleet Control', 'Txt_FlCtlTitle')
+    box(main, 'Bx_FlCtl', 'Pnl_FleetLeft', 'Fleet Control', 'Txt_FlCtlTitle', side=True)
     field(main, 'FlGroup', 'Bx_FlCtl_In', 'Group', 'select', row='Row_FlGroup', lbl='Txt_FlGroupLbl', ctl='Sel_FlGroup', txt='Txt_SelFlGroup')
     _find(main, 'Txt_SelFlGroup').set_editor_property('text', U.Text('All ships'))
-    box(main, 'Bx_FlControl', 'Pnl_FleetLeft', 'Control', 'Txt_FlControlTitle')
-    # E-stop: hazard-stripe frame (T_HazardStripes tiled) > yellow rim > red button
-    fr = _bdr(main, 'Row_FlEstopFrame', 'Bx_FlControl_In', 'FFFFFF', (9, 9, 9, 9), h='Fill')
-    try:
-        br = image_brush('%s/T_HazardStripes.T_HazardStripes' % ASSETS, lin('FFFFFF'), 32.0)
-        br.set_editor_property('tiling', U.SlateBrushTileType.BOTH)
-        fr.set_editor_property('brush', br)
-    except Exception as e:
-        print('hazard brush not set:', e)
-    _bdr(main, 'Row_FlEstopRim', 'Row_FlEstopFrame', 'F2C500', (3, 3, 3, 3), h='Fill')
-    icon_button(main, 'Btn_FlEmergencyStop', 'Row_FlEstopRim', None, None, 'Txt_FlEmergencyStop', 'EMERGENCY STOP', hex='C81414', h='Fill')
+    slot(box(main, 'Bx_FlControl', 'Pnl_FleetLeft', 'Control', 'Txt_FlControlTitle', side=True), pad=(0, 10, 0, 0))
+    # E-stop copied from mining: hazard-stripe frame (T_HazardStripes tiled, Border.background) > yellow rim E8B800 > red rounded button (hover E01818, pressed 7A0E0E)
+    hazard_border(main, 'Row_FlEstopFrame', 'Bx_FlControl_In', (9, 9, 9, 9), h='Fill')
+    _bdr(main, 'Row_FlEstopRim', 'Row_FlEstopFrame', 'E8B800', (3, 3, 3, 3), h='Fill', v='Fill')
+    icon_button(main, 'Btn_FlEmergencyStop', 'Row_FlEstopRim', None, None, 'Txt_FlEmergencyStop', 'EMERGENCY STOP', hex='C81414', h='Fill', v='Fill')
+    _find(main, 'Btn_FlEmergencyStop').set_editor_property('widget_style', button_style(round_brush(lin('C81414'), 6.0), round_brush(lin('E01818'), 6.0), round_brush(lin('7A0E0E'), 6.0)))
     _find(main, 'Txt_FlEmergencyStop').set_editor_property('color_and_opacity', slate_color(lin('FFFFFF')))
     size(main, 'Txt_FlEmergencyStop', FONTS[2])
     for k, lb, bn in (('Start', 'Start selected', 'Btn_FlStart'), ('Hold', 'Hold selected', 'Btn_FlHold')):
         icon_button(main, bn, 'Bx_FlControl_In', None, None, 'Txt_Fl' + k, lb, pad=(0, 2, 0, 0), h='Fill')
         size(main, 'Txt_Fl' + k, FONTS[0] + 1)
-    box(main, 'Bx_FlActions', 'Pnl_FleetLeft', 'Actions', 'Txt_FlActionsTitle')
+    slot(box(main, 'Bx_FlActions', 'Pnl_FleetLeft', 'Actions', 'Txt_FlActionsTitle', side=True), pad=(0, 10, 0, 0))
     for k, lb, bn in (('Dock', 'Dock', 'Btn_FlDock'), ('Undock', 'Undock', 'Btn_FlUndock'), ('Refuel', 'Refuel', 'Btn_FlRefuel')):
         icon_button(main, bn, 'Bx_FlActions_In', None, None, 'Txt_Fl' + k, lb, pad=(0, 2, 0, 0), h='Fill')
     icon_button(main, 'Btn_FlRecallL', 'Bx_FlActions_In', 'T_IconPin', 'Img_FlRecallL', 'Txt_FlRecallL', 'Recall to me', hex=GOLD, pad=(0, 2, 0, 0), h='Fill')
 
-# ---- 4. centre column: tab bar + PageSwitcher
+# ---- 4. centre column: title bar (Header_L tab + Header_Bar line + Header_R cap with X) > outline > body > inset > tab bar + PageSwitcher
 if not _find(main, 'Col_Centre'):
     _vb(main, 'Col_Centre', 'Row_Cols', var=True, fill=1.0, h='Fill', v='Fill')
-    _hb(main, 'Row_TabBar', 'Col_Centre', var=True, h='Fill', pad=(0, 0, 0, 6))
+    _clear(_bdr(main, 'TitleBar', 'Col_Centre', '000000', (0, 0, 0, 0), var=True, h='Fill'))
+    _hb(main, 'Row_Title', 'TitleBar')
+    _sz(main, 'Sz_FlTitleTab', 'Row_Title', None, HDR_H, v='Fill')
+    tex_border(main, 'Bdr_FlTitleTab', 'Sz_FlTitleTab', 'Header_L', M_TAB, (22, 0, 22, 0), h='Fill', v='Fill')
+    txt(main, 'Txt_FlTitle', 'Bdr_FlTitleTab', 'Fleet', FONTS[2], TEXT, var=True, v='Center')
+    tex_border(main, 'Bdr_FlTitleLine', 'Row_Title', 'Header_Bar', M_LINE, fill=1.0, h='Fill', v='Fill')
+    tex_border(main, 'Bdr_FlTitleCap', 'Row_Title', 'Header_R', M_CAP, (14, 2, 8, 4), h='Fill', v='Fill')
+    _sz(main, 'Sz_FlClose', 'Bdr_FlTitleCap', 24, None, h='Fill', v='Fill')
+    cb = _btn(main, 'Btn_FlClose', 'Sz_FlClose', BUTTON, h='Fill', v='Fill')
+    cb.set_editor_property('widget_style', button_style(round_brush(lin('FFFFFF', 0.0), 2.0), round_brush(lin('FFFFFF', 0.25), 2.0), round_brush(lin('000000', 0.25), 2.0)))
+    txt(main, 'Txt_FlClose', 'Btn_FlClose', 'X', FONTS[2], DARKTXT, var=True, h='Center', v='Center')
+    _bdr(main, 'Bdr_CentreEdge', 'Col_Centre', OUTLINE, (2, 2, 2, 2), fill=1.0, h='Fill', v='Fill')
+    _bdr(main, 'Bdr_CentreBody', 'Bdr_CentreEdge', BODY, (8, 8, 8, 8), h='Fill', v='Fill')
+    _bdr(main, 'Bdr_CentreInset', 'Bdr_CentreBody', INSET, (8, 8, 8, 8), h='Fill', v='Fill')
+    _vb(main, 'Col_CentreIn', 'Bdr_CentreInset', h='Fill', v='Fill')
+    _hb(main, 'Row_TabBar', 'Col_CentreIn', var=True, h='Fill', pad=(0, 0, 0, 8))
     for i, (bn, tn, lb) in enumerate((('Btn_TabFleet', 'Txt_TabFleet', 'Fleet'), ('Btn_TabRole', 'Txt_TabRole', 'Role'), ('Btn_TabEscort', 'Txt_TabEscort', 'Escort'))):
-        tab(main, bn, tn, lb, parent='Row_TabBar', clone=None, hex=GOLD if i == 0 else BUTTON, txt_hex=DARKTXT if i == 0 else TEXT)
-        slot(_find(main, bn), pad=(0 if i == 0 else 3, 0, 0, 0), fill=1.0, h='Fill', v='Fill')
-    sw = add(main, U.WidgetSwitcher, 'PageSwitcher', 'Col_Centre', True)
+        tab(main, bn, tn, lb, parent='Row_TabBar', clone=None, hex='D49A00' if i == 0 else TAB_OFF, txt_hex=DARKTXT if i == 0 else TEXT)
+        slot(_find(main, bn + '_Frm'), pad=(0 if i == 0 else 3, 0, 0, 0), fill=1.0, h='Fill', v='Fill')
+    sw = add(main, U.WidgetSwitcher, 'PageSwitcher', 'Col_CentreIn', True)
     slot(sw, fill=1.0, h='Fill', v='Fill')
     page(main, 'Pnl_PageFleet'); page(main, 'Pnl_PageRole'); page(main, 'Pnl_PageEscort')  # role + escort content: add_role_pages.py
 
 # ---- 5. right column Pnl_FleetStatus (SizeBox 260)
 if not _find(main, 'Pnl_FleetStatus'):
-    _sz(main, 'Sz_FleetStatus', 'Row_Cols', 260, None, pad=(6, 0, 0, 0), v='Fill')
+    _sz(main, 'Sz_FleetStatus', 'Row_Cols', 260, None, pad=(16, 0, 0, 0), v='Fill')
     _vb(main, 'Pnl_FleetStatus', 'Sz_FleetStatus', var=True, h='Fill', v='Fill')
-    box(main, 'Bx_FlStatus', 'Pnl_FleetStatus', 'Status', 'Txt_FlStatusTitle')
+    box(main, 'Bx_FlStatus', 'Pnl_FleetStatus', 'Status', 'Txt_FlStatusTitle', side=True)
     _sz(main, 'Sz_FlStatHolo', 'Bx_FlStatus_In', 150, 100, h='Center')
     _ship_img(main, 'Img_FlStatHolo', 'Sz_FlStatHolo', 100)
     _hb(main, 'Row_FlStatHead', 'Bx_FlStatus_In')
@@ -143,7 +147,7 @@ if not _find(main, 'Pnl_FleetStatus'):
                               ('HoldS', 'Hold position', 'T_IconPause', BUTTON, 'Btn_FlHoldS')):
         icon_button(main, bn, 'Bx_FlStatus_In', ic, 'Img_Fl' + k if ic else None, 'Txt_Fl' + k, lb, hex=hx, pad=(0, 2, 0, 0), h='Fill')
         size(main, 'Txt_Fl' + k, FONTS[0] + 1)
-    box(main, 'Bx_FlSelected', 'Pnl_FleetStatus', 'Selected (0)', 'Txt_FlSelTitle')
+    box(main, 'Bx_FlSelected', 'Pnl_FleetStatus', 'Selected (0)', 'Txt_FlSelTitle', side=True)
     _collapse(_find(main, 'Bx_FlSelected'))
     _hb(main, 'Row_FlSelHolos', 'Bx_FlSelected_In')
     for i in range(1, 6):

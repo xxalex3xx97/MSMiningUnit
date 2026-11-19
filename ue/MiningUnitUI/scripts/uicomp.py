@@ -8,11 +8,70 @@ from uew import *
 
 FONTS = (11, 10, 13)  # body, small, header
 OUTLINE, BODY, INSET, GOLD, ACCENT, BUTTON, DANGER, BARGREEN = '1C1C1C', '3A3A3A', '2B2B2B', 'C38800', 'F2B01E', '4A4A4A', '9C2222', '42DA41'
+TAB_OFF = '1E1E1E'
 TEXT, DIM, NEUTRAL, DARKTXT, SELBG, TRACK = "E6E6E6", "BBBBBB", "A0A0A0", "111111", "D9D9D9", "1A1A1A"
 
 
 def _find(w, name):
     return ELib.find_source_widget_by_name(w, name)
+
+
+GOLD_RAW = U.LinearColor(1.0, 0.443, 0.0, 1.0)  # game gold, linear (as gen_paste GOLD_RAW)
+LINE = 'BBBBBB'  # thin grey/white button border
+HDR_H = 32.0  # header tab height (mining 40, scaled for the 11/10/13 fonts)
+M_TAB, M_CAP, M_LINE = (0.40, 0.50, 0.40, 0.25), (0.40, 0.20, 0.20, 0.25), (0.49, 0.175, 0.49, 0.35)  # same margins as gen_paste
+
+
+def tex_brush(name, m, size=40.0):
+    """Box-drawn brush of the mining header texture /Game/MiningUnitUI/Art/T_UI_<name> (margins = fractions, as gen_paste tex())"""
+    b = U.SlateBrush()
+    b.set_editor_property('draw_as', U.SlateBrushDrawType.BOX)
+    v = U.DeprecateSlateVector2D(); v.set_editor_property('x', size); v.set_editor_property('y', size)
+    b.set_editor_property('image_size', v)
+    b.set_editor_property('margin', U.Margin(*m))
+    b.set_editor_property('tint_color', slate_color(U.LinearColor(1, 1, 1, 1)))
+    b.set_editor_property('resource_object', U.load_asset('%s/Art/T_UI_%s.T_UI_%s' % (ASSETS, name, name)))
+    return b
+
+
+def _outline_brush(fill, line=LINE, r=3.0, width=1.0):
+    """rounded box filled `fill`, thin `line` outline (mining box_brush)"""
+    b = round_brush(lin(fill), r)
+    o = b.get_editor_property('outline_settings')
+    o.set_editor_property('color', slate_color(lin(line)))
+    o.set_editor_property('width', width)
+    b.set_editor_property('outline_settings', o)
+    return b
+
+
+def _clear(b):
+    """Border with no background (transparent)"""
+    b.set_editor_property('brush_color', lin('000000', 0.0))
+    return b
+
+
+def hazard_border(w, name, parent, pad, **slot_kw):
+    """Border `name` with the mining hazard-stripe tile (T_HazardStripes, 32px, Tiling=Both) as Background (same route as gen_paste stripe_brush)"""
+    b = add(w, U.Border, name, parent, False)
+    br = image_brush('%s/T_HazardStripes.T_HazardStripes' % ASSETS, lin('FFFFFF'), 32.0)
+    br.set_editor_property('tiling', U.SlateBrushTileType.BOTH)
+    b.set_editor_property('background', br)
+    b.set_editor_property('brush_color', lin('FFFFFF'))
+    b.set_editor_property('padding', U.Margin(*pad))
+    if slot_kw:
+        slot(b, **slot_kw)
+    return b
+
+
+def tex_border(w, name, parent, tex, m, pad=(0, 0, 0, 0), var=False, **slot_kw):
+    """Border `name` drawn with header texture `tex` (Header_L / Header_Bar / Header_R), gold tinted"""
+    b = add(w, U.Border, name, parent, var)
+    b.set_editor_property('background', tex_brush(tex, m))
+    b.set_editor_property('brush_color', GOLD_RAW)
+    b.set_editor_property('padding', U.Margin(*pad))
+    if slot_kw:
+        slot(b, **slot_kw)
+    return b
 
 
 def _sz(w, name, parent, wd=None, ht=None, **slot_kw):
@@ -51,7 +110,11 @@ def _ship_img(w, name, parent, size):
 def _btn(w, name, parent, hex_=BUTTON, var=True, **slot_kw):
     """flat rounded Button in hex_"""
     b = add(w, U.Button, name, parent, var)
-    b.set_editor_property('widget_style', button_style(round_brush(lin(hex_), 3.0), round_brush(lin(GOLD), 3.0), round_brush(lin(ACCENT), 3.0)))
+    if hex_ == BUTTON:  # mining button skin: dark + thin grey border
+        st = button_style(_outline_brush(BUTTON), _outline_brush(GOLD), _outline_brush(ACCENT))
+    else:
+        st = button_style(round_brush(lin(hex_), 3.0), round_brush(lin(GOLD), 3.0), round_brush(lin(ACCENT), 3.0))
+    b.set_editor_property('widget_style', st)
     if slot_kw:
         slot(b, **slot_kw)
     return b
@@ -101,17 +164,31 @@ def _sel_btn(w, name, txt_name, parent, label='', **slot_kw):
     return b
 
 
-def box(w, name, parent, title=None, title_name=None, body=BODY, pad=5, fill=False):
-    """Spec box: Border `name`(1C1C1C pad2) > VBox `name`_Col { Border `name`_HdrBdr(gold, Txt title_name 13 111111); Border `name`_Line(2px F2B01E); Border `name`_Body(body, pad, fill 1.0 when fill) > VBox `name`_In }. Children go in parent=`name`_In. title=None -> no header/line. fill=True: Body takes the leftover height of `name`_Col (the box itself still needs fill in its own parent slot)."""
+def box(w, name, parent, title=None, title_name=None, body=BODY, pad=5, fill=False, side=False):
+    """Spec box. side=True (mining side panel): transparent Border `name` > VBox `name`_Col { HBox `name`_HdrRow { SizeBox > Border `name`_HdrBdr(Header_L tab, Txt title_name 13 white) ; Border `name`_Line(Header_Bar, fill) } ; Border `name`_Edge(1C1C1C pad2) > Border `name`_Body(2B2B2B) > VBox `name`_In }.
+    side=False (mining card): Border `name`(1C1C1C pad2) > VBox `name`_Col { Border `name`_HdrBdr(body colour, Txt title_name 13 gold) ; Border `name`_Line(2px gold) ; Border `name`_Body(body, pad) > VBox `name`_In }.
+    title=None -> no header/line. fill=True: Body takes the leftover height of `name`_Col (the box itself still needs fill in its own parent slot). Children go in parent=`name`_In."""
     if _find(w, name):
         return _find(w, name)
-    r = _bdr(w, name, parent, OUTLINE, (2, 2, 2, 2), var=True)
-    _vb(w, name + '_Col', name, h='Fill', v='Fill')
-    if title is not None:
-        _bdr(w, name + '_HdrBdr', name + '_Col', GOLD, (8, 2, 8, 2), h='Fill')
-        _t(w, title_name or name + '_Title', name + '_HdrBdr', FONTS[2], DARKTXT, label=title)
-        _bdr(w, name + '_Line', name + '_Col', ACCENT, (0, 1, 0, 1), h='Fill')
-    _bdr(w, name + '_Body', name + '_Col', body, (pad,) * 4, h='Fill', v='Fill', **({'fill': 1.0} if fill else {}))
+    if side:
+        r = _clear(_bdr(w, name, parent, OUTLINE, (0, 0, 0, 0), var=True))
+        _vb(w, name + '_Col', name, h='Fill', v='Fill')
+        if title is not None:
+            _hb(w, name + '_HdrRow', name + '_Col', h='Fill')
+            _sz(w, name + '_HdrSz', name + '_HdrRow', None, HDR_H, v='Fill')
+            tex_border(w, name + '_HdrBdr', name + '_HdrSz', 'Header_L', M_TAB, (22, 0, 22, 0), h='Fill', v='Fill')
+            _t(w, title_name or name + '_Title', name + '_HdrBdr', FONTS[2], TEXT, label=title, v='Center')
+            tex_border(w, name + '_Line', name + '_HdrRow', 'Header_Bar', M_LINE, fill=1.0, h='Fill', v='Fill')
+        _bdr(w, name + '_Edge', name + '_Col', OUTLINE, (2, 2, 2, 2), h='Fill', v='Fill', **({'fill': 1.0} if fill else {}))
+        _bdr(w, name + '_Body', name + '_Edge', INSET if body == BODY else body, (pad,) * 4, h='Fill', v='Fill')
+    else:
+        r = _bdr(w, name, parent, OUTLINE, (2, 2, 2, 2), var=True)
+        _vb(w, name + '_Col', name, h='Fill', v='Fill')
+        if title is not None:
+            _bdr(w, name + '_HdrBdr', name + '_Col', body, (8, 5, 8, 3), h='Fill')
+            _t(w, title_name or name + '_Title', name + '_HdrBdr', FONTS[2], ACCENT, label=title)
+            _bdr(w, name + '_Line', name + '_Col', GOLD, (0, 1, 0, 1), h='Fill')
+        _bdr(w, name + '_Body', name + '_Col', body, (pad,) * 4, h='Fill', v='Fill', **({'fill': 1.0} if fill else {}))
     _vb(w, name + '_In', name + '_Body', var=True, h='Fill', v='Fill')
     return r
 
@@ -168,7 +245,12 @@ def tab(main, name, txt_name, label, parent='TabBar', clone='Btn_TabLog', clone_
     """Button `name` + Txt txt_name (both var) in `parent`; clone copies bg/font/colour from the existing tab clone/clone_txt (main TabBar); clone=None -> plain hex/txt_hex (sub-tabs)."""
     if _find(main, name):
         return _find(main, name)
+    if not clone:  # mining tab: grey 1px frame (the Lua tints only the Button, the frame stays) around the Button
+        _bdr(main, name + '_Frm', parent, LINE, (1, 1, 1, 1), h='Fill', v='Fill')
+        parent = name + '_Frm'
     b = add(main, U.Button, name, parent)
+    if not clone:
+        slot(b, h='Fill', v='Fill')
     t = text(main, txt_name, name, size=FONTS[0], var=True, slot_kw=dict(pad=(12, 3, 12, 3), h='Center', v='Center'))
     t.set_editor_property('text', U.Text(label))
     lg = _find(main, clone) if clone else None
@@ -181,7 +263,7 @@ def tab(main, name, txt_name, label, parent='TabBar', clone='Btn_TabLog', clone_
         t.set_editor_property('color_and_opacity', lt.get_editor_property('color_and_opacity'))
         slot(t, pad=(16, 8, 16, 8), h='Center', v='Center')
     else:
-        b.set_editor_property('background_color', lin(hex or BODY))
+        b.set_editor_property('background_color', lin(hex or TAB_OFF))
         t.set_editor_property('color_and_opacity', slate_color(lin(txt_hex)))
     return b
 
@@ -196,16 +278,22 @@ def page(main, name, parent='PageSwitcher'):
 
 
 def group_header(w, name, parent, hdr_btn, arrow_txt, name_txt, summary_txt=None, collapsed=True):
-    """HBox `name`(var, collapsed) > Button hdr_btn(4A4A4A fill) > HBox `hdr_btn`_Row { Txt arrow_txt ('v', 12) + Txt name_txt (12) + Txt summary_txt (10, fill, right) }."""
+    """mining Docks-card header: HBox `name`(var, collapsed) > Button hdr_btn(transparent, fill) > VBox `hdr_btn`_Col { HBox `hdr_btn`_Row { Txt name_txt (13 gold) + Txt summary_txt (10, fill, right) + Border `hdr_btn`_Fold(grey frame) > Txt arrow_txt ('v') } ; Border `hdr_btn`_Line(2px gold) }."""
     if _find(w, name):
         return _find(w, name)
     r = _hb(w, name, parent, var=True, h='Fill')
-    _btn(w, hdr_btn, name, BUTTON, fill=1.0, h='Fill', v='Fill')
-    _hb(w, hdr_btn + '_Row', hdr_btn)
-    _t(w, arrow_txt, hdr_btn + '_Row', FONTS[0] + 1, TEXT, label='v', pad=(8, 2, 6, 2), v='Center')
-    _t(w, name_txt, hdr_btn + '_Row', FONTS[0] + 1, TEXT, pad=(0, 2, 6, 2), v='Center')
+    b = _btn(w, hdr_btn, name, BUTTON, fill=1.0, h='Fill', v='Fill')
+    clear = lambda c: round_brush(lin(BODY, 0.0), 3.0) if c is None else round_brush(lin('FFFFFF', c), 3.0)
+    b.set_editor_property('widget_style', button_style(clear(None), clear(0.06), clear(0.12)))
+    _vb(w, hdr_btn + '_Col', hdr_btn, h='Fill', v='Fill')
+    _hb(w, hdr_btn + '_Row', hdr_btn + '_Col', h='Fill', pad=(0, 4, 0, 4))
+    _t(w, name_txt, hdr_btn + '_Row', FONTS[2], ACCENT, pad=(0, 0, 8, 0), v='Center')
     if summary_txt:
-        _t(w, summary_txt, hdr_btn + '_Row', FONTS[1], DIM, pad=(0, 2, 8, 2), fill=1.0, h='Right', v='Center')
+        _t(w, summary_txt, hdr_btn + '_Row', FONTS[1], DIM, pad=(0, 0, 8, 0), fill=1.0, h='Right', v='Center')
+    fb = _bdr(w, hdr_btn + '_Fold', hdr_btn + '_Row', BUTTON, (9, 1, 9, 1), v='Center')
+    fb.set_editor_property('background', _outline_brush(BUTTON)); fb.set_editor_property('brush_color', lin('FFFFFF'))
+    _t(w, arrow_txt, hdr_btn + '_Fold', FONTS[0], TEXT, label='v', h='Center', v='Center')
+    _bdr(w, hdr_btn + '_Line', hdr_btn + '_Col', GOLD, (0, 1, 0, 1), h='Fill')
     if collapsed:
         _collapse(r)
     return r
