@@ -82,6 +82,9 @@ Page_Items (key: items):
   - Edt_ItemAmount_<r> EditableTextBox
   - Btn_ItemUp_<r> / Txt_ItemUp_<r>, Btn_ItemDown_<r> / Txt_ItemDown_<r>, Btn_ItemDel_<r> / Txt_ItemDel_<r>. Art (default): our icons /Game/MiningUnitUI/T_IconUp, T_IconDown, T_IconTrash (64x64 white glyph, made by scripts\make_icons.py + make_assets.py). Up/Down = 20x20 transparent buttons, icon as Normal/Hovered/Pressed brush tinted #B9B9D2 / #E4E4F6 / #8A8AA6, stacked in one column (Row_ItemUD_<r>) vertically centred. Del = 40x40 button, dark rounded box #2E2E2E (outline #1A1A1A, radius 6), trash icon 24x24 tinted #B9B9D2 (Row_ItemDelOverlay_<r> > Row_ItemDelIcon_<r> + Txt_ItemDel_<r>). Txt_Item* are empty and Collapsed in art. --flat keeps text labels "^" "v" "X".
 - Btn_ItemAdd Button "Add resource" / Txt_ItemAdd, wide, below the list (appends a row)
+- Preset bar (Row_PresetBar, non-variable, last child of the items scroll): preset name edit box (variable, black text, hint "Preset name (empty = Preset N)"), then three variable buttons Save preset / Apply preset / Delete preset copying the Add resource button style, with non-variable labels Lbl_PresetSave, Lbl_PresetApply, Lbl_PresetDel. Python-built by add_items_groups.py, found by Lua via WALK_NAMES; gen_paste.py is NOT changed for them.
+- Item row group header strip (Row_IGroup, collapsed, inside the WBP_ItemRow root row, fill): group name button + its text, fold button + its text ("v"), add ("+") button + its text. All non-variable, python-built by add_items_groups.py (same way as the dock group header), not in gen_paste.py.
+- add_items_groups.py must run after build_lists.py (build_lists.py recreates WBP_ItemRow).
 - The list scrolls with the page. Rows are a fixed pool of 20: Lua never creates widgets.
 
 Page_Operation (keys: radius, mining_distance, max_radius, idle_seconds, wait_seconds, dock_hold_limit, warp_trip_km, enabled, repeat, fuel_<k>_threshold, fuel_<k>_amount):

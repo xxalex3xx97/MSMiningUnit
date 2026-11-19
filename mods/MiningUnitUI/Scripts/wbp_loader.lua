@@ -38,7 +38,7 @@ local NAMES = { "Panel", "PageSwitcher", "Page_Ship", "Page_Items", "Page_Operat
   "Txt_StatusAction", "PB_Cargo", "Txt_CargoPct", "Txt_Speed", "Txt_NextState", "Txt_Status",
   "Txt_Eta", "Btn_EmergencyStop", "Txt_EmergencyStop", "Btn_Dock", "Btn_Undock", "Btn_Refuel", "Btn_Unload", "Btn_Collect", "Txt_Collect", "Btn_Park", "Txt_Park", "Btn_RemoteAll", "Pnl_AllWarn", "Txt_AllWarn",
   "Txt_TabLog", "Pnl_PageLog", "Txt_LogHint", "Row_LogScroll", "Row_StatusMine", "Txt_StatusMine", "Img_StatusOre", "Pnl_LogAll", "Row_LogAllScroll",
-  "Btn_TabDocks", "Txt_TabDocks", "Pnl_PageDocks", "Txt_DocksHdr", "Row_DocksScroll" }
+  "Btn_TabDocks", "Txt_TabDocks", "Pnl_PageDocks", "Txt_DocksHdr", "Row_DocksScroll", "Txt_AmountHint" }
 -- Mining line of every card (Card/Fleet): label + ore icon + ore name; log card pool (Pnl_LogCard_<f>, LOGCARD_ROWS lines each)
 for i = 1, 20 do
   for _, P in ipairs({ "Card", "Fleet" }) do
@@ -120,7 +120,8 @@ end
 local WALK_NAMES = { Btn_TabDocks = true, Txt_TabDocks = true, Pnl_PageDocks = true, Txt_DocksHdr = true, Row_DocksScroll = true,
   Dyn_Docks = true, Btn_DocksHelp = true, Pnl_DocksLegend = true, Btn_Collect = true, Txt_Collect = true, Btn_Park = true, Txt_Park = true,
   Pnl_UDockCard_Misc = true, Btn_UDockAdd_Misc = true,
-  Pnl_UDockCard_Park = true, Btn_UDockAdd_Park = true }
+  Pnl_UDockCard_Park = true, Btn_UDockAdd_Park = true,
+  Edt_PresetName = true, Btn_PresetSave = true, Btn_PresetApply = true, Btn_PresetDel = true, }
 local WALK_NODES = 2600   -- hard cap of one index walk
 -- ONE bounded walk per window open (S.wc = name -> widget for WALK_NAMES). Stops early when all are found. Logs time + nodes.
 local function buildIndex()
@@ -531,10 +532,10 @@ end
 local SHIP_SAVE_KEYS = { "dock_name_filter", "refuel_dock_id", "refuel_docks", "unload_docks_cobalt", "unload_docks_graphite", "unload_docks_iridium",
   "unload_docks_nickel", "unload_docks_silica", "unload_docks_titanium", "unload_docks_waterice", "unload_docks_misc", "parking_docks", "resource", "amount", "items", "belt_sector" }
 local targets  -- ship ids a command/save goes to (defined after benchShips)
-local function iniSave(vals)
+local function iniSave(vals, ids)
   if not S.sid then return end
   local lines = rdlines(INI) or {}
-  for _, id in ipairs(targets()) do iniPatch(lines, "ship." .. id, vals, SHIP_SAVE_KEYS) end
+  for _, id in ipairs(ids or targets()) do iniPatch(lines, "ship." .. id, vals, SHIP_SAVE_KEYS) end
   if not wrlines(INI, lines) then L("FAIL ini write") end
 end
 local benchShips  -- defined below
@@ -900,17 +901,17 @@ local function loadItems()  -- same source as the old menu: all Item objects
   table.sort(out, function(a, b) return a.text:lower() < b.text:lower() end)
   return out
 end
-local function qSerialize()
+local function qSerialize(rows)
   local t = {}
-  for _, r in ipairs(S.q.rows) do t[#t + 1] = r.id .. ":" .. r.amt end
+  for _, r in ipairs(rows or S.q.rows) do t[#t + 1] = r.id .. ":" .. r.amt end
   return table.concat(t, ",")
 end
-local function qSave() iniSave({ items = qSerialize() }) end
--- dropdown options for row r: mineable items, plus the row's current item when it is not mineable
-local function qOpts(r)
+local function qSave(g) if g.locked then return end iniSave({ items = qSerialize(g.rows) }, g.ids) end
+-- dropdown options for row r of rows: mineable items, plus the row's current item when it is not mineable
+local function qOpts(rows, r)
   local o = {}
   for _, it in ipairs(S.items.min) do o[#o + 1] = it end
-  local cur = S.q.rows[r].id
+  local cur = rows[r].id
   if cur ~= "" then
     local found = false
     for _, it in ipairs(o) do if it.id == cur then found = true break end end
@@ -924,59 +925,199 @@ function setImgIcon(img, itemId)
   if it and it.icon then try("item icon", function() img:SetBrushFromTexture(it.icon, false) end); setVis(img, 0)
   else setVis(img, 2) end
 end
+local itemsLoad  -- defined below
 local function qRender()
   holdReads()
-  local rows = S.q.rows
-  dynList{ key = "Items", anchor = "Page_Items", box = "Dyn_Items", n = #rows,
+  local flat = S.q.flat or {}
+  local KIDS = { "Sz_Icon", "Btn_Sel", "Sz_Amt", "Col_UD", "Sz_Del" }
+  dynList{ key = "Items", anchor = "Page_Items", box = "Dyn_Items", n = #flat,
     bind = function(_, find, idx)
-      local function row() local i = idx(); return i and S.q.rows[i], i end
+      local function ent() return S.q.flat[idx()] end
       local bs, bu, bd, bx = find("Btn_Sel"), find("Btn_Up"), find("Btn_Down"), find("Btn_Del")
       if BIND and BIND.onClick then
         if bs then BIND.onClick(bs, function()
-          local rw, i = row(); if not rw then return end
-          modalSelect{ title = "Resource", options = qOpts(i), id = rw.id, onPick = function(id) rw.id = id; qSave(); qRender() end }
+          local en = ent(); if not en or en.k ~= "row" or en.g.locked then return end
+          local rw = en.g.rows[en.i]; if not rw then return end
+          modalSelect{ title = "Resource", options = qOpts(en.g.rows, en.i), id = rw.id, onPick = function(id) rw.id = id; qSave(en.g); itemsLoad() end }
         end) end
-        if bu then BIND.onClick(bu, function() local _, i = row(); local rs = S.q.rows
-          if i and i > 1 then rs[i - 1], rs[i] = rs[i], rs[i - 1]; qSave(); qRender() end end) end
-        if bd then BIND.onClick(bd, function() local _, i = row(); local rs = S.q.rows
-          if i and i < #rs then rs[i], rs[i + 1] = rs[i + 1], rs[i]; qSave(); qRender() end end) end
-        if bx then BIND.onClick(bx, function() local _, i = row(); if i then table.remove(S.q.rows, i); qSave(); qRender() end end) end
+        if bu then BIND.onClick(bu, function() local en = ent(); if not en or en.k ~= "row" or en.g.locked then return end
+          local rs, i = en.g.rows, en.i
+          if i > 1 then rs[i - 1], rs[i] = rs[i], rs[i - 1]; qSave(en.g); itemsLoad() end end) end
+        if bd then BIND.onClick(bd, function() local en = ent(); if not en or en.k ~= "row" or en.g.locked then return end
+          local rs, i = en.g.rows, en.i
+          if i < #rs then rs[i], rs[i + 1] = rs[i + 1], rs[i]; qSave(en.g); itemsLoad() end end) end
+        if bx then BIND.onClick(bx, function() local en = ent(); if not en or en.k ~= "row" or en.g.locked then return end
+          table.remove(en.g.rows, en.i); qSave(en.g); itemsLoad() end) end
+        for _, n in ipairs{ "Btn_IGroupHdr", "Btn_IGroupFold" } do
+          local b = find(n)
+          if b then BIND.onClick(b, function()
+            local en = ent(); if not en or en.k ~= "hdr" then return end
+            S.itemsFold = S.itemsFold or {}; S.itemsFold[en.g.key] = not S.itemsFold[en.g.key]; itemsLoad()
+          end) end
+        end
+        local ba = find("Btn_IGroupAdd")
+        if ba then BIND.onClick(ba, function()
+          local en = ent(); if not en or en.k ~= "hdr" or en.g.locked then return end
+          table.insert(en.g.rows, { id = "", amt = "" }); qSave(en.g); itemsLoad()
+        end) end
       end
     end,
     paint = function(_, find, i)
-      local rw = rows[i]
+      local en = flat[i]
+      local hdr = en.k == "hdr"
+      for _, n in ipairs(KIDS) do setVis(find(n), hdr and 1 or 0) end
+      setVis(find("Row_IGroup"), hdr and 0 or 1)
+      local g = en.g
+      if hdr then
+        local function put(name, s) local t = find(name); if t then try("items " .. name, function() t:SetText(FText(s)) end) end end
+        put("Txt_IGroupName", en.name .. " (" .. en.count .. (en.count == 1 and " ship)" or " ships)"))
+        put("Txt_IGroupFold", en.folded and ">" or "v")
+        setVis(find("Btn_IGroupAdd"), g.locked and 1 or 0)
+        return
+      end
+      local rw = g.rows[en.i]
       local cur = rw.id
-      for _, o in ipairs(qOpts(i)) do if o.id == rw.id then cur = o.text end end
+      for _, o in ipairs(qOpts(g.rows, en.i)) do if o.id == rw.id then cur = o.text end end
       local t = find("Txt_Sel"); if t then try("item text", function() t:SetText(FText(cur or "")) end) end
       setImgIcon(find("Img_Icon"), rw.id)
       local e = find("Edt_Amount")
       if e and S.q.shown[i] ~= rw.amt then try("amount set", function() e:SetText(FText(rw.amt)) end) end
       S.q.shown[i] = rw.amt
+      if e then pcall(function() e:SetIsReadOnly(g.locked and true or false) end) end   -- pool entries are reused: set both ways
+      if g.locked then setVis(find("Col_UD"), 1); setVis(find("Sz_Del"), 1) end
     end }
+  local anyLocked = false
+  for _, en in ipairs(flat) do if en.g.locked then anyLocked = true end end
+  setVis(w("Btn_ItemAdd"), (S.all or anyLocked) and 1 or 0)
+  M.setText("Txt_AmountHint", anyLocked and "Queue comes from the ship name tags (read-only)." or "0 = unlimited (mine until cargo is full)")
 end
-local function itemsLoad()
+-- "ITEM_A:1,ITEM_B:" -> {{id=,amt=},..}
+local function parseQueue(s)
+  local rows = {}
+  for entry in (s .. ","):gmatch("([^,]*),") do
+    local id, amt = entry:match("^(.*):([^:]*)$")
+    if id then rows[#rows + 1] = { id = trim(id), amt = trim(amt) } end
+  end
+  return rows
+end
+-- ship id -> rows, from ShipTags.txt "<ship id>|<ITEM_x:amt,...>" (read-only queues)
+local function taggedShips()
+  local map = {}
+  for _, l in ipairs(rdcached(M.DATA .. "ShipTags.txt") or {}) do
+    local p = split(l)
+    local id = trim(p[1] or "")
+    if id ~= "" then map[id] = parseQueue(trim(p[2] or "")) end
+  end
+  return map
+end
+local function oreName(id)
+  local it = S.items and S.items.byId and S.items.byId[id]
+  return it and it.text or (id:gsub("^ITEM_", ""))
+end
+-- group key = ordered ore ids (amounts ignored); tagged queues get their own key incl. amounts
+local function queueGroup(rows, tagged)
+  local ids, names = {}, {}
+  for _, r in ipairs(rows) do
+    ids[#ids + 1] = r.id
+    local n = oreName(r.id)
+    if tagged and r.amt ~= "" and r.amt ~= "0" then n = n .. " " .. r.amt end
+    names[#names + 1] = n
+  end
+  local key, name = #ids > 0 and table.concat(ids, ",") or "~none", #names > 0 and table.concat(names, " > ") or "No queue"
+  if tagged then
+    local full = {}
+    for _, r in ipairs(rows) do full[#full + 1] = r.id .. ":" .. r.amt end
+    key, name = "tag|" .. table.concat(full, ","), "From name: " .. name
+  end
+  return key, name
+end
+try("queueGroup selftest", function()
+  local k, n = queueGroup({ { id = "ITEM_NickelOre", amt = "100" }, { id = "ITEM_TitaniumOre", amt = "50" } })
+  assert(k == "ITEM_NickelOre,ITEM_TitaniumOre" and n:find(" > ", 1, true))
+  local k2, n2 = queueGroup({})
+  assert(k2 == "~none" and n2 == "No queue")
+  L("queueGroup selftest ok")
+end)
+try("parseQueue selftest", function()
+  local r = parseQueue("ITEM_A:1, ITEM_B:")
+  assert(#r == 2 and r[1].id == "ITEM_A" and r[1].amt == "1" and r[2].amt == "" and #parseQueue("") == 0)
+  L("parseQueue selftest ok")
+end)
+local PRE = M.DATA .. "Presets.txt"
+local function presetLoad()
+  local out = {}
+  for _, l in ipairs(rdlines(PRE) or {}) do
+    local a, b = l:match("^([^|]*)|(.*)$")
+    if a and trim(a) ~= "" then out[#out + 1] = { name = trim(a), q = trim(b) } end
+  end
+  return out
+end
+local function presetStore(list)
+  local lines = {}
+  for _, p in ipairs(list) do lines[#lines + 1] = p.name .. "|" .. p.q end
+  if not wrlines(PRE, lines) then L("FAIL presets write") end
+end
+local function presetAuto(list)
+  local used = {}
+  for _, p in ipairs(list) do used[p.name] = true end
+  local n = 1
+  while used["Preset " .. n] do n = n + 1 end
+  return "Preset " .. n
+end
+itemsLoad = function()
   if not S.sid or not S.q then return end
   local lines = rdlines(INI) or {}
-  local sec, glob = iniGet(lines, "ship." .. S.sid), iniGet(lines, nil)
-  local rows = {}
-  if sec.items ~= nil then
-    for entry in (sec.items .. ","):gmatch("([^,]*),") do
-      local id, amt = entry:match("^(.*):([^:]*)$")
-      if id then rows[#rows + 1] = { id = trim(id), amt = trim(amt) } end
-    end
-  else  -- migration: old single resource/amount becomes row 1
-    local res = sec.resource or glob.resource or ""
-    if res ~= "" then rows[1] = { id = res, amt = sec.amount or glob.amount or "" } end
+  local sec1, glob = iniGet(lines, "ship." .. S.sid), iniGet(lines, nil)
+  local ids = targets()
+  local tags = taggedShips()
+  local function rowsOf(id)
+    if tags[id] then return tags[id], true end
+    local sec = iniGet(lines, "ship." .. id)
+    if sec.items ~= nil then return parseQueue(sec.items), false end
+    return {}, false
   end
-  S.q.rows, S.q.shown = rows, {}
-  if sec.items == nil and #rows > 0 then qSave() end
+  local flat = {}
+  if not S.all then
+    local rows, locked = rowsOf(S.sid)
+    local migrate = false
+    if not locked and sec1.items == nil then  -- migration: old single resource/amount becomes row 1
+      local res = sec1.resource or glob.resource or ""
+      if res ~= "" then rows[1] = { id = res, amt = sec1.amount or glob.amount or "" }; migrate = true end
+    end
+    local key, name = queueGroup(rows, locked)
+    local g = { key = key, name = name, rows = rows, ids = { S.sid }, locked = locked }
+    S.q.single, S.q.rows = g, rows
+    for r = 1, #rows do flat[#flat + 1] = { k = "row", g = g, i = r } end
+    if migrate then qSave(g) end
+  else
+    local by, ships = {}, {}
+    for _, id in ipairs(ids) do
+      local rows, locked = rowsOf(id)
+      local key, name = queueGroup(rows, locked)
+      local g = by[key]
+      if not g then g = { key = key, name = name, rows = rows, ids = {}, locked = locked }; by[key] = g end
+      g.ids[#g.ids + 1] = id
+      ships[#ships + 1] = { id = id, key = key }
+    end
+    S.q.single, S.q.rows = nil, {}
+    local fold = S.itemsFold or {}
+    for _, h in ipairs(groupList(ships, function(s) return s.key end, function(k) return by[k] and by[k].name or k end, fold)) do
+      if h.k == "hdr" then
+        local g = by[h.key]
+        flat[#flat + 1] = { k = "hdr", g = g, name = h.name, count = h.count, folded = h.folded }
+        if not h.folded then for r = 1, #g.rows do flat[#flat + 1] = { k = "row", g = g, i = r } end end
+      end
+    end
+  end
+  S.q.flat, S.q.shown = flat, {}
   qRender()
 end
 local function itemsTick()
   if not S.sid or not S.q or M.lastTab ~= 2 then return end
-  local rows = S.q.rows
-  for r = 1, #rows do
-    local rec = S.dyn and S.dyn.Items and S.dyn.Items.ents[r]
+  local flat = S.q.flat or {}
+  for r = 1, #flat do
+    local en = flat[r]
+    local rec = en.k == "row" and not en.g.locked and S.dyn and S.dyn.Items and S.dyn.Items.ents[r]
     local e = rec and rec.find("Edt_Amount")
     local s, v = false, nil
     if e and reading() then s, v = pcall(function() return e:GetText() end) end
@@ -986,8 +1127,8 @@ local function itemsTick()
         S.q.shown[r] = t
         local n = tonumber(t)
         if n and n == math.floor(n) and n >= 0 then
-          rows[r].amt = t
-          qSave()
+          en.g.rows[en.i].amt = t
+          qSave(en.g)
           if S.q.err then S.q.err = nil; M.setText("Txt_Status", "") end
         else
           S.q.err = true; M.setText("Txt_Status", "error: amount must be an integer >= 0")
@@ -1925,6 +2066,7 @@ local function applyAll(set, name)
   M.lastAll, M.lastSet, M.lastSetName = true, set, name
   M.setText("Txt_Title", "Mining Unit - " .. name)
   M.setText("Txt_SelRemote", name)
+  try("itemsLoad", itemsLoad)
   paintAllUi()
   refresh()
 end
@@ -2149,8 +2291,81 @@ function M.open(ship)
       bind("Btn_BeltWarp", function() sendCmd("warp_belt") end)  -- single ship (S.sid), not sendSeq: All-ships must not fan out
       M.setBtnText("Btn_BeltWarp", "Warp to sector")
       bind("Btn_ItemAdd", function()
-        local rows = S.q.rows
-        rows[#rows + 1] = { id = "", amt = "" }; qSave(); qRender()
+        local g = S.q and S.q.single
+        if S.all or not g or g.locked then return end
+        g.rows[#g.rows + 1] = { id = "", amt = "" }; qSave(g); itemsLoad()
+      end)
+      -- presets: Presets.txt "<name>|<ITEM_x:amt,...>"
+      local function curGroups()
+        local out, seen = {}, {}
+        for _, e in ipairs(S.q.flat or {}) do if not seen[e.g] then seen[e.g] = true; out[#out + 1] = e.g end end
+        if #out == 0 and S.q.single then out[1] = S.q.single end
+        return out
+      end
+      local function applyTo(preset, groups)
+        local done, skipped = 0, 0
+        for _, g in ipairs(groups) do
+          if g.locked then skipped = skipped + #g.ids
+          else
+            local rows = parseQueue(preset.q)
+            g.rows = rows; qSave(g); done = done + #g.ids
+          end
+        end
+        itemsLoad()
+        M.setText("Txt_Status", "preset applied to " .. done .. " ships" .. (skipped > 0 and (", " .. skipped .. " skipped (name tags)") or ""))
+      end
+      bind("Btn_PresetSave", function()
+        local groups = curGroups()
+        local function save(g)
+          if not g or #g.rows == 0 then M.setText("Txt_Status", "error: no queue to save"); return end
+          local list = presetLoad()
+          local name = ""
+          local e = w("Edt_PresetName")
+          if e and reading() then local s, v = pcall(function() return e:GetText() end); if s then name = trim(fstr(v)) end end
+          if name == "" then name = presetAuto(list) end
+          name = name:gsub("|", "/")
+          local q = qSerialize(g.rows)
+          local found
+          for _, p in ipairs(list) do if p.name == name then p.q = q; found = true end end
+          if not found then list[#list + 1] = { name = name, q = q } end
+          presetStore(list)
+          if e then try("preset name clear", function() e:SetText(FText("")) end) end
+          M.setText("Txt_Status", "preset saved: " .. name)
+        end
+        if #groups > 1 then
+          local opts = {}
+          for i, g in ipairs(groups) do opts[#opts + 1] = { id = i, text = g.name .. " (" .. #g.ids .. ")" } end
+          modalSelect{ title = "Save preset from", options = opts, onPick = function(id) save(groups[id]) end }
+        else save(groups[1]) end
+      end)
+      bind("Btn_PresetApply", function()
+        local list = presetLoad()
+        if #list == 0 then M.setText("Txt_Status", "no presets saved"); return end
+        local opts = {}
+        for _, p in ipairs(list) do opts[#opts + 1] = { id = p.name, text = p.name } end
+        modalSelect{ title = "Apply preset", options = opts, onPick = function(name)
+          local pr
+          for _, p in ipairs(list) do if p.name == name then pr = p end end
+          if not pr then return end
+          local groups = curGroups()
+          if S.all and #groups > 1 then
+            local o2 = { { id = 0, text = "All in this view" } }
+            for i, g in ipairs(groups) do o2[#o2 + 1] = { id = i, text = g.name .. " (" .. #g.ids .. ")" } end
+            modalSelect{ title = "Apply to", options = o2, onPick = function(id) applyTo(pr, id == 0 and groups or { groups[id] }) end }
+          else applyTo(pr, groups) end
+        end }
+      end)
+      bind("Btn_PresetDel", function()
+        local list = presetLoad()
+        if #list == 0 then M.setText("Txt_Status", "no presets saved"); return end
+        local opts = {}
+        for _, p in ipairs(list) do opts[#opts + 1] = { id = p.name, text = p.name } end
+        modalSelect{ title = "Delete preset", options = opts, onPick = function(name)
+          local keep = {}
+          for _, p in ipairs(list) do if p.name ~= name then keep[#keep + 1] = p end end
+          presetStore(keep)
+          M.setText("Txt_Status", "preset deleted")
+        end }
       end)
       bind("Btn_ApplyGlobal", opDefault)
     else

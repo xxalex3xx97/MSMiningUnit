@@ -226,6 +226,26 @@ namespace
         return t; }
     // WHAT: a dock with 2+ ore tags is invalid (user rule 2026-11-19: one ore, one filter per dock). Clears its ore tags and [AUTO-FILTER] so it is never paired or filtered; returns true when it was invalid (caller logs once). [MISC] is untouched.
     bool dock_tag_invalidate(DockTag& t) { if (t.ores.size() < 2) return false; t.ores.clear(); t.autof = false; return true; }
+    // WHAT: ship NAME tags -> ordered {ore index, amount} (amount 0 = until cargo full). [TITANIUM] [TITANIUM:200] [Titanium : 200]; ore words as dock tags; unknown words skipped; non-numeric/empty amount = 0 (tag kept); a repeated ore is dropped (first wins).
+    std::vector<std::pair<int, int>> ship_tags_parse(const std::string& name) {
+        std::vector<std::pair<int, int>> out; size_t p = 0;
+        while ((p = name.find('[', p)) != std::string::npos) {
+            const size_t e = name.find(']', p + 1);
+            if (e == std::string::npos) break;
+            const std::string body = name.substr(p + 1, e - p - 1);
+            const size_t c = body.find(':');
+            const std::string w = tag_norm(c == std::string::npos ? body : body.substr(0, c));
+            std::string a = c == std::string::npos ? std::string() : trim(body.substr(c + 1));
+            const int amt = (!a.empty() && a.find_first_not_of("0123456789") == std::string::npos) ? to_int(a, 0) : 0;
+            for (int i = 0; i < N_ORE; ++i)
+                if (w == tag_norm(ORE_KEY[i])) { bool dup = false; for (const auto& q : out) if (q.first == i) dup = true; if (!dup) out.push_back({i, amt}); break; }
+            p = e + 1; }
+        return out; }
+    // WHAT: ship display name per ship id (UTF-8), filled each scan by mine_set_bench; eff_cfg reads it for name tags.
+    std::map<int, std::string> g_ship_names;
+    // WHAT: "ITEM_NickelOre:100,ITEM_TitaniumOre:50" for a tag list ("" when empty). Same format as the INI items= key.
+    std::string ship_tags_items(const std::vector<std::pair<int, int>>& t) {
+        std::string s; for (const auto& q : t) s += (s.empty() ? "" : ",") + std::string(ORE_ITEM[q.first]) + ":" + std::to_string(q.second); return s; }
     // WHAT: misc = [MISC]-tagged docks then manual misc picks; an ore with an empty list uses misc. Ore lists = tagged docks first (id order), then the manual picks not already there. A [MISC] dock is never an ore-tag dock.
     void apply_dock_tags(Config& c) {
         // [REFUEL] docks (not also [PARKING]) are refuel-only: never an ore/misc target
@@ -350,6 +370,7 @@ namespace
         Config c = g_cfg;
         auto it = g_ship_kv.find(sid);
         if (it != g_ship_kv.end()) apply_kv(c, it->second, true);
+        { const auto nm = g_ship_names.find(sid); if (nm != g_ship_names.end()) { const auto tg = ship_tags_parse(nm->second); if (!tg.empty()) { c.items.clear(); for (const auto& q : tg) c.items.push_back({ORE_ITEM[q.first], q.second}); c.has_items = true; } } }   // name tags replace the INI queue (INI untouched)
         if (c.has_items)
         {
             if (c.items.empty()) { c.resource.clear(); c.amount = 0; }

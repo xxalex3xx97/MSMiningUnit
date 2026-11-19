@@ -2,6 +2,7 @@
 // WHAT: dock name tags ([TITANIUM], [MISC], [AUTO-FILTER], [PARKING], [REFUEL], [HYDROGEN], [DEUTERIUM], [WARP]) read from the dock walk. dock_tags_refresh fills g_dock_tags and writes DockTags.txt and DockFilter.txt next to the dll when their content changed.
 //   DockTags.txt  line: "<id>|<ores>|<misc>|<autofilter>|<park>|<refuel>|<fuelmask>"  (7 columns, refuel 0/1, fuelmask H=1 D=2 W=4, 0 = all; ores = comma keys, misc/autofilter/park 0/1; read by the Lua window)
 //   DockFilter.txt line: "<id>|<ITEM_xxx>"  (read by MiningUnitUI main.lua, which calls MSCore set_dock_filter)
+//   ShipTags.txt  line: "<ship id>|<ITEM_x:amt,ITEM_y:amt>"  (ships whose name carries >=1 ore tag; amt 0 = until full; tag order; written by ship_tags_write; read by the Lua Items tab)
 // WHY separate: the tag walk is its own rule set; it stays out of write_lists (docks.txt).
 // DEPENDS ON: mb_common (alive, log_line, get_dll_dir, write_atomic, u8, widen, STR), mb_ue (obj_id), mb_docks (dock_name), mb_logic (DockTag, dock_tag_parse, autofilter_pairs, g_cfg, g_ship_kv, apply_kv, ORE_KEY, ORE_ITEM).
 // USED BY: dllmain.cpp (tick_work, after write_lists).
@@ -54,5 +55,20 @@ namespace
         }
         catch (const std::exception& e) { log_line(STR("dock tags failed: ") + widen(e.what())); }
         catch (...) { log_line(STR("dock tags failed (unknown)")); }
+    }
+
+    // WHAT: ShipTags.txt next to the dll, one line per ship whose NAME carries >=1 ore tag: "<ship id>|<ITEM_x:amt,ITEM_y:amt>" (amount 0 = until full; tag order). Written only when the text changed (and once at start so a stale file is replaced). Read by the Lua Items tab (locked rows).
+    void ship_tags_write()
+    {
+        try
+        {
+            std::string tx;
+            for (const auto& kv : g_ship_names) { const auto t = ship_tags_parse(kv.second); if (!t.empty()) tx += std::to_string(kv.first) + "|" + ship_tags_items(t) + "\n"; }
+            static bool first = true; static std::string last;
+            if (first || tx != last) { write_atomic(get_dll_dir() / "ShipTags.txt", tx); log_line(STR("SHIP TAGS: ") + std::to_wstring(std::count(tx.begin(), tx.end(), '\n')) + STR(" tagged ships")); last = tx; }
+            first = false;
+        }
+        catch (const std::exception& e) { log_line(STR("ship tags failed: ") + widen(e.what())); }
+        catch (...) { log_line(STR("ship tags failed (unknown)")); }
     }
 }

@@ -3680,6 +3680,7 @@ namespace
         save_rock_picks().erase(sid);
         for (auto it = g_pick_cache.begin(); it != g_pick_cache.end();) it = it->first.first == sid ? g_pick_cache.erase(it) : std::next(it);
         g_bench_names.erase(sid);
+        g_ship_names.erase(sid);
         log_line(STR("ship ") + std::to_wstring(sid) + STR(" ") + name + STR(" destroyed, removed"));
     }
 
@@ -3694,6 +3695,7 @@ namespace
                 std::wstring n = obj_display(p.first);
                 if (n.empty()) n = p.first->GetName();
                 g_bench_names[p.second] = n;
+                g_ship_names[p.second] = u8(n);
             }
         std::vector<int> ids;
         for (const auto& p : bench) if (p.second > 0) ids.push_back(p.second);
