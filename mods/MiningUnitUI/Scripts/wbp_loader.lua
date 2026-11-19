@@ -36,7 +36,7 @@ local NAMES = { "Panel", "PageSwitcher", "Page_Ship", "Page_Items", "Page_Operat
   "Pnl_ModalHeadG", "Pnl_ModalHeadP", "Txt_ModalTitleG", "Btn_ModalCloseG", "Row_ModalCardScroll", "Row_ModalScroll",
   "Btn_TabShip", "Btn_TabItems", "Btn_TabOperation", "Btn_LoopStart", "Btn_LoopStop",
   "Txt_StatusAction", "PB_Cargo", "Txt_CargoPct", "Txt_Speed", "Txt_NextState", "Txt_Status",
-  "Txt_Eta", "Btn_EmergencyStop", "Txt_EmergencyStop", "Btn_Dock", "Btn_Undock", "Btn_Refuel", "Btn_Unload", "Btn_Collect", "Txt_Collect", "Btn_RemoteAll", "Pnl_AllWarn", "Txt_AllWarn",
+  "Txt_Eta", "Btn_EmergencyStop", "Txt_EmergencyStop", "Btn_Dock", "Btn_Undock", "Btn_Refuel", "Btn_Unload", "Btn_Collect", "Txt_Collect", "Btn_Park", "Txt_Park", "Btn_RemoteAll", "Pnl_AllWarn", "Txt_AllWarn",
   "Txt_TabLog", "Pnl_PageLog", "Txt_LogHint", "Row_LogScroll", "Row_StatusMine", "Txt_StatusMine", "Img_StatusOre", "Pnl_LogAll", "Row_LogAllScroll",
   "Btn_TabDocks", "Txt_TabDocks", "Pnl_PageDocks", "Txt_DocksHdr", "Row_DocksScroll" }
 -- Mining line of every card (Card/Fleet): label + ore icon + ore name; log card pool (Pnl_LogCard_<f>, LOGCARD_ROWS lines each)
@@ -118,7 +118,7 @@ local function rootW()
 end
 -- Only these python-built names (add_docks_tab.py, add_btn_collect.py) ever use the tree lookup. Every other missing name returns nil at once.
 local WALK_NAMES = { Btn_TabDocks = true, Txt_TabDocks = true, Pnl_PageDocks = true, Txt_DocksHdr = true, Row_DocksScroll = true,
-  Dyn_Docks = true, Btn_DocksHelp = true, Pnl_DocksLegend = true, Btn_Collect = true, Txt_Collect = true,
+  Dyn_Docks = true, Btn_DocksHelp = true, Pnl_DocksLegend = true, Btn_Collect = true, Txt_Collect = true, Btn_Park = true, Txt_Park = true,
   Pnl_UDockCard_Misc = true, Btn_UDockAdd_Misc = true,
   Pnl_UDockCard_Park = true, Btn_UDockAdd_Park = true }
 local WALK_NODES = 2600   -- hard cap of one index walk
@@ -544,7 +544,7 @@ local function idList(s)
   for id in (s or ""):gmatch("[^,]+") do id = trim(id); if id ~= "" then out[#out + 1] = id end end
   return out
 end
--- dock id -> " [Unload: A, B] [Refuel: C]" from every bench ship's unload_docks_<ini> lists, refuel_docks, refuel_dock_id (ship section, else global); our UI only
+-- dock id -> number of bench ships whose lists contain it (our UI only)
 local function dockTags()
   local lines = rdlines(INI) or {}
   local glob = iniGet(lines, nil)
@@ -553,10 +553,9 @@ local function dockTags()
     local sec = iniGet(lines, "ship." .. o.id)
     local seen = {}
     local function add(dk, role)
-      if dk == "" or seen[role .. dk] then return end
-      seen[role .. dk] = true
-      by[dk] = by[dk] or { Unload = {}, Refuel = {}, Misc = {}, Park = {} }
-      table.insert(by[dk][role], o.text)
+      if dk == "" or seen[dk] then return end
+      seen[dk] = true
+      by[dk] = (by[dk] or 0) + 1
     end
     for _, u in ipairs(UD_ORES) do for _, dk in ipairs(idList(sec["unload_docks_" .. u.ini])) do add(dk, "Unload") end end
     for _, dk in ipairs(idList(sec["unload_docks_" .. UD_MISC.ini])) do add(dk, "Misc") end
@@ -565,15 +564,7 @@ local function dockTags()
     local rid = sec.refuel_dock_id; if rid == nil then rid = glob.refuel_dock_id or "" end
     add(trim(rid), "Refuel")
   end
-  local out = {}
-  for dk, r in pairs(by) do
-    local s = ""
-    for _, role in ipairs({ "Unload", "Misc", "Park", "Refuel" }) do
-      if #r[role] > 0 then s = s .. " [" .. role .. ": " .. table.concat(r[role], ", ") .. "]" end
-    end
-    out[dk] = s
-  end
-  return out
+  return by
 end
 -- DockTags.txt (C++ mb_docktags.hpp): "<dock id>|<ore keys comma>|<misc 0/1>|<autofilter 0/1>|<park 0/1>". Returns ore key (= u.ini) -> ids of docks tagged for it (locked rows); key "misc" = [MISC] docks (never ore-tagged); key "park" = [PARKING] docks.
 local function taggedDocks()
@@ -595,6 +586,7 @@ local function taggedDocks()
   end
   return by
 end
+local function shipCount(n) return n and (" - " .. n .. (n == 1 and " ship" or " ships")) or "" end
 local function loadDocks()
   local tags = dockTags()
   local out = {}
@@ -603,7 +595,7 @@ local function loadDocks()
     local cls = p[4] or ""
     if p[1] and p[1] ~= "" and cls:find("Dock", 1, true) and not cls:find("Abandoned", 1, true) and not cls:find("NPC", 1, true) and not cls:find("ShipBlockDock", 1, true) then   -- ShipBlockDock = dock block on a ship: a ship cannot dock to a ship
       local name = trim(p[2] or ""); if name == "" then name = trim(p[5] or "") end; if name == "" then name = trim(p[3] or "") end
-      out[#out + 1] = { id = trim(p[1]), text = name .. " (" .. trim(p[1]) .. ")" .. (tags[trim(p[1])] or "") }
+      out[#out + 1] = { id = trim(p[1]), text = name .. " (" .. trim(p[1]) .. ")" .. shipCount(tags[trim(p[1])]) }
     end
   end
   table.sort(out, function(a, b) return a.text:lower() < b.text:lower() end)
@@ -760,6 +752,29 @@ function dynDocks(name, getList, save, title, docks, cardName, getLocked)
 end
 -- Ship tab dock lists. S.ud[<ini>] = unload dock ids of the ore, S.rd = refuel dock ids (this ship; All ships = first ship of the set).
 -- Every ore has a dock card. An ore unloads when its list is not empty. Warning = no ore has a dock (not in All ships mode).
+local HELP_CARDS = {}
+for _, u in ipairs(UD_ORES) do
+  HELP_CARDS[#HELP_CARDS + 1] = { key = u.k, card = "Pnl_UDockCard_" .. u.k, nice = (u.k == "WaterIce" and "Water Ice" or u.k), tag = u.k:upper() }
+end
+HELP_CARDS[#HELP_CARDS + 1] = { key = "RDock", card = "Pnl_RDockCard", nice = "Refuel", refuel = true }
+HELP_CARDS[#HELP_CARDS + 1] = { key = "Misc", card = "Pnl_UDockCard_Misc", nice = "Misc", tag = "MISC" }
+HELP_CARDS[#HELP_CARDS + 1] = { key = "Park", card = "Pnl_UDockCard_Park", nice = "Parking", tag = "PARKING" }
+local function helpLines(h)
+  local t
+  if h.refuel then
+    t = { "Name a dock [REFUEL] to use it as a refuel dock.", "Add [HYDROGEN] [DEUTERIUM] [WARP] for the fuels it supplies.", "No fuel tag = all fuels.", "Or press Add dock to pick one by hand." }
+  elseif h.key == "Misc" then
+    t = { "Name a dock [MISC] for leftover cargo.", "Misc docks are used last, after the ore docks.", "Or press Add dock to pick one by hand." }
+  elseif h.key == "Park" then
+    t = { "Name a dock [PARKING] to park ships there (idle, queue, stop loop).", "Or press Add dock to pick one by hand." }
+  else
+    t = { "Name a dock [" .. h.tag .. "] and it is used for " .. h.nice .. " automatically.", "Add [AUTO-FILTER] to the name and the dock filter is set too.",
+      "Tagged docks show here locked (rename the dock to change).", "Or press Add dock to pick one by hand." }
+  end
+  local out = {}
+  for i, line in ipairs(t) do out[i] = { id = tostring(i), text = line } end
+  return out
+end
 local function udRender()
   if not S.ud then return end
   local docks, nodock = S.docks or {}, 0
@@ -1205,9 +1220,10 @@ local ACT_BTNS = {
   Btn_Undock = { cmd = "undock", label = "undock" },
   Btn_Refuel = { cmd = "dock_refuel", label = "refuel" },
   Btn_Unload = { cmd = "dock_mining", label = "unload" },
+  Btn_Park = { cmd = "park", label = "park" },
   Btn_Collect = { cmd = "collect_ore", label = "collect ore" },
 }
-local ACT_ORDER = { "Btn_Dock", "Btn_Undock", "Btn_Refuel", "Btn_Unload", "Btn_Collect" }
+local ACT_ORDER = { "Btn_Dock", "Btn_Undock", "Btn_Refuel", "Btn_Unload", "Btn_Park", "Btn_Collect" }
 -- MiningStatusX 'job' value -> button to keep amber + status text (job none/absent/unknown = no entry)
 local JOB = {
   dock = { btn = "Btn_Dock", txt = "Docking" },
@@ -1228,7 +1244,6 @@ local function paintAct(lit)
 end
 
 -- ===== Log tab: MiningLog.txt lines "<ship id>|<hh:mm:ss>|<text>" (oldest first per ship, C++ keeps 20 per ship) =====
-local LOGN = 60  -- must equal the Txt_Log_1..N rows in the WBP (gen_paste)
 -- destroyed ships (C++ session record): header row "<id>|name|<name> (destroyed)" -> dn[id]; their lines are normal rows.
 local function logLoad()
   local out, dn = {}, {}
@@ -1249,8 +1264,11 @@ local function logNewest(lines, sid)  -- this ship's lines, newest first
   table.sort(sel, function(a, b) if a.t ~= b.t then return a.t > b.t end return a.i > b.i end)
   return sel
 end
+local shipStatus  -- defined below
+local function logFw(f, name) S.logFw = S.logFw or {}; local k = name; if not ok(S.logFw[k]) then local c = w("Pnl_LogCard_" .. f); S.logFw[k] = c and deepFind(c, name) or false end; return S.logFw[k] or nil end
 local function logPaintAll(lines, dn)
-  local rows, cards, key = S.fleet and S.fleet.rows or {}, {}, {}
+  local rows, cards, key = (S.all and S.fleet and S.fleet.rows) or (function() local r = benchShips(); for _, o in ipairs(r) do shipStatus(o) end return r end)(), {}, {}
+  local anyOn = false
   -- destroyed ships (not on the bench) take the free cards after the bench ships: log view only, never in the selector, cards or fan-out
   local bench, gone = {}, {}
   for _, o in ipairs(benchShips()) do bench[o.id] = true end
@@ -1264,13 +1282,19 @@ local function logPaintAll(lines, dn)
       sid = table.remove(gone, 1)
       c = { on = true, name = dn[sid], status = "Destroyed (not selectable)", lines = {} }
     end
-    if sid then
+    c.sid = sid
+    S.logSid = S.logSid or {}; S.logSid[f] = sid
+    c.fold = sid and S.logFold and S.logFold[sid] or false
+    if sid and not c.fold then
       local sel = logNewest(lines, sid)
       for r = 1, math.min(#sel, LOGCARD_ROWS) do c.lines[r] = sel[r].t .. " " .. sel[r].text end
     end
+    if c.on then anyOn = true end
     cards[f] = c
-    key[#key + 1] = c.name .. "|" .. c.status .. "\n" .. table.concat(c.lines, "\n")
+    key[#key + 1] = c.name .. "|" .. c.status .. (c.fold and "|F" or "") .. "\n" .. table.concat(c.lines, "\n")
   end
+  M.setText("Txt_LogHint", "No log yet")
+  setVis(w("Txt_LogHint"), anyOn and 1 or 0)
   key = "A" .. table.concat(key, "\n#\n")
   if key == S.logKey then return end
   S.logKey = key
@@ -1278,6 +1302,8 @@ local function logPaintAll(lines, dn)
     local c = cards[f]
     setVis(w("Pnl_LogCard_" .. f), c.on and 0 or 1)
     if c.on then M.setText("Txt_LogCardName_" .. f, c.name); M.setText("Txt_LogCardStatus_" .. f, c.status) end
+    setVis(logFw(f, "Lbl_LogFoldUp_" .. f), c.fold and 1 or 0)
+    setVis(logFw(f, "Lbl_LogFoldDn_" .. f), c.fold and 0 or 1)
     for r = 1, LOGCARD_ROWS do
       local t = c.lines[r]
       setVis(w("Txt_LogCard_" .. f .. "_" .. r), t and 0 or 1)
@@ -1286,26 +1312,10 @@ local function logPaintAll(lines, dn)
   end
 end
 local function logPaint()
-  local all = S.all and true or false
-  setVis(w("Row_LogScroll"), all and 1 or 0)
-  setVis(w("Pnl_LogAll"), all and 0 or 1)
+  setVis(w("Row_LogScroll"), 1)
+  setVis(w("Pnl_LogAll"), 0)
   local lines, dn = logLoad()
-  if all then setVis(w("Txt_LogHint"), 1); return logPaintAll(lines, dn) end
-  local rows = {}
-  for k, e in ipairs(logNewest(lines, tostring(S.sid))) do
-    if k > LOGN then break end
-    rows[k] = e.t .. "  " .. e.text
-  end
-  local key = "S" .. table.concat(rows, "\n")
-  if key == S.logKey then return end
-  S.logKey = key
-  L("logPaint rows=" .. #rows .. " sid=" .. tostring(S.sid))
-  dynList{ key = "Log", anchor = "Row_LogScroll", box = "Dyn_Log", n = #rows, paint = function(e, _, i)
-    local s2, t = pcall(function() return e.WidgetTree.RootWidget end)   -- the row's root widget is the TextBlock itself
-    if s2 and ok(t) then try("log text", function() t:SetText(FText(rows[i])) end) end
-  end }
-  M.setText("Txt_LogHint", "No log yet")
-  setVis(w("Txt_LogHint"), #rows == 0 and 0 or 1)
+  return logPaintAll(lines, dn)
 end
 
 -- ===== Docks tab: NetDocks.txt / NetShips.txt (C++, every second). Rows = docks in a bench ship's unload/refuel lists (dockTags), by name.
@@ -1576,6 +1586,7 @@ function M.close()
   S.pend, S.arm, S.estop, S.etaS, S.etaKind = nil, nil, nil, nil, nil
   S.req, S.simple = nil, nil
   S.fleet, S.holoOut, S.tc = nil, nil, nil
+  S.logFold, S.logFw, S.logSid = nil, nil, nil
   S.ud, S.rd, S.warn, S.dyn, S.dynWarn = nil, nil, nil, nil, nil
   if not (S.root or S.p or S.frame) then return end
   if M.closing and os.clock() - (M.closing_at or 0) < 3 then return end   -- already closing: idempotent (a teardown lost for 3 s is ignored)
@@ -1683,7 +1694,7 @@ local function shipIcons()  -- ship id -> hologram texture. Own off-screen fleet
   S.holoOut, S.holoT = out, os.clock()
   return out
 end
-local function shipStatus(o)  -- fills status/cargo/skey/mine/next from MiningStatus(X) (cheap, no icon work)
+function shipStatus(o)  -- fills status/cargo/skey/mine/next from MiningStatus(X) (cheap, no icon work)
   local st = readStatus(o.id)
   local job = st.job and JOB[st.job]
   o.status = job and job.txt or ACTION[st.simple] or "Idle"
@@ -1890,6 +1901,7 @@ function M.open(ship)
     S.root, S.w, S.p, S.ship = wbp, wbp, p, ship
     S.mode, S.t0 = mode, os.clock()
     S.logKey = nil   -- new widgets: repaint the Log tab on the first tick
+    S.logFold, S.logFw, S.logSid = nil, nil, nil
     S.docksKey = nil
     S.wc, S.wbuilt = nil, nil   -- new window: the python-built index is walked once again (lazily)
     -- ship list = bench ships; sid = block's ship if listed, else last picked (F4), else first; empty list = nil
@@ -1943,6 +1955,7 @@ function M.open(ship)
       end
       for i, n in ipairs(TABS) do bind(n, function() M.setTab(i) end) end
       bind("Btn_Close", M.close)
+      for f = 1, FN do local b = logFw(f, "Btn_LogFold_" .. f); if b then try("bind fold", function() BIND.onClick(b, function() local sid = S.logSid and S.logSid[f]; if not sid then return end; S.logFold = S.logFold or {}; S.logFold[sid] = not S.logFold[sid]; S.logKey = nil; logPaint() end) end) end end
       bind("Btn_DocksHelp", function()   -- legend panel of the Docks tab: show / hide
         local lg = w("Pnl_DocksLegend"); if lg then local okv, v = pcall(function() return lg:GetVisibility() end); setVis(lg, (okv and v == 0) and 1 or 0) end
       end)
@@ -1977,6 +1990,10 @@ function M.open(ship)
       bind("Btn_RDockAdd", function()
         modalSelect{ title = "Refuel dock", options = S.docks or {}, onPick = function(id) table.insert(S.rd, id); udSave() end }
       end)
+      for _, h in ipairs(HELP_CARDS) do
+        local c = w(h.card); local b = c and deepFind(c, "Btn_DockHelp_" .. h.key)
+        if b then try("bind help", function() BIND.onClick(b, function() modalSelect{ title = h.nice .. " docks - how to", options = helpLines(h) } end) end) end
+      end
       selInit("Belt", bind, function(id) S.last.belt = id; iniSave({ belt_sector = id }); shipFill() end, "Sector Selector", function(o) return { cols = o.cols, ores = o.ores } end, loadSectors, function() return { "Sector", "ID", "Distance" } end)
       bind("Btn_BeltPinned", function()
         local p = rdlines(M.DATA .. "MiningPinned.txt")
