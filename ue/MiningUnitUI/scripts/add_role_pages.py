@@ -46,7 +46,7 @@ def head(w, row, parent, prefix):
 def role_card(w, parent, role, letter, fields):
     c = 'Rl' + role
     p = _vb(w, 'Pnl_' + c, parent, var=True, pad=(0, 0, 5, 0), fill=1.0, h='Fill', v='Fill')
-    box(w, 'Bx_' + c, 'Pnl_' + c, TITLES[role], 'Txt_%sTitle' % c)
+    box(w, 'Bx_' + c, 'Pnl_' + c, TITLES[role], 'Txt_%sTitle' % c, INSET, 5)
     inn = 'Bx_%s_In' % c
     _hb(w, 'Row_%sTop' % c, inn)
     _ship_img(w, 'Img_%sHolo' % c, 'Row_%sTop' % c, 47)

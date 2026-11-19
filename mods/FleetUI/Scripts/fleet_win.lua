@@ -326,7 +326,7 @@ function M.open()
   S.map, S.miss, S.modal, S.dyn = nil, {}, nil, nil
   try("AddToViewport", function() wbp:AddToViewport(Z) end)
   buildMap()
-  for _, n in ipairs({ "PageSwitcher", "Btn_FlClose", "Btn_TabFleet", "Btn_TabRole", "Btn_TabEscort", "Pnl_PageFleet", "Pnl_PageRole", "Pnl_PageEscort", "Pnl_FleetLeft", "Pnl_FleetStatus" }) do
+  for _, n in ipairs({ "PageSwitcher", "Btn_FlClose", "Btn_TabFleet", "Btn_TabRole", "Btn_TabEscort", "Pnl_PageFleet", "Pnl_PageRole", "Pnl_PageEscort" }) do
     if not w(n) then L("FAIL widget missing " .. n) end
   end
 

@@ -21,10 +21,9 @@ local ESC_DIST_DEF = 300
 -- every find() name used in this file (spec sections 2-4). scripts/*.py must generate each one.
 M.NAMES = {
   "PageSwitcher", "Btn_FlClose", "Btn_TabFleet", "Btn_TabRole", "Btn_TabEscort", "Txt_TabFleet", "Txt_TabRole", "Txt_TabEscort",
-  "Pnl_PageFleet", "Pnl_PageRole", "Pnl_PageEscort", "Pnl_FleetLeft", "Pnl_FleetStatus",
+  "Pnl_PageFleet", "Pnl_PageRole", "Pnl_PageEscort",
   "Pnl_Modal", "Txt_ModalTitle", "Btn_ModalClose", "Btn_ModalOutside", "Opt_Modal_1", "Txt_ModalC1_1",
-  "Sel_FlGroup", "Txt_SelFlGroup", "Btn_FlEmergencyStop", "Btn_FlStart", "Btn_FlHold",
-  "Btn_FlDock", "Btn_FlUndock", "Btn_FlRefuel", "Btn_FlRecallL",
+  "Sel_FlGroup", "Txt_SelFlGroup", "Btn_FlEmergencyStop", "Btn_FlStart", "Btn_FlUndock", "Btn_FlRefuel",
   "Txt_FlMainTitle",
   "Btn_FlClsAll", "Btn_FlClsMiner", "Btn_FlClsHauler", "Btn_FlClsFighter", "Btn_FlClsFrigate", "Btn_FlClsCapital",
   "Txt_FlClsCntAll", "Txt_FlClsCntMiner", "Txt_FlClsCntHauler", "Txt_FlClsCntFighter", "Txt_FlClsCntFrigate", "Txt_FlClsCntCapital",
@@ -39,9 +38,6 @@ M.NAMES = {
   "Btn_FlEHold", "Btn_FlESend", "Btn_FlEUnselect",
   "Img_FeHolo", "Txt_FeName", "Bdr_FeChip", "Txt_FeRole", "Txt_FeDoing", "PB_FeHull", "Txt_FeHullPct",
   "Txt_FeDist", "Btn_FePin", "Btn_FeAction", "Img_FtHolo", "Txt_FtName", "Btn_FtPick",
-  "Img_FlStatHolo", "Txt_FlStatName", "Bdr_FlStatChip", "Txt_FlStatRole",
-  "Txt_FlStatAction", "Txt_FlStatNext", "Txt_FlStatSpeed", "Txt_FlStatCargoPct", "PB_FlStatCargo",
-  "Txt_FlStatHullPct", "PB_FlStatHull", "Txt_FlStatShieldPct", "PB_FlStatShield", "Btn_FlSetRole", "Btn_FlRecallS", "Btn_FlHoldS",
   "Pnl_RlDefend", "Pnl_RlHaul", "Pnl_RlAttack", "Pnl_RlEscort", "Btn_RlDefendRecall", "Btn_RlDefendHold",
   "Btn_RlDefendDefault", "Btn_RlHaulRecall", "Btn_RlHaulHold", "Btn_RlHaulDefault", "Btn_RlAttackRecall", "Btn_RlAttackHold",
   "Btn_RlAttackDefault", "Btn_RlEscortRecall", "Btn_RlEscortHold", "Btn_RlEscortDefault", "Btn_RlHAddRow",
@@ -278,23 +274,6 @@ local function items(list)
   return out
 end
 
--- ===== status box (Pnl_FleetStatus) for the first selected ship =====
-local function statusPaint(s)
-  local p = UI.index("Pnl_FleetStatus")
-  UI.text(p("Txt_FlStatName"), s and s.name or "-")
-  UI.chip(p, "Bdr_FlStatChip", "Txt_FlStatRole", s and s.role or "-", ROLE_COL[s and s.role or ""] or "A0A0A0")
-  UI.text(p("Txt_FlStatAction"), s and s.status or "")
-  UI.text(p("Txt_FlStatNext"), "")
-  UI.text(p("Txt_FlStatSpeed"), "")
-  UI.text(p("Txt_FlStatCargoPct"), pct(s and s.cargo))
-  UI.bar(p("PB_FlStatCargo"), s and (s.cargo or 0) / 100 or 0, "42DA41")
-  UI.text(p("Txt_FlStatHullPct"), pct(s and s.hull))
-  UI.bar(p("PB_FlStatHull"), s and (s.hull or 0) / 100 or 0, "6AA8FF")
-  UI.text(p("Txt_FlStatShieldPct"), pct(s and s.shield))
-  UI.bar(p("PB_FlStatShield"), s and (s.shield or 0) / 100 or 0, "6AA8FF")
-  brushTex(p("Img_FlStatHolo"), s and S.icons[s.id])
-end
-
 local function repaintFleet(ships)
   local pf = UI.index("Pnl_PageFleet")
   S.rowsF = groupsOf(clsFilter(ships))
@@ -416,20 +395,14 @@ end
 function M.bind()
   local pf = UI.index("Pnl_PageFleet")
   local pe = UI.index("Pnl_PageEscort")
-  local pl = UI.index("Pnl_FleetLeft")
-  local ps = UI.index("Pnl_FleetStatus")
   local pr = UI.index("Pnl_PageRole")
   local function cmd(find, n, fn) UI.bind_button(find, n, function() fn(selIds()) end) end
-  -- left column
-  cmd(pl, "Btn_FlStart", FS.start)
-  cmd(pl, "Btn_FlHold", FS.hold)
-  cmd(pl, "Btn_FlEmergencyStop", FS.emergency_stop)
-  cmd(pl, "Btn_FlDock", FS.dock)
-  cmd(pl, "Btn_FlUndock", FS.undock)
-  cmd(pl, "Btn_FlRefuel", FS.refuel)
-  cmd(pl, "Btn_FlRecallL", FS.recall)
-  UI.bind_button(pl, "Sel_FlGroup", function() FS.set_filter("group") end)
-  -- fleet page: class strip, selection bar, action bar
+  -- fleet page: class strip + group, selection bar, action bar (e-stop, start, hold, dock, undock, refuel)
+  UI.bind_button(pf, "Sel_FlGroup", function() FS.set_filter("group") end)
+  cmd(pf, "Btn_FlEmergencyStop", FS.emergency_stop)
+  cmd(pf, "Btn_FlStart", FS.start)
+  cmd(pf, "Btn_FlUndock", FS.undock)
+  cmd(pf, "Btn_FlRefuel", FS.refuel)
   for _, k in ipairs(CLASSES) do
     UI.bind_button(pf, "Btn_FlCls" .. k, function() S.cls = k; FS.set_filter(k); M.repaint() end)
   end
@@ -451,10 +424,6 @@ function M.bind()
   cmd(pe, "Btn_FlEHold", FS.hold)
   UI.bind_button(pe, "Btn_FlESend", sendEscort)
   UI.bind_button(pe, "Btn_FlEUnselect", function() S.sel = {}; FS.unselect_all(); M.repaint() end)
-  -- status box
-  UI.bind_button(ps, "Btn_FlSetRole", function() pickRoleModal(selIds(), "Choose role for selected") end)
-  cmd(ps, "Btn_FlRecallS", FS.recall)
-  cmd(ps, "Btn_FlHoldS", FS.hold)
   -- role page: default buttons send the whole form (defend_set etc.), per-card recall/hold
   for _, role in ipairs(CARD_ROLES) do
     cmd(pr, "Btn_Rl" .. role .. "Recall", FS.recall)
@@ -483,8 +452,7 @@ function M.repaint(ships)
   ships = ships or shipsNow()
   S.icons = api.shipIcons() or {}
   if S.page == TAB_FLEET then repaintFleet(ships) elseif S.page == TAB_ROLE then repaintRole(ships) elseif S.page == TAB_ESC then repaintEscort(ships) end
-  statusPaint(firstSel(ships))
-  UI.text(UI.index("Pnl_FleetLeft")("Txt_SelFlGroup"), "All ships")
+  UI.text(UI.index("Pnl_PageFleet")("Txt_SelFlGroup"), "All ships")
 end
 
 function M.onClose()
