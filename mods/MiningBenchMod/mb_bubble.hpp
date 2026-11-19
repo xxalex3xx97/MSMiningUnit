@@ -105,7 +105,7 @@ namespace
         PtTarget pt;
         pt.sys = sys;
         dock_add_m(ch, raw, off, pt.ch, pt.loc);
-        mv_cancel(sid); zero_all(ship);
+        mv_cancel(sid); zero_all_dual(ship);
         return move_start(sid, "approach_rock", -1, nullptr, &pt) == STR("waiting");
     }
 
@@ -168,7 +168,7 @@ namespace
         if (bs.phase == BPH_ORE && cur.ore_on)
             for (SwOre& o : m.sw_list) if (o.a == cur.rock_act) o.done = true;   // SWEEP: the ore is unreachable for this run
         bs.resume = false;
-        mv_cancel(sid); zero_all(ship);
+        mv_cancel(sid); zero_all_dual(ship);
         if (m.st == MS_SWEEP && (bs.phase == BPH_WAYPOINT || bs.phase == BPH_ORE))
         {
             // back by warp only when a return point was saved (sw_back); else the next ore is picked. A return with no saved point warped to system 0.
@@ -183,7 +183,7 @@ namespace
         ActFrame f;
         if (!act_frame(ship, f)) return;
         BubbleState& bs = g_bubble[sid];
-        const SpeedMon& sp = spd_of(sid);
+        const SpeedMon sp = spd_get(sid);
         const double v = sp.have ? sp.v / g_raw_per_m : 0.0;
         const double cr = bubble_ship_r(sid);
         const double p[3] = {f.loc[0] / MV_UU_PER_M, f.loc[1] / MV_UU_PER_M, f.loc[2] / MV_UU_PER_M};
@@ -355,7 +355,7 @@ namespace
             auto mj = g_mvs.find(sid);
             const MoveJob* mv = (mj != g_mvs.end() && !mj->second.kind.empty()) ? &mj->second : nullptr;
             const bool thrust = mv && mv->kind == "approach_rock";
-            const SpeedMon& sp = spd_of(sid);
+            const SpeedMon sp = spd_get(sid);
             const double v = sp.have ? sp.v / g_raw_per_m : 0.0;
             if (mv && mv->warp_wait) continue;   // far-trip warp in progress: the teleport is not ours to brake
             const BubbleWhy why = bubble_why(fl.ap, fl.dap, fl.trav, thrust, v);
@@ -400,7 +400,7 @@ namespace
         const RockReg& t = reg_st().tab;
         const double p[3] = {f.loc[0] / MV_UU_PER_M, f.loc[1] / MV_UU_PER_M, f.loc[2] / MV_UU_PER_M};
         const double cr = bubble_ship_r(sid);
-        const SpeedMon& sp = spd_of(sid);
+        const SpeedMon sp = spd_get(sid);
         const double v = sp.have ? sp.v / g_raw_per_m : 0.0;
         const int sys = sys_id(ship);
         const double L = bubble_look_ahead(v);

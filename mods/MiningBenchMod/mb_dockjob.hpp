@@ -98,13 +98,13 @@ namespace
              STR(" DockID=") + std::to_wstring(did) + STR(" AutopilotExitDockTimer=") + std::to_wstring(exit_t) +
              STR(" UndockingAnimationTimer=") + prop_int(ship, STR("UndockingAnimationTimer")) + STR(" UndockingVector=") + pvec_text(ship, STR("UndockingVector")) +
              STR(" bDockingAutopilot=") + prop_bool(ship, STR("bDockingAutopilot")) + STR(" Throttle=") + prop_int(ship, STR("Throttle")) +
-             STR(" moved_m=") + std::to_wstring(moved / g_raw_per_m) + STR(" speed_m_s=") + std::to_wstring(spd_of(j.sid).v / g_raw_per_m));
+             STR(" moved_m=") + std::to_wstring(moved / g_raw_per_m) + STR(" speed_m_s=") + std::to_wstring(spd_get(j.sid).v / g_raw_per_m));
         // 3. clear of the dock: autopilot off, stop the drive, job ok
         if (free_now && exit_t == 0 && moved > MV_UNDOCK_CLEAR_M * g_raw_per_m)
         {
             std::wstring err;
             const bool ap = set_autopilot(j.sid, false, err);
-            zero_all(ship);
+            zero_all_dual(ship);
             g_undock_state = STR("free");
             tlog(STR("undock clear, autopilot_off=") + std::wstring(ap ? STR("1") : STR("0")));
             job_finish(i, STR("ok undocked"));

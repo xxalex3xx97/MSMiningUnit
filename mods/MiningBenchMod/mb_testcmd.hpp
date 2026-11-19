@@ -266,7 +266,7 @@ namespace
             set_last_step(STR("thr_check"));
             thr_check();
             set_last_step(STR("spd_update"));
-            spd_update(step);
+            spd_update_dual(step);
             set_last_step(STR("pin_hook_ensure"));
             pin_hook_ensure();   // retried until the AddInputCommand hook is armed (MapPin id, mb_pin.hpp)
             set_last_step(STR("cmd_poll"));

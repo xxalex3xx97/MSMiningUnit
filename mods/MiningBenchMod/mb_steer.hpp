@@ -212,6 +212,14 @@ namespace
         rot_zero(ship);
     }
 
+    // WHAT: zero_all through ShipControl (SC_zero, owner "mining") while ShipControl does the speed monitor. Refused or failed = zero_all.
+    // WHY: the same stop, one owner: the ship id is the object ID.
+    void zero_all_dual(UObject* ship)
+    {
+        if (g_sc_speed_on && alive(ship) && sc_speed_zero(obj_id(ship))) return;
+        zero_all(ship);
+    }
+
     // WHAT: find the PilotConsoleObject of ship sid. Matches ShipID first, then ParentID. nullptr when none.
     //       how = which field matched ("ShipID" / "ParentID" / "none"). count = number of PilotConsoleObject instances seen.
     // WHY: view_send needs the console id. It is resolved once per move job and cached in MoveJob::cid.
@@ -316,14 +324,70 @@ namespace
 
     // WHAT: speed monitor for every ship that needs it: the command ship, every ship with a move job, every ship with a dock job.
     //       Monitor entries of other ships are erased (a stale sample would give a false speed).
-    void spd_update(double dt)
+    std::set<int> spd_ids()
     {
         std::set<int> ids;
         if (g_cmd.ship > 0) ids.insert(g_cmd.ship);
         for (const auto& kv : g_mvs) ids.insert(kv.first);
         for (const DockJob& j : g_jobs) ids.insert(j.sid);
+        return ids;
+    }
+
+    void spd_update(double dt)
+    {
+        const std::set<int> ids = spd_ids();
         for (int sid : ids) spd_sample(sid, dt);
         for (auto it = g_spds.begin(); it != g_spds.end();) it = ids.count(it->first) ? std::next(it) : g_spds.erase(it);
+    }
+
+    // WHAT: speed monitor, dual path (SC2a). ShipControl usable (sc_speed_block == nullptr): it watches the ships of spd_ids (owner "mining"),
+    //       SC_tick_speed samples and zeroes them, and its fresh aborts (host callback -> g_sc_abort) run the mining abort text here.
+    //       A ship ShipControl does not watch (claim refused) gets the legacy spd_sample this poll; so does every ship when ShipControl
+    //       is not usable or SC_tick_speed returned -1. Mode change logged once ("SHIPCTL speed: ...").
+    // WHY: one speed guard per ship: a watched ship is sampled by ShipControl only. Legacy stays the fallback until SC6.
+    void spd_update_dual(double dt)
+    {
+        const std::set<int> ids = spd_ids();
+        const wchar_t* block = sc_speed_block();
+        // watch set: the ids while ShipControl is usable, else none
+        for (auto it = g_sc_watch.begin(); it != g_sc_watch.end();)
+        {
+            if (block || !ids.count(*it)) { sc_watch_ship(*it, false); it = g_sc_watch.erase(it); }
+            else ++it;
+        }
+        if (!block)
+        {
+            sc_speed_tune();
+            for (int sid : ids) if (!g_sc_watch.count(sid) && sc_watch_ship(sid, true)) g_sc_watch.insert(sid);
+        }
+        g_sc_last_tick = block ? 0 : sc_tick_speed(dt);
+        g_sc_speed_on = !block && g_sc_last_tick != -1;
+        // fresh aborts of this step (ShipControl already zeroed the ship): same text as the legacy spd_sample
+        for (const auto& ab : g_sc_abort)
+        {
+            tlog(STR("ABORT speed ship=") + std::to_wstring(ab.first) + STR(" v/lim=") + std::to_wstring(ab.second));
+            if (mv_active(ab.first)) mv_finish(ab.first, STR("error: ABORT speed v/lim=") + std::to_wstring(ab.second));
+        }
+        g_sc_abort.clear();
+        for (int sid : ids) if (!g_sc_speed_on || !g_sc_watch.count(sid)) spd_sample(sid, dt);
+        for (auto it = g_spds.begin(); it != g_spds.end();) it = ids.count(it->first) ? std::next(it) : g_spds.erase(it);
+        const wchar_t* why = block ? block : STR("MSCore not usable (SC_tick_speed -1)");
+        const std::wstring mode = g_sc_speed_on ? std::wstring(STR("using ShipControl")) : std::wstring(STR("legacy (")) + why + STR(")");
+        if (mode != g_sc_mode_note) { g_sc_mode_note = mode; log_line(STR("SHIPCTL speed: ") + mode); }
+    }
+
+    // WHAT: speed reading of ship sid for the readers (bubble, dock job, move brake, dev probes). When ShipControl does the monitor and
+    //       watches sid: its reading (SC_speed). Else the legacy monitor (spd_of). Returned by value: readers only read the fields.
+    SpeedMon spd_get(int sid)
+    {
+        if (!g_sc_speed_on || !g_sc_watch.count(sid)) return spd_of(sid);
+        ScSpeed s = {};
+        s.size = static_cast<int32_t>(sizeof(ScSpeed));
+        SpeedMon m;
+        m.sid = sid;
+        if (sc_speed_read(sid, s) && s.have) { m.have = true; m.v = s.v_raw; m.lim = s.lim_raw; }
+        m.aborted = s.aborted != 0;
+        return m;
     }
 
     // ---------------- aim and rotation ----------------
@@ -628,7 +692,7 @@ namespace
         // Past the stop distance (overshoot): reverse step MV_BRAKE_THR while speed >= MV_BRAKE_DONE_MS, then 0 and the job ends.
         // 7. remaining distance (m) and speed (m/s)
         const double remaining = surface - md;
-        const SpeedMon& sp = spd_of(sid);
+        const SpeedMon sp = spd_get(sid);
         const double v_ms = sp.have ? sp.v / g_raw_per_m : 0.0;
         int target = 0;
         // 8. at or past the stop distance: brake until nearly stopped, then finish

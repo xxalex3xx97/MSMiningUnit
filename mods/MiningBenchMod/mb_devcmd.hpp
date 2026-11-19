@@ -59,7 +59,7 @@ namespace
         if (!call_int(ship, STR("GetThrottleSteps"), steps)) return STR("error: GetThrottleSteps unreadable");
         if (!get_int_prop(ship, STR("Throttle"), cur)) return STR("error: Throttle unreadable");
         const int n = cmd == "thr_up" ? std::min(cur + 1, steps) : (cmd == "thr_down" ? std::max(cur - 1, 0) : 0);
-        const SpeedMon& sm = spd_of(sid);
+        const SpeedMon sm = spd_get(sid);
         if (sm.have && sm.lim > 0.0 && sm.v / sm.lim > MV_SPEED_ABORT)
         {
             zero_all(ship);
@@ -615,7 +615,7 @@ namespace
         probe_kv(s, STR("bDrifting"), prop_bool(ship, STR("bDrifting")));
         probe_kv(s, STR("GetModifiedMaxSpeed"), ok_mod ? std::to_wstring(lim_mod) + STR(" m/s=") + probe_f2(lim_mod / g_raw_per_m) : std::wstring(STR("n/a")));
         probe_kv(s, STR("GetMaxSpeed"), ok_lim ? std::to_wstring(lim) + STR(" m/s=") + probe_f2(lim / g_raw_per_m) : std::wstring(STR("n/a")));
-        probe_kv(s, STR("ship_speed"), probe_f2(spd_of(sid).v / g_raw_per_m) + STR(" m/s (sampler speed)"));
+        probe_kv(s, STR("ship_speed"), probe_f2(spd_get(sid).v / g_raw_per_m) + STR(" m/s (sampler speed)"));
         probe_kv(s, STR("actor_loc_uu"), hasf ? probe_v3(f.loc) : std::wstring(STR("n/a")));
         probe_kv(s, STR("MaxHealth"), prop_int(ship, STR("MaxHealth")));
         probe_kv(s, STR("Health"), prop_int(ship, STR("Health")));
@@ -893,7 +893,7 @@ namespace
             }
         int64_t dt_raw = 0;
         const bool ok_dt = pnum_prop(ship, STR("DistanceToTarget"), dt_raw);
-        return STR("t=") + probe_f2(t_s) + STR(" spd_mps=") + probe_f2(spd_of(sid).v / g_raw_per_m) +
+        return STR("t=") + probe_f2(t_s) + STR(" spd_mps=") + probe_f2(spd_get(sid).v / g_raw_per_m) +
                STR(" throttle=") + prop_int(ship, STR("Throttle")) + STR(" ap=") + prop_bool(ship, STR("bAutopilot")) +
                STR(" dist_tgt_m=") + (ok_dt ? probe_f2(dt_raw / g_raw_per_m) : std::wstring(STR("n/a"))) +
                STR(" impulse_in=") + pvec_text(ship, STR("ImpulseInput")) +
