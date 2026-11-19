@@ -16,6 +16,8 @@ $utf8 = New-Object System.Text.UTF8Encoding $false
 $mirror = "$re\cppmods\$Mod"
 New-Item -ItemType Directory -Force $mirror | Out-Null
 Get-ChildItem "$src\mods\$Mod" -File | Where-Object { $_.Extension -in '.cpp', '.hpp', '.h', '.txt' } | Copy-Item -Destination $mirror -Force
+# MiningBenchMod calls ShipControl through its C ABI header (mb_shipctl.hpp includes sc_api.h)
+if ($Mod -eq 'MiningBenchMod') { Copy-Item "$src\mods\ShipControl\sc_api.h" -Destination $mirror -Force }
 
 # ShipControl is not in the mirror's cppmods\CMakeLists.txt yet: add it once
 if ($Mod -eq 'ShipControl') {
