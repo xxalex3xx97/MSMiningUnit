@@ -34,11 +34,29 @@ namespace
         int (*tick_speed)(double) = nullptr;
         int (*speed)(int, ScSpeed*) = nullptr;
         int (*zero)(const char*, int) = nullptr;
+        int (*move_start)(const char*, int, ScMoveReq*, wchar_t*, int) = nullptr;   // level 3
+        int (*move_cancel)(const char*, int) = nullptr;
+        int (*move_active)(int) = nullptr;
+        int (*move_status)(int, ScMoveStatus*) = nullptr;
+        int (*tick_frame)(double) = nullptr;
+        bool move_bound = false;            // api_level >= 3 and every move export resolved (the caps bit is checked by sc_move_block)
     };
     ScApi g_sc;
+    ScHost g_sc_host;                   // host callbacks (zero-initialised; filled by sc_load)
     std::set<int> g_sc_held;            // ships this mod has claimed and not released yet
     const wchar_t* const kScOwner = L"mining";
     const char* const kScOwnerA = "mining";   // speed monitor / zero owner (narrow, SC_watch / SC_zero take char*)
+
+    // host callbacks of the move jobs: defined in mb_steer.hpp (they need the move jobs). Declared here for sc_load.
+    void sc_host_tlog(const wchar_t* text);
+    void sc_host_move_done(int sid, int seq, const wchar_t* result);
+    int sc_host_warp_begin(int sid, const ScMoveReq* req);
+    int sc_host_remain(int sid, const double ship_m[3], double* out_m);
+    int sc_host_target_ok(int sid, void* handle);
+    int sc_host_ore_loc(int sid, void* handle, double* out3_uu);
+    int sc_host_braking(int sid);
+    void mv_cancel(int sid);            // mb_steer.hpp
+    bool mv_active_sc(int sid);         // mb_steer.hpp
 
     // speed monitor state (level 2)
     std::set<int> g_sc_watch;           // ships ShipControl samples for "mining" (SC_watch on succeeded)
@@ -91,14 +109,27 @@ namespace
         s.speed = reinterpret_cast<int (*)(int, ScSpeed*)>(GetProcAddress(h, "SC_speed"));
         s.zero = reinterpret_cast<int (*)(const char*, int)>(GetProcAddress(h, "SC_zero"));
         s.speed_bound = s.api_level >= 2 && s.caps && s.set_host && s.set_tune && s.watch && s.tick_speed && s.speed && s.zero;
+        s.move_start = reinterpret_cast<int (*)(const char*, int, ScMoveReq*, wchar_t*, int)>(GetProcAddress(h, "SC_move_start"));
+        s.move_cancel = reinterpret_cast<int (*)(const char*, int)>(GetProcAddress(h, "SC_move_cancel"));
+        s.move_active = reinterpret_cast<int (*)(int)>(GetProcAddress(h, "SC_move_active"));
+        s.move_status = reinterpret_cast<int (*)(int, ScMoveStatus*)>(GetProcAddress(h, "SC_move_status"));
+        s.tick_frame = reinterpret_cast<int (*)(double)>(GetProcAddress(h, "SC_tick_frame"));
+        s.move_bound = s.api_level >= 3 && s.speed_bound && s.move_start && s.move_cancel && s.move_active && s.move_status && s.tick_frame;
         g_sc = s;
         if (g_sc.speed_bound)
         {
-            static ScHost host;   // static: the callbacks stay valid while the DLL is loaded
-            host.size = static_cast<int32_t>(sizeof(ScHost));
-            host.log = sc_host_log;
-            host.on_speed_abort = sc_host_abort;
-            g_sc.set_host(&host);
+            // API 3 takes the 80-byte host; API 2 takes the 24-byte layout (its fields only). The move callbacks are ignored there.
+            g_sc_host.size = static_cast<int32_t>(g_sc.api_level >= 3 ? sizeof(ScHost) : SC_HOST_SIZE_L2);
+            g_sc_host.log = sc_host_log;
+            g_sc_host.on_speed_abort = sc_host_abort;
+            g_sc_host.tlog = sc_host_tlog;
+            g_sc_host.on_move_done = sc_host_move_done;
+            g_sc_host.warp_begin = sc_host_warp_begin;
+            g_sc_host.remain_m = sc_host_remain;
+            g_sc_host.target_ok = sc_host_target_ok;
+            g_sc_host.ore_loc = sc_host_ore_loc;
+            g_sc_host.braking = sc_host_braking;
+            g_sc.set_host(&g_sc_host);
         }
         if (!ok_logged) { ok_logged = true; log_line(std::wstring(STR("SHIPCTL loaded: ")) + path.wstring()); }
         return true;
@@ -138,7 +169,9 @@ namespace
     // WHAT: per tick per bench ship: the claim stays while the loop is active (run, sweep, or any state but HALT / OFF), else it is released.
     void sc_sync(int sid, bool active)
     {
-        if (!active) sc_release_ship(sid);
+        if (active) return;
+        if (mv_active_sc(sid)) mv_cancel(sid);   // a ShipControl move job ends before its ship is released
+        sc_release_ship(sid);
     }
 
     // WHAT: releases every ship this mod holds (mod unload). Logs the count. No-op when ShipControl was never loaded.
@@ -209,5 +242,74 @@ namespace
         if (!g_sc.speed_bound) return false;
         try { return g_sc.zero(kScOwnerA, sid) != 0; }
         catch (...) { return false; }
+    }
+
+    // ---------------- move jobs (level 3, SC2b) ----------------
+
+    // WHAT: why the move jobs cannot run in ShipControl now. nullptr = usable (API >= 3 and move-job caps bit 4, value 4).
+    const wchar_t* sc_move_block()
+    {
+        if (!g_sc.h) return STR("ShipControl not loaded");
+        if (!g_sc.move_bound) return STR("ShipControl API < 3");
+        try { if (!(g_sc.caps() & 4)) return STR("MSCore flight not usable"); }
+        catch (...) { return STR("MSCore flight not usable"); }
+        return nullptr;
+    }
+
+    // WHAT: true when the move job of ship sid runs in ShipControl: move jobs usable, speed monitor on (g_sc_speed_on), ship claimed by mining.
+    //       The ship is watched first (SC_watch, owner mining) when not yet watched. false = legacy path.
+    bool sc_move_ready(int sid)
+    {
+        if (sc_move_block() || !g_sc_speed_on || !g_sc_held.count(sid)) return false;
+        if (g_sc_watch.count(sid)) return true;
+        if (!sc_watch_ship(sid, true)) return false;
+        g_sc_watch.insert(sid);
+        return true;
+    }
+
+    // WHAT: SC_move_start for owner mining. true = started (req.out_cid / out_steps set). false = refused: err holds the 'error: ...' text. Never throws.
+    bool sc_move_start(ScMoveReq& req, int sid, std::wstring& err)
+    {
+        wchar_t e[256] = {};
+        try
+        {
+            const int ok = g_sc.move_start(kScOwnerA, sid, &req, e, 256);
+            err = e;
+            return ok != 0;
+        }
+        catch (...) { err = STR("error: ShipControl exception"); return false; }
+    }
+
+    // WHAT: SC_move_cancel for owner mining (no zero, no callback). true = cancelled or none. Never throws.
+    bool sc_move_cancel(int sid)
+    {
+        try { return g_sc.move_cancel(kScOwnerA, sid) != 0; }
+        catch (...) { return false; }
+    }
+
+    // WHAT: SC_move_status of ship sid. true = read (out.active 0 when no job). Never throws.
+    bool sc_move_status(int sid, ScMoveStatus& out)
+    {
+        out = ScMoveStatus{};
+        out.size = static_cast<int32_t>(sizeof(ScMoveStatus));
+        try { return g_sc.move_status(sid, &out) != 0; }
+        catch (...) { return false; }
+    }
+
+    // WHAT: SC_tick_frame: one tick of every move job. >= 0 = jobs stepped, -1 = not usable (also on an exception).
+    int sc_tick_frame(double dt)
+    {
+        try { return g_sc.tick_frame(dt); }
+        catch (...) { return -1; }
+    }
+
+    // WHAT: host callbacks cleared (zeroed struct, size as installed). Called at mod unload before sc_release_all. No-op when never installed.
+    void sc_host_clear()
+    {
+        if (!g_sc.speed_bound || !g_sc.set_host) return;
+        ScHost z = {};
+        z.size = static_cast<int32_t>(g_sc.api_level >= 3 ? sizeof(ScHost) : SC_HOST_SIZE_L2);
+        try { g_sc.set_host(&z); }
+        catch (...) {}
     }
 }

@@ -113,6 +113,7 @@ public:
         try { pin_hook_release(); } catch (...) {}
         try { rock_listener_release(); } catch (...) {}
         try { chunk_hold_release_all(); } catch (...) {}   // no chunk hold outlives the mod (failures are logged in mb_chunkhold.hpp)
+        try { sc_host_clear(); } catch (...) {}            // no ShipControl callback into this mod outlives it
         try { sc_release_all(); } catch (...) {}           // no ShipControl claim outlives the mod
     }
 

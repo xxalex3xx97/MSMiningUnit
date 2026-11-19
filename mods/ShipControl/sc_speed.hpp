@@ -3,7 +3,7 @@
 //       judges v / lim, and zeroes the ship (MSCore_ship_zero) while the ratio is above SC_SPEED_ABORT.
 // WHY: user safety rule (no speed override): a ship must stay inside its own speed limit. Ported from MiningBenchMod mb_steer.hpp
 //      (spd_sample, spd_update). Constants and the abort decision are kept identical.
-// DEPENDS ON (exact): sc_mscore.hpp (MsFlight, FL_*, FF_*, ms_load, ms_flight, ms_zero), sc_math.hpp (dist3), <cstring>, <map>, <string>, <vector>
+// DEPENDS ON (exact): sc_mscore.hpp (MsFlight, FL_*, FF_*, ms_load, ms_flight, ms_zero), sc_math.hpp (dist3), sc_frame.hpp (sc_calib_learn), <cstring>, <map>, <string>, <vector>
 // USED BY: dllmain.cpp (SC_watch, SC_tick_speed, SC_speed, SC_set_tune), tests/test_shipcontrol.cpp (speed_judge).
 // GAME FACTS: position = ship ACTOR location (uu) when FF_ACTOR_FRAME is set. Without an actor: chunk * 2048 m + loc_raw (the object fallback).
 //             Limit = GetModifiedMaxSpeed, else GetMaxSpeed (raw per s), times speed_k. Raw per m = 65536 (mining default; not configurable here).
@@ -12,6 +12,7 @@
 
 #include "sc_mscore.hpp"
 #include "sc_math.hpp"
+#include "sc_frame.hpp"   // SC2b A1: sc_calib_learn (object-to-actor axis map)
 #include <cstring>
 #include <map>
 #include <string>
@@ -74,6 +75,7 @@ namespace
             sp.started = false; sp.have = false; sp.sid = 0;
             return false;
         }
+        sc_calib_learn(f);   // SC2b A1: teaches the object-to-actor axis map once (no log here: speed_tick has no host)
         if (sp.sid != sid) { sp = SpeedMon(); sp.sid = sid; }
         double p[3] = {0, 0, 0};
         if (f.flags & FF_ACTOR_FRAME)

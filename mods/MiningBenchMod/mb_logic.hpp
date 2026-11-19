@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "sc_logic_path.hpp"   // path/warp/hazard geometry (shared with ShipControl)
+#include "sc_logic_steer.hpp"  // approach Throttle, timeout, low-power cap and no-power rules (shared with ShipControl)
 
 namespace
 {
@@ -777,18 +778,6 @@ namespace
     constexpr double APPR_CAP_S = 60.0;              // a target not mined within this many s of its first path event is skipped (s)
     constexpr double PATH_CHECK_S = 1.0;             // clear-path re-check period while an approach runs (s)
     constexpr double FAST_SAMPLE_S = 0.25;           // hull/shield sample period near rock (s); elsewhere 1 s
-    constexpr double APPROACH_RAMP_M = 500.0;        // approach: full Throttle beyond this distance to the stand-off point (m), linear ramp inside
-
-    // WHAT: approach Throttle step for the distance to the stand-off point (m). max_thr beyond APPROACH_RAMP_M; inside it linear down to 1
-    //       (ceil, so the last metres still move); 0 at or past the stand-off point. speed_mps is not used by the ramp (the caller brakes on it).
-    // WHY: full speed on the long leg, a smooth slow-down near the rock. Ramp is distance-only: no measured deceleration exists.
-    inline int approach_throttle(double dist_to_standoff_m, double speed_mps, int max_thr)
-    {
-        (void)speed_mps;
-        if (max_thr < 1 || dist_to_standoff_m <= 0.0) return 0;
-        if (dist_to_standoff_m >= APPROACH_RAMP_M) return max_thr;
-        return std::clamp(static_cast<int>(std::ceil(max_thr * dist_to_standoff_m / APPROACH_RAMP_M)), 1, max_thr);
-    }
 
     // WHAT: distance from point c to the SEGMENT a->b (clamped to the ends). Used by the bubble and path checks of the registry (the ship end counts).
     inline double seg_point_dist(const double a[3], const double b[3], const double c[3])
@@ -1930,16 +1919,6 @@ namespace
     // WHY: dock -> seek -> low power -> dock would repeat forever when the dock does not clear the low power.
     inline bool lowpower_halt_at_dock(bool lp_trip, bool lp_due) { return lp_trip && lp_due; }
 
-    // WHAT: approach timeout (s): base, or base / max_frac in low power (max_frac = FlightModel MaxLowPowerSpeed, a fraction 0..1). Other max_frac -> base.
-    inline double approach_timeout_s(double base, bool lp, double max_frac)
-    {
-        if (!lp || max_frac <= 0.0 || max_frac >= 1.0) return base;
-        return base / max_frac;
-    }
-
-    // WHAT: Throttle step cap: min(cap, lp_thr) in low power when lp_thr > 0 (FlightModel LowPowerThrottle), else cap.
-    inline int lowpower_throttle_cap(int cap, bool lp, int lp_thr) { return (lp && lp_thr > 0) ? std::min(cap, lp_thr) : cap; }
-
     // WHAT: true when name holds one of the words (ASCII case-insensitive, words in lower case).
     inline bool name_has_word(const std::wstring& name, const wchar_t* const* words, size_t n)
     {
@@ -1995,8 +1974,6 @@ namespace
     constexpr uint64_t REACTOR_AUTO_RATE_MS = 30000;    // one write attempt per reactor per this many ms
     constexpr int REACTOR_AUTO_MAX = 3;                 // attempts per reactor before the give-up line (then no more attempts)
 
-    // WHAT: no power: the grid consumes (cons > 0), produces nothing (prod <= 0) and efficiency is 0. This is the lost state (grace LOWPOWER_GRACE_S).
-    inline bool power_no_power(double cons, double prod, double eff) { return cons > 0.0 && prod <= 0.0 && eff <= 0.0; }
     // WHAT: brown-out: the grid produces but efficiency is below POWER_BROWNOUT_EFF while it consumes. Log only, no action.
     inline bool power_brownout(double cons, double prod, double eff) { return cons > 0.0 && prod > 0.0 && eff < POWER_BROWNOUT_EFF; }
     // WHAT: brown-out log event: 0 = no change, 1 = started, 2 = ended. One line per change, never per sample.

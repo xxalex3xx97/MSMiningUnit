@@ -93,6 +93,7 @@ namespace
         int (*ship_zero)(int sid, wchar_t* err, int errlen) = nullptr;           // MSCore_ship_zero
         int (*ship_console)(int sid) = nullptr;                                  // MSCore_ship_console
         int (*actor_loc)(void* actor, double* out3) = nullptr;                   // MSCore_actor_loc
+        int (*view_send)(int cid, long long yaw_raw, long long pitch_raw, wchar_t* err, int errlen) = nullptr;  // MSCore_view_send (SC2b)
     };
 
     MsApi g_ms;                  // bound MSCore exports (null = not loaded)
@@ -139,8 +140,9 @@ namespace
             m.ship_zero = ms_sym<decltype(m.ship_zero)>(m.h, "MSCore_ship_zero");
             m.ship_console = ms_sym<decltype(m.ship_console)>(m.h, "MSCore_ship_console");
             m.actor_loc = ms_sym<decltype(m.actor_loc)>(m.h, "MSCore_actor_loc");
+            m.view_send = ms_sym<decltype(m.view_send)>(m.h, "MSCore_view_send");
         }
-        const bool ok = m.h && m.api && m.ship_flight && m.ship_set_throttle && m.ship_zero && m.ship_console && m.actor_loc && m.api() >= MS_NEED_API;
+        const bool ok = m.h && m.api && m.ship_flight && m.ship_set_throttle && m.ship_zero && m.ship_console && m.actor_loc && m.view_send && m.api() >= MS_NEED_API;
         if (!ok)
         {
             if (m.h) FreeLibrary(m.h);
@@ -172,5 +174,42 @@ namespace
             return ok;
         }
         catch (...) { err = L"exception: MSCore_ship_zero"; return false; }
+    }
+
+    // WHAT: MSCore_ship_set_throttle (Throttle step). true = written. Exceptions or unbound export = false.
+    // WHY: the move job writes the approach step every frame; a null export is refused, never called (fail closed).
+    bool ms_set_throttle(int sid, int step, std::wstring& err)
+    {
+        wchar_t buf[256] = {0};
+        try
+        {
+            if (!g_ms.ship_set_throttle) { err = L"MSCore flight unavailable"; return false; }
+            const bool ok = g_ms.ship_set_throttle(sid, step, buf, 256) == 1;
+            if (!ok) err = buf;
+            return ok;
+        }
+        catch (...) { err = L"exception: MSCore_ship_set_throttle"; return false; }
+    }
+
+    // WHAT: MSCore_ship_console: PilotConsoleObject id of ship sid. <= 0 = not found (or MSCore unusable / exception, -1).
+    int ms_console(int sid)
+    {
+        try { return g_ms.ship_console ? g_ms.ship_console(sid) : -1; }
+        catch (...) { return -1; }
+    }
+
+    // WHAT: MSCore_view_send (aim offset to console cid, raw units). true = sent. Exceptions or unbound export = false, err set.
+    // WHY: the aim offset is the only rotation actuator of a move job (same call as mining view_send).
+    bool ms_view_send(int cid, long long yaw_raw, long long pitch_raw, std::wstring& err)
+    {
+        wchar_t buf[256] = {0};
+        try
+        {
+            if (!g_ms.view_send) { err = L"MSCore flight unavailable"; return false; }
+            const bool ok = g_ms.view_send(cid, yaw_raw, pitch_raw, buf, 256) == 1;
+            if (!ok) err = buf;
+            return ok;
+        }
+        catch (...) { err = L"exception: MSCore_view_send"; return false; }
     }
 }

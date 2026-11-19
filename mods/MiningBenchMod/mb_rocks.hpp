@@ -585,9 +585,9 @@ namespace
         return true;
     }
 
-    // WHAT: fill r with the aim numbers of rock actor 'rock' against frame f. false when the rock is not live or the vector is unreadable.
+    // WHAT: world location (uu) of rock actor 'rock' into out (cached per actor in g_rock_loc). false when the rock is not live or unreadable.
     // WHY: the rock location is read only after actor_ok(), so a freed actor is never touched.
-    bool act_aim(const ActFrame& f, UObject* rock, ActAim& r)
+    bool rock_loc_uu(UObject* rock, double out[3])
     {
         if (!actor_ok(rock)) return false;
         auto lc = g_rock_loc.find(rock);
@@ -598,7 +598,16 @@ namespace
             if (!actor_vec_call(rock, STR("K2_GetActorLocation"), l.p, why)) return false;
             lc = g_rock_loc.emplace(rock, l).first;
         }
-        return act_aim_pt(f, lc->second.p, r);
+        std::copy(lc->second.p, lc->second.p + 3, out);
+        return true;
+    }
+
+    // WHAT: fill r with the aim numbers of rock actor 'rock' against frame f. false when the rock is not live or the vector is unreadable.
+    bool act_aim(const ActFrame& f, UObject* rock, ActAim& r)
+    {
+        double p[3] = {0, 0, 0};
+        if (!rock_loc_uu(rock, p)) return false;
+        return act_aim_pt(f, p, r);
     }
 
     // WHAT: nearest rock actor whose ore == item, by game distance. out = its aim numbers. nullptr when none.
