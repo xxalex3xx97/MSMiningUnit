@@ -853,6 +853,43 @@ namespace
         return clear_t < BEAM_CLEAR_S;
     }
 
+    // WHAT: ship no-go sphere radius (m) = laser range; the same value is the beam hold distance (a bench ship within it holds the firing laser).
+    // WHY: a mining ship in MS_MINE blocks the other ships' paths like a rock; the laser reach and the sphere share one number.
+    constexpr double SHIP_ZONE_M = 300.0;
+    // WHAT: reg_geom radius for a ship sphere: block_r_m(SHIP_ZONE_RAD_M, clr) = SHIP_ZONE_M + clr.
+    // WHY: block_r_m scales the rock radius by ROCK_BLOCK_SCALE, so the ship radius is pre-divided by it.
+    constexpr double SHIP_ZONE_RAD_M = SHIP_ZONE_M / ROCK_BLOCK_SCALE;
+    // WHAT: a firing laser held this long (s) makes the ship give its rock up (shared zone deadlock breaker).
+    constexpr double BEAM_YIELD_S = 15.0;
+
+    // WHAT: true when centre a is closer than SHIP_ZONE_M (m) to centre c.
+    // WHY: inline sqrt, dist3 lives in mb_math.hpp which this pure file does not include.
+    inline bool in_ship_zone(const double a[3], const double c[3])
+    {
+        const double d[3] = {a[0] - c[0], a[1] - c[1], a[2] - c[2]};
+        return std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]) < SHIP_ZONE_M;
+    }
+
+    // WHAT: true when this ship may keep its laser against the other ship: the other is not firing, or fired earlier (t, ms), or same t and lower sid.
+    // WHY: first ship to fire in a shared zone keeps firing; the other holds, with a fixed tiebreak so both never hold at once.
+    inline bool zone_hold_for(bool other_fires, uint64_t other_t, int other_sid, uint64_t my_t, int my_sid)
+    {
+        return !other_fires || other_t < my_t || (other_t == my_t && other_sid < my_sid);
+    }
+
+    // WHAT: true when the laser has been held for at least BEAM_YIELD_S (s).
+    inline bool beam_yield_due(double held_s) { return held_s >= BEAM_YIELD_S; }
+
+    // WHAT: true when the asker (a) is already inside the sphere (c, r) (m) and moving away from its centre (b-a . c-a <= 0): that sphere is ignored.
+    // WHY: a ship that starts inside another ship's zone must be able to leave; it must not be blocked by the sphere it is already in.
+    inline bool ship_blk_ignore(const double a[3], const double b[3], const double c[3], double r)
+    {
+        const double ab[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+        const double ac[3] = {c[0] - a[0], c[1] - a[1], c[2] - a[2]};
+        const double dd = std::sqrt((c[0] - a[0]) * (c[0] - a[0]) + (c[1] - a[1]) * (c[1] - a[1]) + (c[2] - a[2]) * (c[2] - a[2]));
+        return dd < r && (ab[0] * ac[0] + ab[1] * ac[1] + ab[2] * ac[2]) <= 0.0;
+    }
+
     // WHAT: index of the blocking rock nearest to a along a->b (smallest projection), -1 when none blocks. out_d = its perpendicular distance (m).
     // WHY pointer + count: the caller keeps one reused scratch array (no copy of the rock list per check).
     inline int path_first_blocker(const double a[3], const double b[3], const PathRock* rocks, size_t n, double& out_d)

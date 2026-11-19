@@ -326,6 +326,30 @@ namespace
         }
     }
 
+    // WHAT: a bench ship in MS_MINE with its laser on, as a sphere: sys = its system, c = centre (m). Path checks see it as id -sid.
+    // WHY: a mining ship blocks other ships' paths like a rock; its laser reach (SHIP_ZONE_M) is the sphere radius.
+    struct ShipBlk { int sys = 0; double c[3] = {0, 0, 0}; };
+    std::map<int, ShipBlk> g_ship_blk;   // sid -> sphere of a bench ship in MS_MINE (m); written by beam_tick only
+
+    // WHAT: adds to out the rock ids inside SHIP_ZONE_M of any other ship's sphere (sid's own sphere is skipped).
+    // WHY: a ship must not pick or approach a rock inside another mining ship's laser zone.
+    void zone_rocks_of_others(int sid, std::set<int>& out)
+    {
+        const RockReg& t = reg_st().tab;
+        for (const auto& kv : g_ship_blk)
+        {
+            if (kv.first == sid) continue;
+            const double* c = kv.second.c;
+            const double lo[3] = {c[0] - SHIP_ZONE_M, c[1] - SHIP_ZONE_M, c[2] - SHIP_ZONE_M};
+            const double hi[3] = {c[0] + SHIP_ZONE_M, c[1] + SHIP_ZONE_M, c[2] + SHIP_ZONE_M};
+            t.for_box(kv.second.sys, lo, hi, [&](size_t i)
+            {
+                const RegRock& rk = t.rocks[i];
+                if (rk.alive && in_ship_zone(rk.c, c)) out.insert(rk.id);
+            });
+        }
+    }
+
     // nearest rock holding `item` measured from the anchor (not the ship); nullptr when none or outside the radius
     // skip_ids: no-yield rock ids left out (MineSt::noy_skip); g_hazard_rocks and this ship's g_path_skip are always left out too
     UObject* rock_in_range(int sid, const double anchor[3], UObject* item, double rad_m, UObject* skip = nullptr, const std::set<int>* skip_ids = nullptr)
@@ -339,6 +363,7 @@ namespace
         const bool path_any = ps != g_path_skip.end() && !ps->second.empty();
         std::set<int> claims;
         rock_claims_of_others(sid, claims);
+        zone_rocks_of_others(sid, claims);
         if (!g_hazard_rocks.empty() || !g_depleted_rocks.empty() || path_any || !claims.empty())
         {
             if (skip_ids) merged = *skip_ids;
@@ -360,6 +385,14 @@ namespace
     // WHAT: centre (m) and blocking radius (m, REG_RAD_UNKNOWN_M until read) of registry rock id. false when the id is unknown.
     bool reg_geom(int id, double c[3], double& rad_m)
     {
+        if (id < 0)
+        {   // ship sphere (path checks report a ship as -sid)
+            auto it = g_ship_blk.find(-id);
+            if (it == g_ship_blk.end()) return false;
+            std::copy(it->second.c, it->second.c + 3, c);
+            rad_m = SHIP_ZONE_RAD_M;
+            return true;
+        }
         const RegRock* r = reg_st().tab.get(id);
         if (!r) return false;
         std::copy(r->c, r->c + 3, c);
@@ -395,7 +428,7 @@ namespace
     //       Block radius = block_r_m(rock radius, clear_m), + HAZARD_CLEAR_EXTRA_M when hazard is set and the rock is a hazard rock.
     //       Returns the id, 0 = clear. dist_m = blocker centre to segment (m); c_out = its centre (m); r_out = its block radius (m).
     //       Own query instead of registry first_blocker: that one uses the full rock radius (registry data unchanged here).
-    int seg_blocker(int sys, const double a[3], const double b[3], int skip_id, double clear_m, bool hazard, double& dist_m, double c_out[3], double& r_out, bool grace = false)
+    int seg_blocker(int sys, const double a[3], const double b[3], int skip_id, double clear_m, bool hazard, double& dist_m, double c_out[3], double& r_out, bool grace = false, int self_sid = 0)
     {
         static std::vector<PathRock> pr;   // scratch, reused (game thread only)
         static std::vector<int> ids;
@@ -426,6 +459,18 @@ namespace
             pr.push_back(p);
             ids.push_back(rk.id);
         });
+        for (const auto& kv : g_ship_blk)
+        {   // bench ships in MS_MINE with the laser on: sphere of SHIP_ZONE_RAD_M; skip_id never applies to ships
+            if (kv.first == self_sid || kv.second.sys != sys) continue;
+            const double r = block_r_m(SHIP_ZONE_RAD_M, clear_m);
+            if (seg_point_dist(a, b, kv.second.c) > r) continue;
+            if (ship_blk_ignore(a, b, kv.second.c, r)) continue;
+            PathRock p;
+            std::copy(kv.second.c, kv.second.c + 3, p.c);
+            p.r = r;
+            pr.push_back(p);
+            ids.push_back(-kv.first);
+        }
         const int k = path_first_blocker(a, b, pr.data(), pr.size(), dist_m);
         if (k < 0) return 0;
         std::copy(pr[static_cast<size_t>(k)].c, pr[static_cast<size_t>(k)].c + 3, c_out);
@@ -434,11 +479,11 @@ namespace
     }
 
     // WHAT: the rock that blocks the straight path a->goal (path clearance, hazard extra). skip_id left out. Returns the id, 0 = clear. dist_m / c_out as seg_blocker.
-    int path_blocker(int sys, const double a[3], const double goal[3], int skip_id, double& dist_m, double c_out[3])
+    int path_blocker(int sys, const double a[3], const double goal[3], int skip_id, double& dist_m, double c_out[3], int self_sid = 0)
     {
         reg_area_seeded(sys, a);   // unseeded area: the check uses the seeded rocks only (logged once per pass)
         double rr = 0.0;
-        return seg_blocker(sys, a, goal, skip_id, path_clear_m(), true, dist_m, c_out, rr, true);
+        return seg_blocker(sys, a, goal, skip_id, path_clear_m(), true, dist_m, c_out, rr, true, self_sid);
     }
 
     // WHAT: chunk (system + 3 ints) of the save-data asteroid nearest to the ship that holds `item` and is alive; the ore list is shared by all ships and refreshed at most once a minute.
@@ -1287,6 +1332,7 @@ namespace
         const auto psk = g_path_skip.find(sid);
         if (psk != g_path_skip.end()) skip.insert(psk->second.begin(), psk->second.end());
         rock_claims_of_others(sid, skip);
+        zone_rocks_of_others(sid, skip);
         const RockReg& t = reg_st().tab;
         std::vector<std::pair<double, size_t>> cand;
         t.nearest_n(sys, item, ps, m.abandon, &skip, PATH_PICK_M, PATH_CANDIDATES, cand);
@@ -1298,7 +1344,7 @@ namespace
             const RegRock& rk = t.rocks[pr.second];
             double so[3], tc[3], tr = 0.0, dist = 0.0, bc[3], rr = 0.0;
             if (!standoff_of(sid, rk.id, ps, so, tc, tr)) continue;
-            const bool blocked = seg_blocker(sys, ps, so, rk.id, path_clear_m(), true, dist, bc, rr, true) != 0;
+            const bool blocked = seg_blocker(sys, ps, so, rk.id, path_clear_m(), true, dist, bc, rr, true, sid) != 0;
             const double sc = pick_score(pr.first, blocked);
             if (sc < best_score) { best_score = sc; best = rk.id; best_blocked = blocked; }
         }
@@ -1308,7 +1354,7 @@ namespace
     // WHAT: one PATH log line (UE4SS log + Log tab): blocker, its distance to the path (m), what was done.
     void log_path(int sid, int tid, int bid, double dist, const std::wstring& what)
     {
-        log_line(STR("PATH blocked ship=") + std::to_wstring(sid) + STR(" target=") + std::to_wstring(tid) + STR(" by rock ") + std::to_wstring(bid) +
+        log_line(STR("PATH blocked ship=") + std::to_wstring(sid) + STR(" target=") + std::to_wstring(tid) + STR(" by ") + std::wstring(bid < 0 ? STR("ship ") : STR("rock ")) + std::to_wstring(bid < 0 ? -bid : bid) +
                  STR(" (dist ") + std::to_wstring(static_cast<long long>(std::llround(dist))) + STR(" m) -> ") + what);
     }
 
@@ -1375,7 +1421,7 @@ namespace
         double so[3], tc[3], tr = 0.0;
         if (!standoff_of(sid, tid, ps, so, tc, tr)) return false;
         double dist = 0.0, bc[3] = {0, 0, 0};
-        const int bid = path_blocker(sys, ps, so, tid, dist, bc);
+        const int bid = path_blocker(sys, ps, so, tid, dist, bc, sid);
         if (!bid) { m.strike_n = 0; return false; }   // clear path: strikes are consecutive only
         if (m.strike_tid != tid || m.strike_bid != bid) { m.strike_tid = tid; m.strike_bid = bid; m.strike_n = 0; }
         ++m.strike_n;
@@ -1436,8 +1482,8 @@ namespace
             {
                 waypoint_candidate(k, bc, u, br, wps[k]);
                 double d2 = 0.0, c2[3], r2 = 0.0;
-                legs[k] = seg_blocker(sys, ps, wps[k], tid, path_clear_m(), true, d2, c2, r2) == 0 &&
-                          seg_blocker(sys, wps[k], so, tid, path_clear_m(), true, d2, c2, r2) == 0;
+                legs[k] = seg_blocker(sys, ps, wps[k], tid, path_clear_m(), true, d2, c2, r2, false, sid) == 0 &&
+                          seg_blocker(sys, wps[k], so, tid, path_clear_m(), true, d2, c2, r2, false, sid) == 0;
             }
             const int pick = waypoint_pick(legs, 4);
             if (pick >= 0)

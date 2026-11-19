@@ -2312,6 +2312,31 @@ static void t_parking()
     reset_globals();
 }
 
+// ship no-go sphere (mining ships as blockers): zone test, yield timer, tiebreak, path through a ship sphere, leaving-sphere ignore
+static void t_ship_zone()
+{
+    CHECK(zone_hold_for(false, 0, 1, 5, 2));
+    CHECK(zone_hold_for(true, 10, 1, 20, 2));
+    CHECK(!zone_hold_for(true, 20, 1, 10, 2));
+    CHECK(zone_hold_for(true, 10, 1, 10, 2));
+    CHECK(!zone_hold_for(true, 10, 2, 10, 1));
+    CHECK(!beam_yield_due(14.9));
+    CHECK(beam_yield_due(15.0));
+    const double o[3] = {0, 0, 0}, p299[3] = {299, 0, 0}, p301[3] = {301, 0, 0};
+    CHECK(in_ship_zone(p299, o));
+    CHECK(!in_ship_zone(p301, o));
+    PathRock sr;
+    sr.c[0] = sr.c[1] = sr.c[2] = 0.0;
+    sr.r = block_r_m(SHIP_ZONE_RAD_M, 20.0);
+    const double a1[3] = {-1000, 100, 0}, b1[3] = {1000, 100, 0}, a2[3] = {-1000, 400, 0}, b2[3] = {1000, 400, 0};
+    double dd = 0.0;
+    CHECK(path_first_blocker(a1, b1, &sr, 1, dd) == 0);
+    CHECK(path_first_blocker(a2, b2, &sr, 1, dd) == -1);
+    const double ia[3] = {50, 0, 0}, ib[3] = {200, 0, 0}, ib2[3] = {-200, 0, 0};
+    CHECK(ship_blk_ignore(ia, ib, o, 320.0));
+    CHECK(!ship_blk_ignore(ia, ib2, o, 320.0));
+}
+
 int main()
 {
     const Case cases[] = {
@@ -2345,6 +2370,7 @@ int main()
         {"parking", t_parking},
         {"rock_depleted", t_rock_depleted},
         {"reg_table", t_reg_table}, {"reg_events", t_reg_events}, {"reg_world_track", t_reg_world_track}, {"reg_within_nearest", t_reg_within_nearest}, {"reg_surface_block", t_reg_surface_block_radius},
+        {"ship_zone", t_ship_zone},
         {"approach_throttle", t_approach_throttle}, {"bubble", t_bubble}, {"bubble_ladder", t_bubble_ladder}, {"bubble_scope", t_bubble_scope}, {"tune_geom", t_tune_geom}, {"flight_warp", t_flight_warp}, {"sweep_return_flee", t_sweep_return_flee}, {"path2_rules", t_path2_rules},
         {"reg_targeted_ore_budget", t_reg_targeted_ore_budget}, {"reg_bench", t_reg_bench}, {"reg_abs_m", t_reg_abs_m},
         {"box_probe_parse", t_box_probe_parse}, {"box_probe_uu_fwd", t_box_probe_uu_fwd}, {"reg_check_summary", t_reg_check_summary},
