@@ -1529,6 +1529,19 @@ local function docksPaint()
   table.sort(ks)
   for _, k in ipairs(ks) do for _, id in ipairs(tg[k]) do gof[id] = gof[id] or k end end
   for _, k in ipairs{ "refuel", "misc", "park" } do for _, id in ipairs(tg[k] or {}) do gof[id] = gof[id] or k end end
+  do   -- docks picked by hand in the Ship tab (INI lists, every bench ship + global) are grouped too, after the name tags
+    local lines = rdlines(INI) or {}
+    local secs = { iniGet(lines, nil) }
+    for _, o in ipairs(benchShips()) do secs[#secs + 1] = iniGet(lines, "ship." .. o.id) end
+    for _, u in ipairs(UD_ORES) do
+      for _, sec in ipairs(secs) do for _, dk in ipairs(idList(sec["unload_docks_" .. u.ini])) do gof[dk] = gof[dk] or u.ini end end
+    end
+    for _, sec in ipairs(secs) do
+      for _, dk in ipairs(idList(sec.refuel_docks)) do gof[dk] = gof[dk] or "refuel" end
+      for _, dk in ipairs(idList(sec["unload_docks_" .. UD_MISC.ini])) do gof[dk] = gof[dk] or "misc" end
+      for _, dk in ipairs(idList(sec[UD_PARK.key])) do gof[dk] = gof[dk] or "park" end
+    end
+  end
   local oreNm = {}
   for _, u in ipairs(UD_ORES) do oreNm[u.ini] = u.k end
   local flat = groupList(rows, function(r) return gof[r.id] end,
