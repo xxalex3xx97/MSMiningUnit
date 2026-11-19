@@ -29,6 +29,18 @@ if ($LASTEXITCODE -ne 0) {
     if ($LASTEXITCODE -eq 0) { Add-Row 'test_logic' 'PASS' $line } else { Add-Row 'test_logic' 'FAIL' $line }
 }
 
+# ---- 1b. test_shipcontrol (ShipControl owner registry, sc_owner.hpp) ----
+Write-Host "== test_shipcontrol" -ForegroundColor Cyan
+cl /nologo /EHsc /std:c++17 /W3 /I mods\ShipControl tests\test_shipcontrol.cpp /Fe:tests\out\test_shipcontrol.exe /Fo:tests\out\
+if ($LASTEXITCODE -ne 0) {
+    Add-Row 'test_shipcontrol' 'FAIL' 'compile failed'
+} else {
+    $out = & .\tests\out\test_shipcontrol.exe 2>&1
+    $out | ForEach-Object { Write-Host $_ }
+    $line = ($out | Where-Object { $_ -match '^test_shipcontrol: ' } | Select-Object -Last 1)
+    if ($LASTEXITCODE -eq 0) { Add-Row 'test_shipcontrol' 'PASS' $line } else { Add-Row 'test_shipcontrol' 'FAIL' $line }
+}
+
 # ---- 2. compat checks (pattern + compat gate) ----
 Write-Host "== run_compat" -ForegroundColor Cyan
 & .\tests\run_compat.ps1
@@ -48,6 +60,7 @@ function Run-Py($step, $script) {
 }
 Run-Py 'test_gen_paste' 'tests\test_gen_paste.py'
 Run-Py 'test_asset_refs' 'tests\test_asset_refs.py'
+Run-Py 'test_abi' 'tests\test_abi.py'
 
 # ---- 4. Lua syntax (luac -p) ----
 Write-Host "== lua syntax" -ForegroundColor Cyan
