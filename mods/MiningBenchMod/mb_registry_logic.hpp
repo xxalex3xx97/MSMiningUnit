@@ -759,4 +759,10 @@ namespace
     {
         return std::fabs(a[0] - b[0]) <= REG_CACHE_TOL_M && std::fabs(a[1] - b[1]) <= REG_CACHE_TOL_M && std::fabs(a[2] - b[2]) <= REG_CACHE_TOL_M;
     }
+    // WHAT: true when the mining tick may run: a game world is loaded (world_ok) and no world change is pending (world_wait).
+    // WHY: mining steps read ship and rock objects; while a save loads or the world is lost they are freed (fault freeze in mine_sample).
+    inline bool mining_world_ready(bool world_ok, bool world_wait)
+    {
+        return world_ok && !world_wait;
+    }
 }

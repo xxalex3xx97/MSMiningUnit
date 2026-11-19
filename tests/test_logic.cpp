@@ -2062,6 +2062,14 @@ static void t_reg_cache_bench()
     std::printf("bench reg_cache_table n=%zu ms=%.2f\n", tab.rocks.size(), std::chrono::duration<double, std::milli>(t2 - t1).count());
 }
 
+static void t_mining_world_ready()
+{
+    CHECK(mining_world_ready(true, false));
+    CHECK(!mining_world_ready(false, false));
+    CHECK(!mining_world_ready(true, true));
+    CHECK(!mining_world_ready(false, true));
+}
+
 // low power: response grace, dock loop guard, approach timeout and Throttle cap, power name matchers, low_power_return bound
 static void t_lowpower()
 {
@@ -2196,7 +2204,7 @@ int main()
         {"cargo_pct", t_cargo_pct}, {"fuel_low", t_fuel_low}, {"got_delta", t_got_delta}, {"row_done", t_row_done},
         {"item_next", t_item_next}, {"collect_verdict", t_collect_verdict}, {"sweep", t_sweep}, {"ore_scan_due", t_ore_scan_due}, {"idle_limit", t_idle_limit}, {"hull_dropped", t_hull_dropped}, {"dead_scan", t_dead_scan},
         {"dock_limit_giveup", t_dock_limit_giveup}, {"loop_guards", t_loop_guards}, {"setting_clamp", t_setting_clamp},{"unload_chain_more", t_unload_chain_more}, {"unload_cand", t_unload_cand}, {"refuel_stalled", t_refuel_stalled}, {"mine_radius", t_mine_radius},
-        {"station", t_station},
+        {"station", t_station}, {"mining_world_ready", t_mining_world_ready},
         {"net_free_go", t_net_free_go}, {"net_busy_wait", t_net_busy_wait}, {"net_second_dock", t_net_second_dock},
         {"net_fifo", t_net_fifo}, {"net_go_drops_other_grant", t_net_go_drops_other_grant}, {"net_not_configured", t_net_not_configured}, {"net_dock_gone", t_net_dock_gone},
         {"net_full", t_net_full}, {"net_bad_holder", t_net_bad_holder}, {"unload_stalled", t_unload_stalled},
