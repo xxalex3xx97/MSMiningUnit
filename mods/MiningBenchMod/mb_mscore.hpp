@@ -67,6 +67,7 @@ namespace
         int (*chunk_release)(int) = nullptr;
         int (*chunk_ready)(wchar_t*, int) = nullptr;
         int (*cls)(const char*, char*, int) = nullptr;
+        int (*ship_shields)(void*, int*, int*) = nullptr;
     };
     MsApi g_ms;
 
@@ -109,6 +110,7 @@ namespace
             m.chunk_release = reinterpret_cast<int (*)(int)>(GetProcAddress(h, "MSCore_chunk_release"));
             m.chunk_ready = reinterpret_cast<int (*)(wchar_t*, int)>(GetProcAddress(h, "MSCore_chunk_ready"));
             m.cls = reinterpret_cast<int (*)(const char*, char*, int)>(GetProcAddress(h, "MSCore_class"));
+            m.ship_shields = reinterpret_cast<int (*)(void*, int*, int*)>(GetProcAddress(h, "MSCore_ship_shields"));
         }
         const bool full = m.api && m.add_input && m.view_send && m.throttle && m.find_item && m.find_dock && m.new_order &&
                           m.update_order && m.delete_order && m.autopilot && m.skip_to && m.filter_send && m.filters_read &&
@@ -146,6 +148,44 @@ namespace
         if (!g_ms.cls) { static bool warned = false; if (!warned) { warned = true; log_line(STR("MSCore too old (needs 0.8.10): asteroid, station and container features are off")); } return std::wstring(); }
         char buf[96] = {}; if (!g_ms.cls(logical, buf, static_cast<int>(sizeof(buf)))) return std::wstring();
         std::wstring w(buf, buf + strlen(buf)); cache[logical] = w; return w; }
+
+    // WHAT: true when MSCore has the ship exports (0.8.12+: MSCore_class and MSCore_ship_shields). Not part of ms_load's API 2 check: an older MSCore keeps the mod running with ship features off.
+    bool ms_ships_ok(std::wstring& why)
+    {
+        if (!ms_load(why)) return false;
+        if (!g_ms.cls || !g_ms.ship_shields)
+        {
+            why = L"MSCore too old for ship shields (needs 0.8.12)";
+            return false;
+        }
+        return true;
+    }
+
+    // WHAT: game class name of the player ship (logical 'ship'). Empty = MSCore missing or too old: callers skip their ship work (logged once here). Cached once found. Game thread only.
+    // WHY: the class name is game-fragile; the mod never holds it.
+    std::wstring ms_ship_cls()
+    {
+        static std::wstring cached;
+        if (!cached.empty()) return cached;
+        static bool warned = false;
+        std::wstring why;
+        if (ms_ships_ok(why)) cached = ms_cls("ship");
+        if (cached.empty() && !warned) { warned = true; log_line(STR("MSCore ship class unavailable (needs 0.8.12): ship features are off")); }
+        return cached;
+    }
+
+    // WHAT: shields of a ship from MSCore_ship_shields, whole units: cur / mx = -1 when unreadable. Returns the export's bitmask (1 = cur ok, 2 = max ok), 0 = none readable, -2 module off, -1 exception or MSCore missing / too old.
+    int ms_shields(UObject* ship, int& cur, int& mx)
+    {
+        cur = mx = -1;
+        std::wstring why;
+        if (!ms_ships_ok(why)) return -1;
+        int c = -1, m = -1;
+        const int r = g_ms.ship_shields(static_cast<void*>(ship), &c, &m);
+        if (r > 0 && (r & 1)) cur = c;
+        if (r > 0 && (r & 2)) mx = m;
+        return r;
+    }
 
     // WHAT: copies the export's error text into err when it failed; returns the export's ok flag.
     // WHY: every forwarder reads its error the same way (wchar_t e[256] filled by the DLL).
