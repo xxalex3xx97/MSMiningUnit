@@ -2183,6 +2183,8 @@ static void t_ship_tags()
     CHECK((ship_tags_parse("Miner [Titanium : 200]") == V{{0, 200}}));
     CHECK((ship_tags_parse("[NICKEL:100] [TITANIUM:50]") == V{{1, 100}, {0, 50}}));
     CHECK((ship_tags_parse("[Water Ice:7]") == V{{4, 7}}));
+    CHECK((ship_tags_parse("Medium Miner 1 [ICE]") == V{{4, 0}}));
+    CHECK((ship_tags_parse("[ice:30]") == V{{4, 30}}));
     CHECK((ship_tags_parse("[FOO] [MISC] [TITANIUM]") == V{{0, 0}}));
     CHECK((ship_tags_parse("[TITANIUM:x]") == V{{0, 0}}));
     CHECK((ship_tags_parse("[TITANIUM:-5]") == V{{0, 0}}));
@@ -2217,6 +2219,7 @@ static void t_dock_tags()
     DockTag a = dock_tag_parse(7, "Main [TITANIUM] [auto-filter]");
     CHECK((a.ores == std::vector<int>{0}) && a.autof && !a.misc);
     CHECK((dock_tag_parse(1, "Ice [Water Ice]").ores == std::vector<int>{4}));
+    CHECK((dock_tag_parse(1, "[ICE]").ores == std::vector<int>{4}));
     CHECK(dock_tag_parse(1, "[MISC]").misc);
     CHECK(dock_tag_parse(1, "Titanium plates").ores.empty());
     CHECK(dock_tag_parse(1, "[NICKEL").ores.empty());

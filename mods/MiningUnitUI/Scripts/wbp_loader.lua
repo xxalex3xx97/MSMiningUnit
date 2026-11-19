@@ -927,7 +927,9 @@ local function qSerialize(rows)
   for _, r in ipairs(rows or S.q.rows) do t[#t + 1] = r.id .. ":" .. r.amt end
   return table.concat(t, ",")
 end
-local function qSave(g) if g.locked then return end iniSave({ items = qSerialize(g.rows) }, g.ids) end
+local renameGroup  -- defined below (after shipTagsApply)
+local renameFlush
+local function qSave(g) iniSave({ items = qSerialize(g.rows) }, g.ids); if renameGroup then renameGroup(g) end end
 -- dropdown options for row r of rows: mineable items, plus the row's current item when it is not mineable
 local function qOpts(rows, r)
   local o = {}
@@ -993,7 +995,7 @@ local function qRender()
         local function put(name, s) local t = find(name); if t then try("items " .. name, function() t:SetText(FText(s)) end) end end
         put("Txt_IGroupName", en.name .. " (" .. en.count .. (en.count == 1 and " ship)" or " ships)"))
         put("Txt_IGroupFold", en.folded and ">" or "v")
-        setVis(find("Btn_IGroupAdd"), g.locked and 1 or 0)
+        setVis(find("Btn_IGroupAdd"), 0)
         return
       end
       local rw = g.rows[en.i]
@@ -1004,13 +1006,10 @@ local function qRender()
       local e = find("Edt_Amount")
       if e and S.q.shown[i] ~= rw.amt then try("amount set", function() e:SetText(FText(rw.amt)) end) end
       S.q.shown[i] = rw.amt
-      if e then pcall(function() e:SetIsReadOnly(g.locked and true or false) end) end   -- pool entries are reused: set both ways
-      if g.locked then setVis(find("Col_UD"), 1); setVis(find("Sz_Del"), 1) end
+      if e then pcall(function() e:SetIsReadOnly(false) end) end   -- pool entries are reused: set both ways
     end }
-  local anyLocked = false
-  for _, en in ipairs(flat) do if en.g.locked then anyLocked = true end end
-  setVis(w("Btn_ItemAdd"), (S.all or anyLocked) and 1 or 0)
-  M.setText("Txt_AmountHint", anyLocked and "Queue comes from the ship name tags (read-only)." or "0 = unlimited (mine until cargo is full)")
+  setVis(w("Btn_ItemAdd"), S.all and 1 or 0)
+  M.setText("Txt_AmountHint", "0 = unlimited (mine until cargo is full)")
 end
 -- "ITEM_A:1,ITEM_B:" -> {{id=,amt=},..}
 local function parseQueue(s)
@@ -1028,6 +1027,11 @@ local function taggedShips()
     local p = split(l)
     local id = trim(p[1] or "")
     if id ~= "" then map[id] = parseQueue(trim(p[2] or "")) end
+  end
+  for id, p in pairs(S.qPend or {}) do   -- fresh edits shown until the next ship scan rewrites ShipTags.txt
+    if os.clock() < p.t then
+      if #p.rows > 0 then local c = {}; for i, r in ipairs(p.rows) do c[i] = { id = r.id, amt = r.amt } end; map[id] = c else map[id] = nil end
+    else S.qPend[id] = nil end
   end
   return map
 end
@@ -1059,6 +1063,106 @@ try("queueGroup selftest", function()
   assert(k2 == "~none" and n2 == "No queue")
   L("queueGroup selftest ok")
 end)
+-- ===== ship name ore tags: queue rows -> "[TITANIUM:200] [NICKEL]" inside the ship name =====
+local TAGW = { ITEM_TitaniumOre = "TITANIUM", ITEM_NickelOre = "NICKEL", ITEM_CobaltOre = "COBALT", ITEM_IridiumOre = "IRIDIUM",
+  ITEM_WaterIce = "WATERICE", ITEM_Silica = "SILICA", ITEM_Graphite = "GRAPHITE" }
+local TAGSET = { ICE = true }
+for _, v in pairs(TAGW) do TAGSET[v] = true end
+local function shipTagsApply(name, rows)
+  name = name or ""
+  local out, last, firstPos, pos = "", 1, nil, 1
+  while true do
+    local s, e, inner = name:find("%[([^%]]*)%]", pos)
+    if not s then break end
+    local norm = (inner:match("^([^:]*)") or ""):upper():gsub("[ _%-]", "")
+    if TAGSET[norm] then
+      out = out .. name:sub(last, s - 1)
+      if not firstPos then firstPos = #out + 1 end
+      last = e + 1
+    end
+    pos = e + 1
+  end
+  out = out .. name:sub(last)
+  local tags, seen = {}, {}
+  for _, r in ipairs(rows or {}) do
+    local wd = TAGW[r.id or ""]
+    if wd and not seen[wd] then
+      seen[wd] = true
+      local n = tostring(r.amt or ""):match("^%d+$") and tonumber(r.amt) or 0
+      tags[#tags + 1] = n > 0 and ("[" .. wd .. ":" .. string.format("%d", n) .. "]") or ("[" .. wd .. "]")
+    end
+  end
+  if #tags > 0 then
+    local tx = table.concat(tags, " ")
+    if firstPos then out = out:sub(1, firstPos - 1) .. tx .. out:sub(firstPos)
+    elseif out == "" then out = tx
+    else out = out .. " " .. tx end
+  end
+  return (out:gsub(" +", " "):match("^%s*(.-)%s*$"))
+end
+try("shipTagsApply selftest", function()
+  local N, T = { id = "ITEM_NickelOre", amt = "100" }, { id = "ITEM_TitaniumOre", amt = "0" }
+  local function eq(a, b) assert(a == b, tostring(a) .. " ~= " .. tostring(b)) end
+  eq(shipTagsApply("Medium Miner 3", { N, { id = "ITEM_TitaniumOre", amt = "50" } }), "Medium Miner 3 [NICKEL:100] [TITANIUM:50]")
+  eq(shipTagsApply("Miner [TITANIUM:5] x", { T }), "Miner [TITANIUM] x")
+  eq(shipTagsApply("A [NICKEL:1] B [TITANIUM:2]", { { id = "ITEM_TitaniumOre", amt = "9" } }), "A [TITANIUM:9] B")
+  eq(shipTagsApply("A [MISC] [TITANIUM]", {}), "A [MISC]")
+  eq(shipTagsApply("[TITANIUM]  x", {}), "x")
+  eq(shipTagsApply("", { T }), "[TITANIUM]")
+  eq(shipTagsApply("Medium Miner 1 [ICE]", { { id = "ITEM_WaterIce", amt = "0" } }), "Medium Miner 1 [WATERICE]")
+  local q = { N, T }
+  local a = shipTagsApply("Medium Miner 3 [ICE] z", q)
+  eq(shipTagsApply(a, q), a)
+  L("shipTagsApply selftest ok")
+end)
+local MSN  -- cached mscore module (false = missing)
+local function renameShip(id, name)
+  local okF, ok2, err = pcall(function()
+    if MSN == nil then local o, m = pcall(require, "mscore"); MSN = o and type(m) == "table" and m or false end
+    local FN = MSN and MSN.factory_native
+    local f = (FN and FN.rename_ship) or _G.MSCoreNative_rename_ship or _G.MSCoreNative_rename_dock
+    if not f then return false, "no rename native" end
+    return f(tonumber(id) or id, name)
+  end)
+  if not okF then return false, tostring(ok2) end
+  if ok2 == false or ok2 == nil then return false, err and tostring(err) or "rename failed" end
+  return true
+end
+local function renameNow(g)
+  local names = {}
+  for _, o in ipairs(benchShips()) do names[o.id] = o.text end
+  S.qPend = S.qPend or {}
+  local n, firstErr = 0, nil
+  for _, id in ipairs(g.ids) do
+    local cur = names[id]
+    if cur then
+      local nw = shipTagsApply(cur, g.rows)
+      if nw ~= cur and nw ~= "" then
+        local rows = {}
+        for i, r in ipairs(g.rows) do rows[i] = { id = r.id, amt = r.amt } end
+        local ok1, err = renameShip(id, nw)
+        if ok1 then n = n + 1 else firstErr = firstErr or err end
+        S.qPend[id] = { rows = rows, t = os.clock() + 20 }
+      end
+    end
+  end
+  if firstErr then M.setText("Txt_Status", "error: ship rename failed: " .. firstErr)
+  elseif n > 0 then M.setText("Txt_Status", "ship names updated (" .. n .. ")") end
+end
+-- debounce: typing an amount saves on every change; rename once, ~1 s after the last edit (also flushed when the window closes)
+renameGroup = function(g)
+  S.rnQ = S.rnQ or {}; S.qPend = S.qPend or {}
+  local ids, rows = {}, {}
+  for i, id in ipairs(g.ids) do ids[i] = id end
+  for i, r in ipairs(g.rows) do rows[i] = { id = r.id, amt = r.amt } end
+  for _, id in ipairs(ids) do S.qPend[id] = { rows = rows, t = os.clock() + 20 } end   -- the tab keeps showing the new queue until the next ship scan
+  S.rnQ[table.concat(ids, ",")] = { g = { ids = ids, rows = rows }, due = os.clock() + 1.0 }
+end
+renameFlush = function(force)
+  for k, e in pairs(S.rnQ or {}) do
+    if force or os.clock() >= e.due then S.rnQ[k] = nil; renameNow(e.g) end
+  end
+end
 try("parseQueue selftest", function()
   local r = parseQueue("ITEM_A:1, ITEM_B:")
   assert(#r == 2 and r[1].id == "ITEM_A" and r[1].amt == "1" and r[2].amt == "" and #parseQueue("") == 0)
@@ -1092,7 +1196,7 @@ itemsLoad = function()
   local ids = targets()
   local tags = taggedShips()
   local function rowsOf(id)
-    if tags[id] then return tags[id], true end
+    if tags[id] then return tags[id], false end
     local sec = iniGet(lines, "ship." .. id)
     if sec.items ~= nil then return parseQueue(sec.items), false end
     return {}, false
@@ -1134,6 +1238,7 @@ itemsLoad = function()
   qRender()
 end
 local function itemsTick()
+  if renameFlush then renameFlush() end
   if not S.sid or not S.q or M.lastTab ~= 2 then return end
   local flat = S.q.flat or {}
   for r = 1, #flat do
@@ -1876,6 +1981,7 @@ end
 function M.isOpen() return ok(S.frame) and inVp(S.frame) end
 
 function M.close()
+  try("rename flush", function() if renameFlush then renameFlush(true) end end)   -- a pending ship-name rewrite must not be lost
   S.gen = S.gen + 1  -- stops the status loop
   if BIND and BIND.clear then BIND.clear() end  -- drop button callbacks + global layout hook
   S.sid = nil
@@ -2318,7 +2424,7 @@ function M.open(ship)
       M.setBtnText("Btn_BeltWarp", "Warp to sector")
       bind("Btn_ItemAdd", function()
         local g = S.q and S.q.single
-        if S.all or not g or g.locked then return end
+        if S.all or not g then return end
         g.rows[#g.rows + 1] = { id = "", amt = "" }; qSave(g); itemsLoad()
       end)
       -- presets: Presets.txt "<name>|<ITEM_x:amt,...>"
@@ -2329,16 +2435,12 @@ function M.open(ship)
         return out
       end
       local function applyTo(preset, groups)
-        local done, skipped = 0, 0
+        local done = 0
         for _, g in ipairs(groups) do
-          if g.locked then skipped = skipped + #g.ids
-          else
-            local rows = parseQueue(preset.q)
-            g.rows = rows; qSave(g); done = done + #g.ids
-          end
+          g.rows = parseQueue(preset.q); qSave(g); done = done + #g.ids
         end
         itemsLoad()
-        M.setText("Txt_Status", "preset applied to " .. done .. " ships" .. (skipped > 0 and (", " .. skipped .. " skipped (name tags)") or ""))
+        if not S.qPend or next(S.qPend) == nil then M.setText("Txt_Status", "preset applied to " .. done .. " ships") end
       end
       bind("Btn_PresetSave", function()
         local groups = curGroups()

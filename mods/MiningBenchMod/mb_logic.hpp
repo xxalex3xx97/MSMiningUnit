@@ -212,6 +212,7 @@ namespace
             const size_t e = name.find(']', p + 1);
             if (e == std::string::npos) break;
             const std::string w = tag_norm(name.substr(p + 1, e - p - 1));
+            const std::string wn = (w == "ICE") ? tag_norm("waterice") : w;
             if (w == "MISC") t.misc = true;
             else if (w == "PARKING") t.park = true;
             else if (w == "AUTOFILTER") t.autof = true;
@@ -220,7 +221,7 @@ namespace
             else if (w == "DEUTERIUM") t.fuel |= 2;
             else if (w == "WARP") t.fuel |= 4;
             else for (int i = 0; i < N_ORE; ++i)
-                if (w == tag_norm(ORE_KEY[i]) && std::find(t.ores.begin(), t.ores.end(), i) == t.ores.end()) t.ores.push_back(i);
+                if (wn == tag_norm(ORE_KEY[i]) && std::find(t.ores.begin(), t.ores.end(), i) == t.ores.end()) t.ores.push_back(i);
             p = e + 1;
         }
         return t; }
@@ -237,8 +238,9 @@ namespace
             const std::string w = tag_norm(c == std::string::npos ? body : body.substr(0, c));
             std::string a = c == std::string::npos ? std::string() : trim(body.substr(c + 1));
             const int amt = (!a.empty() && a.find_first_not_of("0123456789") == std::string::npos) ? to_int(a, 0) : 0;
+            const std::string wn = (w == "ICE") ? tag_norm("waterice") : w;
             for (int i = 0; i < N_ORE; ++i)
-                if (w == tag_norm(ORE_KEY[i])) { bool dup = false; for (const auto& q : out) if (q.first == i) dup = true; if (!dup) out.push_back({i, amt}); break; }
+                if (wn == tag_norm(ORE_KEY[i])) { bool dup = false; for (const auto& q : out) if (q.first == i) dup = true; if (!dup) out.push_back({i, amt}); break; }
             p = e + 1; }
         return out; }
     // WHAT: ship display name per ship id (UTF-8), filled each scan by mine_set_bench; eff_cfg reads it for name tags.
