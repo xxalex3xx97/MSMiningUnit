@@ -17,7 +17,10 @@ $mirror = "$re\cppmods\$Mod"
 New-Item -ItemType Directory -Force $mirror | Out-Null
 Get-ChildItem "$src\mods\$Mod" -File | Where-Object { $_.Extension -in '.cpp', '.hpp', '.h', '.txt' } | Copy-Item -Destination $mirror -Force
 # MiningBenchMod calls ShipControl through its C ABI header (mb_shipctl.hpp includes sc_api.h)
-if ($Mod -eq 'MiningBenchMod') { Copy-Item "$src\mods\ShipControl\sc_api.h" -Destination $mirror -Force }
+if ($Mod -eq 'MiningBenchMod') {
+    Copy-Item "$src\mods\ShipControl\sc_api.h" -Destination $mirror -Force
+    Copy-Item "$src\mods\ShipControl\sc_logic_path.hpp" -Destination $mirror -Force   # mb_logic.hpp includes the path/warp geometry
+}
 
 # ShipControl is not in the mirror's cppmods\CMakeLists.txt yet: add it once
 if ($Mod -eq 'ShipControl') {
