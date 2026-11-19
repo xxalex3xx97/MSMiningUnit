@@ -92,7 +92,7 @@ namespace
         double warp_t = 0.0;                   // seconds since the belt warp started (MS_WARP timeout)
         std::set<int> tried;                   // sectors already searched without a rock this belt run (cleared when mining starts)
         int32_t hull = -1;                     // Health at the last check (-1 = no baseline); a drop = attacked
-        int32_t sh = -1;                       // Shields at the last check (flee baseline, -1 = none/unreadable); a drop = attacked (shield hit)
+        int32_t sh = -1;                       // shield units at the last check (flee baseline, -1 = none/unreadable); a drop = attacked (shield hit)
         bool backout = false;                  // hazard hit: the back-out move runs first; the dock trip (flee_why) starts when it ends
         std::wstring flee_why;                 // the flee's trigger text, for the deferred dock trip
         bool wp_on = false;                    // approach: a waypoint flight runs (the target approach restarts when it ends)
@@ -147,7 +147,7 @@ namespace
         bool tgt_latch = false;                // a flee for this attack already started (cleared when the attack is over)
         bool atk_on = false;                   // an attack episode is running (sector text is read once per episode and per 30 s summary)
         int32_t hw = -1, hull_max = 0;         // Health at the last 1 s sample (hull watch: logs drops, separate from the flee baseline hull); MaxHealth
-        int32_t shw = -1, sh_max = 0;          // Shields at the last hull-watch sample (-1 = unreadable); MaxShields
+        int32_t shw = -1, sh_max = 0;          // shield units at the last hull-watch sample (-1 = unreadable); shield max
         double flee_t = -1.0;                  // seconds since the flee started (-1 = no flee running)
         double atk_acc = 0.0;                  // seconds in an attack since the last 30 s summary
         std::wstring atk_txt = STR("none");    // attackers at the last attacked sample (kept after the attack: the destroyed record uses it)
@@ -1056,7 +1056,8 @@ namespace
                 std::vector<UObject*> ships;
                 ActFrame sf, near_f;
                 const int ssys = sys_id(ship);
-                if (act_frame(ship, sf) && find_all_seh(STR("DMSPlayerShipObject"), ships))
+                const std::wstring scls = ms_ship_cls();   // empty = MSCore too old: no ship override
+                if (!scls.empty() && act_frame(ship, sf) && find_all_seh(scls.c_str(), ships))
                 {
                     double best = -1.0; int best_id = 0;
                     for (UObject* g : ships)
@@ -1136,16 +1137,15 @@ namespace
 
     // WHAT: steps before the state switch of mine_step (0 hull hit on idle, 1 switched off, 1b hull hit while flying, 2 fuel check).
     //       true = step ended the tick (caller returns); false = run the state switch.
-    // WHAT: Shields of a ship, read like Health (IntProperty). -1 when unreadable (logged once).
+    // WHAT: current shields of a ship, whole units, from MSCore (ms_shields). -1 when unreadable (logged once).
     // WHY: the shield value is the only early sign of a hit on a shielded ship (the hull does not move until the shield is gone).
     int32_t shield_now(UObject* ship)
     {
-        int64_t raw = 0;
-        if (pnum_prop(ship, STR("Shields"), raw)) return shield_from_raw(raw);
-        double d = 0.0;
-        if (call_double(ship, STR("GetShields"), d)) return shield_whole(d);
+        int cur = -1, mx = -1;
+        ms_shields(ship, cur, mx);
+        if (cur >= 0) return cur;
         static bool warned = false;
-        if (!warned) { warned = true; log_line(STR("MINE shield unreadable: GetShields missing on DMSPlayerShipObject")); }
+        if (!warned) { warned = true; log_line(STR("MINE shield unreadable: MSCore ship shields missing or ship has none")); }
         return -1;
     }
 
@@ -3393,14 +3393,13 @@ namespace
             int32_t mx = 0;
             if (get_int_prop(ship, STR("MaxHealth"), mx)) m.hull_max = mx;
             {
-                int64_t raw_max = 0, raw_cur = 0;
-                if (pnum_prop(ship, STR("MaxShields"), raw_max)) m.sh_max = shield_from_raw(raw_max);
-                else { double d = 0.0; if (call_double(ship, STR("GetMaxShields"), d)) m.sh_max = shield_whole(d); }
-                static std::set<int> shield_logged;   // once per ship: confirms the raw scale
+                int sh_cur = -1, sh_max = -1;
+                ms_shields(ship, sh_cur, sh_max);
+                if (sh_max >= 0) m.sh_max = sh_max;
+                static std::set<int> shield_logged;   // once per ship: confirms the read
                 if (shield_logged.insert(sid).second)
                 {
-                    const bool ok_cur = pnum_prop(ship, STR("Shields"), raw_cur);
-                    log_line(STR("MINE shield raw ship=") + std::to_wstring(sid) + STR(" Shields=") + (ok_cur ? std::to_wstring(raw_cur) : std::wstring(STR("n/a"))) + STR(" Max=") + (raw_max != 0 ? std::to_wstring(raw_max) : std::wstring(STR("n/a"))));
+                    log_line(STR("MINE shield read ship=") + std::to_wstring(sid) + STR(" cur=") + (sh_cur >= 0 ? std::to_wstring(sh_cur) : std::wstring(STR("n/a"))) + STR(" max=") + (sh_max >= 0 ? std::to_wstring(sh_max) : std::wstring(STR("n/a"))));
                 }
             }
             m.dmg_txt = struct_prop_text(ship, STR("DamageState"));

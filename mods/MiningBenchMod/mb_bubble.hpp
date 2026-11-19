@@ -241,6 +241,14 @@ namespace
 
     void beam_tick(double dt)
     {
+        const std::wstring scls = ms_ship_cls();
+        if (scls.empty())   // MSCore too old: no ship lookups, release any held laser
+        {
+            for (int sid : std::set<int>(g_beam_held)) beam_release(sid);
+            g_ship_blk.clear();
+            g_beams.clear();
+            return;
+        }
         std::set<int> prev_blk;
         for (const auto& kv : g_ship_blk) prev_blk.insert(kv.first);
         g_ship_blk.clear();
@@ -251,7 +259,7 @@ namespace
             if (it == g_mine.end()) continue;
             MineSt& m = it->second;
             if (m.st != MS_MINE) { g_beam_held.erase(sid); g_beam_clear_t.erase(sid); g_fire_t.erase(sid); g_beam_hold_t.erase(sid); continue; }
-            UObject* ship = find_by_id(STR("DMSPlayerShipObject"), sid);
+            UObject* ship = find_by_id(scls.c_str(), sid);
             ActFrame f;
             if (!alive(ship) || !act_frame(ship, f)) { beam_release(sid); continue; }
             ShipBlk& sb = g_ship_blk[sid];   // this ship is a no-go sphere for the other ships (path checks)
@@ -277,7 +285,7 @@ namespace
             for (int vid : g_bench_ids)
             {
                 if (vid == sid) continue;
-                UObject* vs = find_by_id(STR("DMSPlayerShipObject"), vid);
+                UObject* vs = find_by_id(scls.c_str(), vid);
                 ActFrame vf;
                 if (!alive(vs) || !act_frame(vs, vf) || sys_id(vs) != bm.sys) continue;
                 const double vp[3] = {vf.loc[0] / MV_UU_PER_M, vf.loc[1] / MV_UU_PER_M, vf.loc[2] / MV_UU_PER_M};
@@ -307,7 +315,7 @@ namespace
             }
             if (now_held && beam_yield_due(g_beam_hold_t[sid]))
             {   // held too long in a shared zone: this ship gives its rock up and seeks the next one
-                UObject* ys = find_by_id(STR("DMSPlayerShipObject"), sid);
+                UObject* ys = find_by_id(scls.c_str(), sid);
                 MineSt& ym = g_mine[sid];
                 log_line(STR("BEAM yield ship=") + std::to_wstring(sid) + STR(" rock=") + std::to_wstring(ym.rock) +
                          STR(" held=") + std::to_wstring(static_cast<long long>(g_beam_hold_t[sid])) + STR(" s"));
