@@ -116,7 +116,8 @@ local function rootW()
 end
 -- Only these python-built names (add_docks_tab.py, add_btn_collect.py) ever use the tree lookup. Every other missing name returns nil at once.
 local WALK_NAMES = { Btn_TabDocks = true, Txt_TabDocks = true, Pnl_PageDocks = true, Txt_DocksHdr = true, Row_DocksScroll = true,
-  Dyn_Docks = true, Btn_DocksHelp = true, Pnl_DocksLegend = true, Btn_Collect = true, Txt_Collect = true }
+  Dyn_Docks = true, Btn_DocksHelp = true, Pnl_DocksLegend = true, Btn_Collect = true, Txt_Collect = true,
+  Pnl_UDockCard_Misc = true, Btn_UDockAdd_Misc = true }
 local WALK_NODES = 2600   -- hard cap of one index walk
 -- ONE bounded walk per window open (S.wc = name -> widget for WALK_NAMES). Stops early when all are found. Logs time + nodes.
 local function buildIndex()
