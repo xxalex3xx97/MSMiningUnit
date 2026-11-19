@@ -1100,7 +1100,7 @@ namespace
         mine_stop_work(ship, sid);   // cancels the approach job, Throttle 0
         m.flee = true; m.leave = false; m.flee_t = 0.0;
         m.hold_pt_ok = false; m.hold_fly_only = false;   // a new flee picks its own hold point
-        mlog(sid, STR("ERROR: ") + why + STR(", fleeing to dock"));
+        mlog(sid, STR("Fleeing: ") + why + STR(", going to dock"));
         g_flee_dock.erase(sid);
         g_flee_pick.insert(sid);   // dock pick purpose P_FLEE (mb_net.hpp)
         g_dock_pick.erase(sid);    // a flee never uses a manual Dock picker choice
@@ -2765,7 +2765,7 @@ namespace
             }
             const auto gi = g_net_ships.find(sid);
             const bool granted = gi != g_net_ships.end() && gi->second.granted;
-            if (!granted && !m.flee && !c.park_docks.empty())
+            if (!granted && !c.park_docks.empty())   // a fleeing ship parks too: flying to the parking dock IS its escape (user 2026-11-19); a failed park falls back to hazard_away below
             {
                 if (m.qpark == 2 && net_docked_at(sid, ship) == 0) m.qpark = 3;
                 if (m.qpark == 2)
