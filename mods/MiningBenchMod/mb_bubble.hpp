@@ -25,7 +25,6 @@ namespace
     // WHAT: a ship whose bubble pass was slow is not checked this long (ms); the slow log line is written at most this often (ms).
     constexpr ULONGLONG BUBBLE_OFF_MS = 10000;
     constexpr ULONGLONG BUBBLE_SLOW_LOG_MS = 30000;
-    constexpr double BUBBLE_ARRIVE_M = 30.0;   // a resumed flight is done when the ship is this close to its destination (m)
 
     std::map<int, ULONGLONG> g_bubble_off;   // sid -> GetTickCount64 until which the ship is not checked (slow pass)
     ULONGLONG g_bubble_slow_ms = 0;          // GetTickCount64 of the last BUBBLE slow line (0 = none yet)
@@ -118,6 +117,36 @@ namespace
         return bubble_too_near(bub_dist(p, c), cr, r);
     }
 
+    // WHAT: replan fix (SEEK): the blocker is left out of the target choice for this visit, then path_guard against the target with it skipped.
+    //       Legacy bub_exec and the ShipControl callback (kind REPLAN) both call it.
+    void bub_do_replan(int sid, UObject* ship, MineSt& m, int blk)
+    {
+        if (blk > 0) g_path_skip[sid].insert(blk);   // the blocker is never picked as a target for this visit
+        Config c = eff_cfg(sid);
+        std::wstring why;
+        UObject* item = item_c(c.resource, why);
+        UObject* tg = m.rock > 0 ? rock_actor_by_id(m.rock) : nullptr;
+        if (tg && m.st == MS_SEEK) path_guard(ship, sid, m, c, tg, item);
+    }
+
+    // WHAT: skip fix (SEEK: give the target up; waypoint / ore: the flight is dropped). Legacy bub_exec and the ShipControl callback (kind SKIP) both call it.
+    //       cur (ore flight) is read from g_mvs here, before the cancel.
+    void bub_do_skip(int sid, UObject* ship, MineSt& m, int phase, int blk, double blk_d)
+    {
+        if (phase == BPH_SEEK && m.rock > 0) { path_give_up(ship, sid, m, m.rock, blk, blk_d); return; }
+        const auto mj = g_mvs.find(sid);
+        const MoveJob cur = mj != g_mvs.end() ? mj->second : MoveJob();
+        if (phase == BPH_ORE && cur.ore_on)
+            for (SwOre& o : m.sw_list) if (o.a == cur.rock_act) o.done = true;   // SWEEP: the ore is unreachable for this run
+        mv_cancel(sid); zero_all_dual(ship);
+        if (m.st == MS_SWEEP && (phase == BPH_WAYPOINT || phase == BPH_ORE))
+        {
+            // back by warp only when a return point was saved (sw_back); else the next ore is picked. A return with no saved point warped to system 0.
+            if (m.sw_back) { m.sw_nofly = true; sw_phase(ship, sid, m, SW_RETURN); }
+            else if (m.sw_ph != SW_PICK) sw_phase(ship, sid, m, SW_PICK);
+        }
+    }
+
     // WHAT: carries out the fix of a ladder event (SEEK replan / skip, waypoint, skip, nudge, or brake only). ph = bs.phase of the hit.
     void bub_exec(int sid, UObject* ship, MineSt& m, BubbleState& bs, int act, const double p[3], double cr)
     {
@@ -126,16 +155,7 @@ namespace
         const BubbleFix fix = bubble_fix(static_cast<BubblePhase>(bs.phase), act, bs.wp, nrock);
         const auto mj = g_mvs.find(sid);
         const MoveJob cur = mj != g_mvs.end() ? mj->second : MoveJob();
-        if (fix == BF_REPLAN)
-        {
-            if (bs.blk > 0) g_path_skip[sid].insert(bs.blk);   // the blocker is never picked as a target for this visit
-            Config c = eff_cfg(sid);
-            std::wstring why;
-            UObject* item = item_c(c.resource, why);
-            UObject* tg = m.rock > 0 ? rock_actor_by_id(m.rock) : nullptr;
-            if (tg && m.st == MS_SEEK) path_guard(ship, sid, m, c, tg, item);
-            return;
-        }
+        if (fix == BF_REPLAN) { bub_do_replan(sid, ship, m, bs.blk); return; }
         if (fix == BF_WAYPOINT)
         {
             double dst[3] = {0, 0, 0}, bc[3] = {0, 0, 0}, br = 0.0, wp[3] = {0, 0, 0};
@@ -164,17 +184,8 @@ namespace
         }
         if (fix == BF_RESUME || fix == BF_NONE) { bs.resume = false; return; }
         // SKIP (SEEK: give the target up; waypoint / ore: the flight is dropped)
-        if (bs.phase == BPH_SEEK && m.rock > 0) { path_give_up(ship, sid, m, m.rock, bs.blk, bs.blk_d); bs.resume = false; return; }
-        if (bs.phase == BPH_ORE && cur.ore_on)
-            for (SwOre& o : m.sw_list) if (o.a == cur.rock_act) o.done = true;   // SWEEP: the ore is unreachable for this run
         bs.resume = false;
-        mv_cancel(sid); zero_all_dual(ship);
-        if (m.st == MS_SWEEP && (bs.phase == BPH_WAYPOINT || bs.phase == BPH_ORE))
-        {
-            // back by warp only when a return point was saved (sw_back); else the next ore is picked. A return with no saved point warped to system 0.
-            if (m.sw_back) { m.sw_nofly = true; sw_phase(ship, sid, m, SW_RETURN); }
-            else if (m.sw_ph != SW_PICK) sw_phase(ship, sid, m, SW_PICK);
-        }
+        bub_do_skip(sid, ship, m, bs.phase, bs.blk, bs.blk_d);
     }
 
     // WHAT: one bubble pass for ship sid in phase ph: query, ladder step, and the fix of the step.
@@ -332,13 +343,14 @@ namespace
     //       when it moves by our steering or faster than BUBBLE_BRAKE_V. Game autopilot, docking autopilot and warp travel are never touched.
     void bubble_tick(double dt)
     {
-        (void)dt;
+        if (!sc_bubble_block() && g_sc_speed_on) sc_tick_bubble(dt);   // ShipControl runs the ladder of its ships (SC3)
         const ULONGLONG now = GetTickCount64();
         for (int sid : g_bench_ids)
         {
             auto it = g_mine.find(sid);
             if (it == g_mine.end()) continue;
             MineSt& m = it->second;
+            if (sc_bub_covers(sid)) { g_bubble.erase(sid); continue; }   // ShipControl runs this ship's ladder
             UObject* ship = find_by_id(STR("DMSPlayerShipObject"), sid);
             const bool state_ok = m.st == MS_SEEK || m.st == MS_MINE || m.st == MS_COLLECT || m.st == MS_SWEEP;
             if (!state_ok || !alive(ship) || (m.st == MS_SWEEP && m.sw_ph == SW_WARP)) { g_bubble.erase(sid); continue; }
@@ -381,6 +393,23 @@ namespace
                 }
             }
         }
+    }
+
+    // WHAT: ladder state of ship sid for the status line: ShipControl's status when its ladder runs the ship, else the legacy g_bubble entry. Zeros when none.
+    void bub_ladder(int sid, int& braking, int& replans, int& wp, int& resume, int& blk)
+    {
+        braking = replans = wp = resume = blk = 0;
+        if (sc_bub_on_ship(sid))
+        {
+            ScBubbleStatus s{};
+            if (!sc_bubble_status(sid, s) || !s.have) return;
+            braking = s.braking; replans = s.replans; wp = s.wp; resume = s.resume; blk = s.blk;
+            return;
+        }
+        const auto bs = g_bubble.find(sid);
+        if (bs == g_bubble.end()) return;
+        braking = bs->second.braking ? 1 : 0; replans = bs->second.replans; wp = bs->second.wp;
+        resume = bs->second.resume ? 1 : 0; blk = bs->second.blk;
     }
 
     // WHAT: bubble_status:<ship> and bubble_sim:<ship>:<rock_id> (Dev cmds). Read-only: no game write. Writes MiningBubble.txt; returns one line.
@@ -429,10 +458,9 @@ namespace
             out += buf;
             std::snprintf(buf, sizeof(buf), "nose=(%.3f,%.3f,%.3f)\r\n", f.fw[0], f.fw[1], f.fw[2]);
             out += buf;
-            const auto bs = g_bubble.find(sid);
-            std::snprintf(buf, sizeof(buf), "ladder braking=%d replans=%d wp=%d resume=%d blk=%d\r\n", bs != g_bubble.end() && bs->second.braking ? 1 : 0,
-                          bs != g_bubble.end() ? bs->second.replans : 0, bs != g_bubble.end() ? bs->second.wp : 0,
-                          bs != g_bubble.end() && bs->second.resume ? 1 : 0, bs != g_bubble.end() ? bs->second.blk : 0);
+            int lbr = 0, lrep = 0, lwp = 0, lres = 0, lblk = 0;
+            bub_ladder(sid, lbr, lrep, lwp, lres, lblk);
+            std::snprintf(buf, sizeof(buf), "ladder braking=%d replans=%d wp=%d resume=%d blk=%d\r\n", lbr, lrep, lwp, lres, lblk);
             out += buf;
             double d = 0.0, rad = 0.0;
             const int bid = bubble_query(sid, ship, f, v, bubble_skip_id(sid, ph, p, trock), d, rad);
@@ -491,5 +519,100 @@ namespace
         }
         try { write_atomic(get_dll_dir() / "MiningBubble.txt", out); } catch (...) {}
         return (sim ? STR("ok bubble_sim ship=") : STR("ok bubble_status ship=")) + std::to_wstring(sid) + STR(" (see MiningBubble.txt)");
+    }
+
+    // ---------- ShipControl bubble callbacks (SC3-C, ScHost level 4) ----------
+    // WHAT: ScHost.first_blocker: first blocker on p..b for ship sid (phase, target rock). Fills out: distance, radius, centre, geom_ok and rock_r
+    //       (reg_geom of the blocker; geom_ok 0 and rock_r 0 when the geometry is unknown). Returns the id (0 = clear, < 0 = ship sphere).
+    // WHY: the registry query stays in mining (ship spheres, skip rule); ShipControl only decides the ladder from the hit.
+    int sc_host_first_blocker(int sid, int sys, int phase, int rock, const double p[3], const double b[3], double clear_m, ScBlockHit* out)
+    {
+        try
+        {
+            if (!out) return 0;
+            reg_area_seeded(sys, p);   // unseeded area: the query sees the seeded rocks only (logged once per pass)
+            const int skip = bubble_skip_id(sid, static_cast<BubblePhase>(phase), p, rock);
+            double d = 0.0, r = 0.0, cc[3] = {0, 0, 0};
+            const int id = seg_blocker(sys, p, b, skip, clear_m, false, d, cc, r, false, sid);
+            out->d = d;
+            out->block_r = r;
+            for (int i = 0; i < 3; ++i) out->c[i] = cc[i];
+            out->geom_ok = 0;
+            out->rock_r = 0.0;
+            double gc[3] = {0, 0, 0}, gr = 0.0;
+            if (id != 0 && reg_geom(id, gc, gr)) { out->geom_ok = 1; out->rock_r = gr; }
+            return id;
+        }
+        catch (...) { return 0; }
+    }
+
+    // WHAT: ScHost.bubble_profile: mining's side of one ship's bubble pass (active, job flags, target rock, flight destination).
+    //       0 = not a ship ShipControl runs (SC erases the ship's state). No ship lookup: ShipControl checks the ship alive.
+    int sc_host_bubble_profile(int sid, ScBubbleProfile* out)
+    {
+        try
+        {
+            if (!out || !sc_bub_on_ship(sid)) return 0;
+            const auto mi = g_mine.find(sid);
+            const MineSt* m = mi != g_mine.end() ? &mi->second : nullptr;
+            const bool state_ok = m && (m->st == MS_SEEK || m->st == MS_MINE || m->st == MS_COLLECT || m->st == MS_SWEEP);
+            const auto mj = g_mvs.find(sid);
+            const MoveJob* mv = (mj != g_mvs.end() && !mj->second.kind.empty()) ? &mj->second : nullptr;
+            out->active = (state_ok && !(m->st == MS_SWEEP && m->sw_ph == SW_WARP)) ? 1 : 0;
+            out->thrust = mv && mv->kind == "approach_rock" ? 1 : 0;
+            out->pt_on = mv && mv->pt_on ? 1 : 0;
+            out->ore_on = mv && mv->ore_on ? 1 : 0;
+            out->job_active = mv ? 1 : 0;
+            out->warp_wait = mv && mv->warp_wait ? 1 : 0;
+            out->rock = m ? m->rock : 0;
+            double dst[3] = {0, 0, 0};
+            out->dst_ok = mv && flight_dst(*mv, dst) ? 1 : 0;
+            for (int i = 0; i < 3; ++i) out->dst_m[i] = dst[i];
+            out->clearance_m = static_cast<double>(g_cfg.bubble_clearance_m);
+            return 1;
+        }
+        catch (...) { return 0; }
+    }
+
+    // WHAT: ScHost.near_rock: 1 = ship sid (centre p, radius ship_r_m) is too near its nearest rock. out_c3 / out_r = that rock's centre (m) and radius (m).
+    int sc_host_near_rock(int sid, const double p[3], double ship_r_m, double* out_c3, double* out_r)
+    {
+        try
+        {
+            UObject* ship = find_by_id(STR("DMSPlayerShipObject"), sid);
+            if (!alive(ship) || !out_c3 || !out_r) return 0;
+            double c[3] = {0, 0, 0}, r = 0.0;
+            const bool too_near = bub_near_rock(ship, p, ship_r_m, c, r);
+            for (int i = 0; i < 3; ++i) out_c3[i] = c[i];
+            *out_r = r;
+            return too_near ? 1 : 0;
+        }
+        catch (...) { return 0; }
+    }
+
+    // WHAT: ScHost.on_bubble: one ladder event. kind 1 REPLAN and 2 SKIP run their fix here; kind 3 FLY starts the point flight (approach_rock job to ev->loc / ev->ch).
+    //       1 = done (FLY: the flight started), 0 = not.
+    int sc_host_on_bubble(int sid, const ScBubbleEvent* ev)
+    {
+        try
+        {
+            if (!ev) return 0;
+            UObject* ship = find_by_id(STR("DMSPlayerShipObject"), sid);
+            if (!alive(ship)) return 0;
+            if (ev->kind == 3)
+            {
+                PtTarget pt;
+                pt.sys = ev->sys;
+                for (int i = 0; i < 3; ++i) { pt.ch[i] = ev->ch[i]; pt.loc[i] = ev->loc[i]; }
+                mv_cancel(sid); zero_all_dual(ship);
+                return move_start(sid, "approach_rock", -1, nullptr, &pt) == STR("waiting") ? 1 : 0;
+            }
+            const auto mi = g_mine.find(sid);
+            if (mi == g_mine.end()) return 0;
+            if (ev->kind == 1) { bub_do_replan(sid, ship, mi->second, ev->blk); return 1; }
+            if (ev->kind == 2) { bub_do_skip(sid, ship, mi->second, ev->phase, ev->blk, ev->blk_d); return 1; }
+            return 0;
+        }
+        catch (...) { return 0; }
     }
 }

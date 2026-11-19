@@ -186,7 +186,15 @@ namespace
 
     // WHAT: bubble ladder state per ship (mb_bubble.hpp). braking = the move job holds Throttle 0 (see move_aim_step).
     std::map<int, BubbleState> g_bubble;
-    bool bubble_braking(int sid) { auto it = g_bubble.find(sid); return it != g_bubble.end() && it->second.braking; }
+    bool bubble_braking_legacy(int sid) { auto it = g_bubble.find(sid); return it != g_bubble.end() && it->second.braking; }
+    // WHAT: bubble brake of ship sid for the legacy move_aim_step: the legacy ladder, or ShipControl's ladder when it runs the ship (SC3-C).
+    bool bubble_braking(int sid)
+    {
+        if (bubble_braking_legacy(sid)) return true;
+        if (!sc_bub_on_ship(sid)) return false;
+        ScBubbleStatus s{};
+        return sc_bubble_status(sid, s) && s.braking;
+    }
 
     // Body-frame axes for the aim offset. Measured earlier in game (old code, removed); the working steering confirms them.
     // WHAT: unit body-frame axis of the YAW offset = +Z (unitless). WHY: a yaw offset turns the nose about +Z.
@@ -367,7 +375,7 @@ namespace
     // WHAT: host braking: the bubble brake holds Throttle 0 for ship sid. 1 = braking. Never throws.
     int sc_host_braking(int sid)
     {
-        try { return bubble_braking(sid) ? 1 : 0; }
+        try { return bubble_braking_legacy(sid) ? 1 : 0; }
         catch (...) { return 0; }
     }
 
