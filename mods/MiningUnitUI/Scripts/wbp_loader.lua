@@ -1330,6 +1330,8 @@ local function queueReason(why)
 end
 local function docksLoad()
   local tags, ships = dockTags(), netShips()
+  local tg = {}   -- docks picked by name tag ([ORE] / [MISC]) are not in the INI lists: list them too
+  for _, ids in pairs(taggedDocks()) do for _, d in ipairs(ids) do tg[d] = true end end
   local names = {}
   for _, o in ipairs(benchShips()) do names[o.id] = o.text end
   for sid, s in pairs(ships) do if s.name ~= "" then names[sid] = s.name end end
@@ -1338,7 +1340,7 @@ local function docksLoad()
   for _, l in ipairs(rdcached(M.DATA .. "NetDocks.txt") or {}) do
     local p = split(l)
     local id = trim(p[1] or "")
-    if id ~= "" and tags[id] then
+    if id ~= "" and (tags[id] or tg[id]) then
       local raw, occ, cleared = trim(p[2] or ""), trim(p[3] or ""), trim(p[9] or "")
       local name = trim(p[8] or "")
       local why = trim(p[4] or "")
