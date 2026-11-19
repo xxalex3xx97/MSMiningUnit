@@ -32,6 +32,7 @@ static void reset_globals()
     g_ship_kv.clear();
     g_item_idx.clear();
     g_dock_tags.clear();
+    g_ship_names.clear();
 }
 
 // ---------- mb_math.hpp ----------
@@ -2173,6 +2174,43 @@ static void t_power_grid_auto()
     CHECK(!refuel_needs_unload(-1, false));       // unknown cargo: refuel directly
 }
 
+static void t_ship_tags()
+{
+    reset_globals();
+    using V = std::vector<std::pair<int, int>>;
+    CHECK((ship_tags_parse("[TITANIUM]") == V{{0, 0}}));
+    CHECK((ship_tags_parse("[TITANIUM:200]") == V{{0, 200}}));
+    CHECK((ship_tags_parse("Miner [Titanium : 200]") == V{{0, 200}}));
+    CHECK((ship_tags_parse("[NICKEL:100] [TITANIUM:50]") == V{{1, 100}, {0, 50}}));
+    CHECK((ship_tags_parse("[Water Ice:7]") == V{{4, 7}}));
+    CHECK((ship_tags_parse("[FOO] [MISC] [TITANIUM]") == V{{0, 0}}));
+    CHECK((ship_tags_parse("[TITANIUM:x]") == V{{0, 0}}));
+    CHECK((ship_tags_parse("[TITANIUM:-5]") == V{{0, 0}}));
+    CHECK((ship_tags_parse("[TITANIUM:]") == V{{0, 0}}));
+    CHECK((ship_tags_parse("[TITANIUM:5] [TITANIUM:9]") == V{{0, 5}}));
+    CHECK(ship_tags_parse("[TITANIUM").empty());
+    CHECK(ship_tags_parse("no tags").empty());
+    CHECK(ship_tags_items(ship_tags_parse("[NICKEL:100] [TITANIUM:50]")) == "ITEM_NickelOre:100,ITEM_TitaniumOre:50");
+    reset_globals();
+    g_ship_kv[7]["items"] = "ITEM_Silica:9";
+    g_ship_names[7] = "[NICKEL:100] [TITANIUM:50]";
+    Config c = eff_cfg(7);
+    CHECK(c.items.size() == 2);
+    CHECK(c.resource == ORE_ITEM[1]);
+    CHECK(c.amount == 100);
+    g_item_idx[7] = 1;
+    c = eff_cfg(7);
+    CHECK(c.resource == ORE_ITEM[0]);
+    CHECK(c.amount == 50);
+    g_item_idx.clear();
+    g_ship_names[7] = "plain";
+    c = eff_cfg(7);
+    CHECK(c.resource == "ITEM_Silica");
+    c = eff_cfg(8);
+    CHECK(c.resource != ORE_ITEM[1]);
+    CHECK(g_ship_kv[7]["items"] == "ITEM_Silica:9");
+}
+
 static void t_dock_tags()
 {
     reset_globals();
@@ -2300,6 +2338,7 @@ int main()
         {"hazard_flee", t_hazard_flee}, {"targett_entry", t_targett_entry},
         {"path_block", t_path_block}, {"path_perf", t_path_perf}, {"path_waypoint", t_path_waypoint}, {"shield_drop", t_shield_drop}, {"safety_net", t_safety_net}, {"flee_guard_shield_units", t_flee_guard_shield_units}, {"flee_fallback_docks", t_flee_fallback_docks}, {"attack_dist_and_flee_class", t_attack_dist_and_flee_class}, {"flee_idle_move", t_flee_idle_move}, {"flee_real_warp_hold", t_flee_real_warp_hold},{"fast_sample", t_fast_sample},
         {"dock_tags", t_dock_tags},
+        {"ship_tags", t_ship_tags},
         {"parking", t_parking},
         {"rock_depleted", t_rock_depleted},
         {"reg_table", t_reg_table}, {"reg_events", t_reg_events}, {"reg_world_track", t_reg_world_track}, {"reg_within_nearest", t_reg_within_nearest}, {"reg_surface_block", t_reg_surface_block_radius},

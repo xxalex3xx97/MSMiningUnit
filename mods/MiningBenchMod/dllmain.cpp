@@ -52,6 +52,7 @@ namespace
         mine_set_bench(bench, dead);
         write_lists();
         dock_tags_refresh();
+        ship_tags_write();
         if (bench.empty()) return;
         for (auto& [ship, id] : bench)
         {
