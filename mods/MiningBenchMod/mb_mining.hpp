@@ -212,6 +212,7 @@ namespace
     std::vector<int> g_bench_ids;
     std::map<int, std::wstring> g_bench_names;   // ship display name per bench ship id (status file)
     double g_mine_status_acc = 0.0;
+    bool g_mine_world_paused = false;   // mining_tick skipped by the world guard (one log line per transition)
     // WHAT: last 5 state lines per ship (state name: text), oldest first. Written into the destroyed record.
     std::map<int, std::vector<std::wstring>> g_state_ring;
     // WHAT: destroyed bench ships of this session: "<name> (destroyed)" and the Log tab lines kept at the purge (MiningLog.txt). Cleared by a game restart (the DLL reloads).
@@ -3860,6 +3861,14 @@ namespace
 
     void mining_tick(double dt)
     {
+        // world guard: no ship or rock object is read while the world is lost or a save loads (registry world state, mb_registry.hpp)
+        const RegState& wst = reg_st();
+        if (!mining_world_ready(wst.world_ok, wst.world_wait))
+        {
+            if (!g_mine_world_paused) { g_mine_world_paused = true; log_line(STR("MINE paused: world not ready (save loading or world lost)")); }
+            return;
+        }
+        if (g_mine_world_paused) { g_mine_world_paused = false; log_line(STR("MINE resumed: world ready")); }
         for (int sid : g_bench_ids)
         {
             MineSt& m = g_mine[sid];
