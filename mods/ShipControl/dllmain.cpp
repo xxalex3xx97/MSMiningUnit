@@ -1,9 +1,10 @@
 // FILE: mods/ShipControl/dllmain.cpp
 // WHAT: UE4SS C++ mod entry point for ShipControl. Holds the ship owner registry and exports the C ABI in sc_api.h. SC0: owner registry only, no engine hook.
 // WHY separate: UE4SS needs start_mod and uninstall_mod in the DLL entry file.
-// DEPENDS ON (exact, include order matters): sc_api.h (types only, see below), sc_version.hpp, sc_common.hpp, sc_owner.hpp, sc_speed.hpp (includes sc_mscore.hpp, sc_math.hpp), sc_move.hpp (SC2b move jobs)
+// DEPENDS ON (exact, include order matters): sc_api.h (types only, see below), sc_version.hpp, sc_common.hpp, sc_owner.hpp, sc_speed.hpp (includes sc_mscore.hpp, sc_math.hpp), sc_move.hpp (SC2b move jobs; includes sc_bubble.hpp), sc_bubble_run.hpp (SC3 bubble engine)
 // USED BY: the UE4SS loader (mods.txt line "ShipControl : 1" or enabled.txt), which calls start_mod and uninstall_mod. Other mods load this DLL by LoadLibrary and GetProcAddress (sc_api.h).
 // GAME FACTS: none. Every export catches exceptions and returns a failure code; a failure never reaches the caller as a throw.
+#include <algorithm>
 #include <atomic>
 #include <cstring>
 #include <mutex>
@@ -17,6 +18,7 @@
 #include "sc_owner.hpp"
 #include "sc_speed.hpp"
 #include "sc_move.hpp"
+#include "sc_bubble_run.hpp"
 
 namespace
 {
@@ -116,18 +118,19 @@ extern "C"
     // WHAT: API level (sc_api.h SC_API_LEVEL). Callers refuse to run below the level they need.
     SHIP_CONTROL_API int SC_api()
     {
-        try { return 3; }
+        try { return 4; }
         catch (...) { return 0; }
     }
 
     // WHAT: capability bits. bit 0 = owner registry. bit 1 = speed monitor (MSCore API >= 10 bound now). bit 2 (value 4) = move jobs (API 3, MSCore view_send bound).
+    //       bit 3 (value 8) = bubble ladder (API 4, MSCore flight bound).
     SHIP_CONTROL_API int SC_caps()
     {
         try
         {
             std::lock_guard<std::recursive_mutex> lk(g_mx);
             std::wstring why;
-            return 1 | (ms_load(why) ? (2 | 4) : 0);
+            return 1 | (ms_load(why) ? (2 | 4 | 8) : 0);
         }
         catch (...) { return 0; }
     }
@@ -182,6 +185,7 @@ extern "C"
             if (!owner_arg(owner, who, why)) return false;
             if (!g_owners.release(ship, who, why)) return false;
             drop_job(ship, who, g_host);   // SC2b: the owner's move job on this ship ends (no callback)
+            bub_drop(ship);                // SC3: the ladder state of this ship ends
             return true;
         }, err, errlen);
     }
@@ -197,6 +201,11 @@ extern "C"
             if (g_killed.load()) { put_err("ShipControl killed", err, errlen); return -1; }
             const int n = g_owners.release_all(who);
             drop_jobs_owned(who, g_host);   // SC2b: the owner's move jobs end (no callback)
+            for (auto it = g_bub.begin(); it != g_bub.end();)   // SC3: ladder states of ships with no owner now end
+            {
+                if (g_owners.owner_of(it->first).empty()) it = g_bub.erase(it);
+                else ++it;
+            }
             return n;
         }
         catch (const std::exception& e) { put_err(std::string("exception: ") + e.what(), err, errlen); }
@@ -204,17 +213,17 @@ extern "C"
         return -1;
     }
 
-    // WHAT: installs the host callbacks. size = SC_HOST_SIZE_L2 (24, API 2 layout) or sizeof(ScHost) (80). 1 = ok, 0 = refused.
-    // WHY: mining gets its log, its abort callback and (API 3) the move callbacks here; the rest of the struct stays zero (null callbacks).
+    // WHAT: installs the host callbacks. size = SC_HOST_SIZE_L2 (24, API 2 layout), SC_HOST_SIZE_L3 (80, API 3) or sizeof(ScHost) (112, API 4). 1 = ok, 0 = refused.
+    // WHY: mining gets its log, its abort callback, the move callbacks (API 3) and the bubble callbacks (API 4) here; the rest of the struct stays zero (null callbacks).
     SHIP_CONTROL_API int SC_set_host(const ScHost* host)
     {
         try
         {
-            if (!host || (host->size != SC_HOST_SIZE_L2 && host->size != static_cast<int32_t>(sizeof(ScHost)))) return 0;
+            if (!host || (host->size != SC_HOST_SIZE_L2 && host->size != SC_HOST_SIZE_L3 && host->size != static_cast<int32_t>(sizeof(ScHost)))) return 0;
             std::lock_guard<std::recursive_mutex> lk(g_mx);
             if (g_killed.load()) return 0;
             g_host = ScHost{};
-            std::memcpy(&g_host, host, static_cast<size_t>(host->size));
+            std::memcpy(&g_host, host, (std::min)(static_cast<size_t>(host->size), sizeof(ScHost)));
             return 1;
         }
         catch (...) { return 0; }
@@ -388,6 +397,36 @@ extern "C"
             try { h.on_move_done(d.sid, d.seq, d.res.c_str()); } catch (...) {}
         }
         return n;
+    }
+
+    // WHAT: one bubble pass over every watched ship and every ship with a ladder state (dt in s). >= 0 = ships passed, -1 = killed or MSCore
+    //       not usable (nothing written). Callbacks run under the registry lock (host may call SC_*; recursive mutex).
+    SHIP_CONTROL_API int SC_tick_bubble(double dt)
+    {
+        try
+        {
+            std::lock_guard<std::recursive_mutex> lk(g_mx);
+            if (g_killed.load()) return -1;
+            std::wstring why;
+            if (!ms_load(why)) return -1;
+            const ScHost h = g_host;
+            return sc_bubble_tick(dt, h);
+        }
+        catch (...) { return -1; }
+    }
+
+    // WHAT: ladder state of ship sid into out (size must be sizeof(ScBubbleStatus)). 1 = ok (have 0 when no state), 0 = refused (killed or bad size).
+    SHIP_CONTROL_API int SC_bubble_status(int sid, ScBubbleStatus* out)
+    {
+        try
+        {
+            if (!out || out->size != static_cast<int32_t>(sizeof(ScBubbleStatus))) return 0;
+            std::lock_guard<std::recursive_mutex> lk(g_mx);
+            if (g_killed.load()) return 0;
+            bub_status_fill(sid, *out);
+            return 1;
+        }
+        catch (...) { return 0; }
     }
 
     // WHAT: zeroes Throttle and rotation of ship for owner (MSCore_ship_zero). Refused when another owner holds the ship. 1 = zeroed, 0 = refused or failed.

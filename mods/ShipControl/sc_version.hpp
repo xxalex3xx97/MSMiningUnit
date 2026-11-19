@@ -10,5 +10,5 @@
 // WHY: anonymous namespace keeps the constant private to each .cpp that includes this header.
 namespace
 {
-    constexpr const char* kVersion = "0.1.0";
+    constexpr const char* kVersion = "0.3.0";
 }

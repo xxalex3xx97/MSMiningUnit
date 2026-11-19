@@ -18,6 +18,7 @@
 #include "sc_frame.hpp"
 #include "sc_logic_steer.hpp"
 #include "sc_logic_path.hpp"
+#include "sc_bubble.hpp"   // SC3: ladder state (bub_braking)
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -316,8 +317,8 @@ namespace
                 if (!ms_view_send(j.cid, sc_view_raw(yaw), sc_view_raw(pit), e)) { finish_job(sid, L"error: view_send " + e, h, done, true); return; }
             }
         }
-        // 11. bubble brake: no thrust until stopped
-        if (host_braking(h, sid))
+        // 11. bubble brake: no thrust until stopped (SC3: ShipControl's own ladder, or the host's legacy brake)
+        if (bub_braking(sid) || host_braking(h, sid))
         {
             write_thr(j, 0, h);
             j.thr = 0;

@@ -17,7 +17,7 @@
 #include "sc_logic_steer.hpp"   // SC2b A1: moved steering rules
 #include "sc_logic_bubble.hpp"  // SC3 A1: moved bubble ladder (pure)
 #include "sc_frame.hpp"         // SC2b A1: frame, aim, calibration
-#include "sc_move.hpp"          // SC2b A2: move jobs (ABI via sc_api.h, sc_view_raw)
+#include "sc_move.hpp"          // SC2b A2: move jobs (ABI via sc_api.h, sc_view_raw); includes sc_bubble.hpp (SC3 A2 ladder state)
 
 static int g_pass = 0;
 static int g_fail = 0;
@@ -315,10 +315,45 @@ static void t_qcal_and_frame()
 // SC2b A2: move-job ABI sizes (also checked by static_asserts in sc_api.h) and the pure view raw conversion of sc_move.hpp.
 static void t_move_abi()
 {
-    CHECK(SC_API_LEVEL == 3);
-    CHECK(sizeof(ScHost) == 80 && SC_HOST_SIZE_L2 == 24);
+    CHECK(SC_API_LEVEL == 4);
+    CHECK(sizeof(ScHost) == 112 && SC_HOST_SIZE_L2 == 24 && SC_HOST_SIZE_L3 == 80);
     CHECK(sizeof(ScMoveReq) == 128 && sizeof(ScMoveStatus) == 64);
     CHECK(sc_view_raw(1.0) == 65536 && sc_view_raw(-0.5) == -32768 && sc_view_raw(0.0) == 0);   // llround of deg * 65536
+    // SC3 A2 (API 4): level 4 structs
+    CHECK(sizeof(ScBlockHit) == 56 && sizeof(ScBubbleProfile) == 72);
+    CHECK(sizeof(ScBubbleEvent) == 88 && sizeof(ScBubbleStatus) == 56);
+    CHECK(offsetof(ScHost, first_blocker) == 80 && offsetof(ScHost, near_rock) == 104);
+}
+
+// SC3 A2: ladder state helpers (sc_bubble.hpp) on a hand-built g_bub entry. No game needed.
+static void t_bub_state()
+{
+    g_bub.clear();
+    CHECK(!bub_braking(5));                                       // no state: not braking
+    {
+        ScBubbleStatus st{};
+        st.size = static_cast<int32_t>(sizeof(ScBubbleStatus));
+        bub_status_fill(5, st);
+        CHECK(st.have == 0 && st.braking == 0 && st.blk == 0 && st.size == 56);
+    }
+    BubbleState& s = g_bub[5];
+    s.braking = true; s.replans = 1; s.pending = BBA_REPLAN; s.wp = 2; s.resume = true;
+    s.blk = 77; s.phase = BPH_SEEK; s.why = BW_ACTIVE; s.rock = 9; s.blk_d = 12.5;
+    CHECK(bub_braking(5));
+    CHECK(!bub_braking(6));                                       // another ship: not braking
+    {
+        ScBubbleStatus st{};
+        st.size = static_cast<int32_t>(sizeof(ScBubbleStatus));
+        bub_status_fill(5, st);
+        CHECK(st.have == 1 && st.braking == 1 && st.replans == 1 && st.pending == BBA_REPLAN);
+        CHECK(st.wp == 2 && st.resume == 1 && st.blk == 77 && st.phase == BPH_SEEK && st.why == BW_ACTIVE);
+        CHECK(st.rock == 9 && NEARB(st.blk_d, 12.5, 1e-12) && st.size == 56);
+    }
+    g_bub[5].braking = false;
+    CHECK(!bub_braking(5));
+    bub_drop(5);
+    CHECK(g_bub.count(5) == 0);
+    g_bub.clear();
 }
 
 // SC3 A1: bubble ladder (sc_logic_bubble.hpp). Values from the legacy mb_logic.hpp / mb_bubble.hpp rules.
@@ -578,6 +613,7 @@ int main()
     t_qcal_and_frame();
     t_move_abi();
     t_bubble();
+    t_bub_state();
 
     std::printf("test_shipcontrol: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
