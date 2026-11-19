@@ -20,6 +20,7 @@ Get-ChildItem "$src\mods\$Mod" -File | Where-Object { $_.Extension -in '.cpp', '
 if ($Mod -eq 'MiningBenchMod') {
     Copy-Item "$src\mods\ShipControl\sc_api.h" -Destination $mirror -Force
     Copy-Item "$src\mods\ShipControl\sc_logic_path.hpp" -Destination $mirror -Force   # mb_logic.hpp includes the path/warp geometry
+    Copy-Item "$src\mods\ShipControl\sc_logic_steer.hpp" -Destination $mirror -Force  # mb_logic.hpp includes the approach/low-power rules
 }
 
 # ShipControl is not in the mirror's cppmods\CMakeLists.txt yet: add it once

@@ -173,6 +173,7 @@ namespace
         PtTarget ptg;
         bool warp_wait = false;         // far-trip warp sent for this flight: wait until it has landed (warp_settle_done), no thrust, no aim
         double warp_t = 0.0;            // time since the warp was sent (s)
+        bool sc_on = false;             // ShipControl runs this job (SC2b): this record is a shadow, refreshed by sc_mv_sync; the legacy fields stay unused
     };
 
     // WHAT: move jobs per ship (sid -> job). Empty kind = no job for that ship. Each ship can steer on its own.
@@ -180,6 +181,8 @@ namespace
     // WHAT: far-trip warp of an approach flight (mb_mining.hpp): sends the warp when the destination is far, sets mv.warp_wait. true = warp sent.
     bool move_warp_begin(int sid, UObject* ship, MoveJob& mv);
     bool mv_active(int sid) { auto it = g_mvs.find(sid); return it != g_mvs.end() && !it->second.kind.empty(); }
+    // WHAT: true when the move job of sid runs in ShipControl (sc_on). false when none or legacy.
+    bool mv_active_sc(int sid) { auto it = g_mvs.find(sid); return it != g_mvs.end() && it->second.sc_on; }
 
     // WHAT: bubble ladder state per ship (mb_bubble.hpp). braking = the move job holds Throttle 0 (see move_aim_step).
     std::map<int, BubbleState> g_bubble;
@@ -259,7 +262,8 @@ namespace
     {
         auto it = g_mvs.find(sid);
         if (it == g_mvs.end()) return;
-        view_zero(it->second.cid);
+        if (it->second.sc_on) sc_move_cancel(sid);   // ShipControl: aim offset stopped, job erased (no zero, no callback)
+        else view_zero(it->second.cid);
         g_mvs.erase(it);
     }
 
@@ -270,14 +274,118 @@ namespace
     // WHY: one exit path for every way a move job ends (ok, error, abort), so the ship is always stopped.
     void mv_finish(int sid, const std::wstring& res)
     {
-        const MoveJob m = g_mvs[sid];
-        g_mvs.erase(sid);
+        auto it = g_mvs.find(sid);
+        if (it == g_mvs.end()) return;
+        const MoveJob m = it->second;
+        g_mvs.erase(it);
         g_mv_res[m.sid] = res;
-        view_zero(m.cid);   // stop the aim offset (face/approach only; cid 0 = nothing sent)
         UObject* ship = find_by_id(STR("DMSPlayerShipObject"), m.sid);
-        if (alive(ship)) zero_all(ship);
+        if (m.sc_on)
+        {
+            sc_move_cancel(sid);   // no-op when ShipControl already ended the job (on_move_done)
+            if (alive(ship)) zero_all_dual(ship);
+        }
+        else
+        {
+            view_zero(m.cid);   // stop the aim offset (face/approach only; cid 0 = nothing sent)
+            if (alive(ship)) zero_all(ship);
+        }
         tlog(STR("seq=") + std::to_wstring(m.seq) + STR(" ") + widen(m.kind) + STR(" ship=") + std::to_wstring(m.sid) + STR(" result: ") + res);
         if (g_cmd.seq == m.seq) g_cmd.result = res;
+    }
+
+    // ---------------- ShipControl move jobs (SC2b): host callbacks and the shadow record ----------------
+
+    // WHAT: the job move_start is starting in ShipControl (set for the SC_move_start call only). sc_host_warp_begin uses it. nullptr otherwise.
+    MoveJob* g_sc_start_mv = nullptr;
+
+    // WHAT: host tlog: every move-job line of ShipControl goes to the mining tlog (same text as the legacy line). Never throws.
+    void sc_host_tlog(const wchar_t* text)
+    {
+        try { tlog(text ? std::wstring(text) : std::wstring()); }
+        catch (...) {}
+    }
+
+    // WHAT: host move-done: ShipControl ended the job of sid (job erased and ship zeroed there). Same exit as a legacy job end. Never throws.
+    void sc_host_move_done(int sid, int seq, const wchar_t* result)
+    {
+        (void)seq;
+        try { mv_finish(sid, result ? std::wstring(result) : std::wstring()); }
+        catch (...) {}
+    }
+
+    // WHAT: host warp_begin: the far-trip warp of the approach job being started (g_sc_start_mv, move_warp_begin). 1 = warp sent. Never throws.
+    int sc_host_warp_begin(int sid, const ScMoveReq* req)
+    {
+        (void)req;
+        try
+        {
+            if (!g_sc_start_mv) return 0;
+            UObject* ship = find_by_id(STR("DMSPlayerShipObject"), sid);
+            return move_warp_begin(sid, ship, *g_sc_start_mv) ? 1 : 0;
+        }
+        catch (...) { return 0; }
+    }
+
+    // WHAT: host remain_m: surface distance (m) from ship_m to the registry rock of the job of sid (warp settle). 1 = ok, 0 = no such rock. Never throws.
+    int sc_host_remain(int sid, const double ship_m[3], double* out_m)
+    {
+        try
+        {
+            auto it = g_mvs.find(sid);
+            if (it == g_mvs.end() || !out_m) return 0;
+            const RegRock* r = reg_st().tab.get(it->second.rock_id);
+            if (!r) return 0;
+            *out_m = remain_dist_m(ship_m, r->c, reg_eff_rad(*r));
+            return 1;
+        }
+        catch (...) { return 0; }
+    }
+
+    // WHAT: host target_ok: the rock actor of a job is still valid. Never throws.
+    int sc_host_target_ok(int sid, void* handle)
+    {
+        (void)sid;
+        try { return actor_ok(static_cast<UObject*>(handle)) ? 1 : 0; }
+        catch (...) { return 0; }
+    }
+
+    // WHAT: host ore_loc: location (uu) of a floating ore actor. 1 = ok. Same read as the legacy aim_calc_ore. Never throws.
+    int sc_host_ore_loc(int sid, void* handle, double* out3_uu)
+    {
+        (void)sid;
+        try
+        {
+            UObject* o = static_cast<UObject*>(handle);
+            std::wstring why;
+            if (!out3_uu || !ore_ok(o) || !actor_vec_call(o, STR("K2_GetActorLocation"), out3_uu, why)) return 0;
+            return 1;
+        }
+        catch (...) { return 0; }
+    }
+
+    // WHAT: host braking: the bubble brake holds Throttle 0 for ship sid. 1 = braking. Never throws.
+    int sc_host_braking(int sid)
+    {
+        try { return bubble_braking(sid) ? 1 : 0; }
+        catch (...) { return 0; }
+    }
+
+    // WHAT: refreshes the shadow record of the ShipControl job of sid from SC_move_status: phase, warp wait, heading error, Throttle step, ore point.
+    //       The command ship's heading error goes to g_last_err (status). Legacy jobs and missing jobs: nothing.
+    void sc_mv_sync(int sid)
+    {
+        auto it = g_mvs.find(sid);
+        if (it == g_mvs.end() || !it->second.sc_on) return;
+        ScMoveStatus st;
+        if (!sc_move_status(sid, st) || !st.active) return;
+        MoveJob& m = it->second;
+        m.phase = st.phase;
+        m.warp_wait = st.warp_wait != 0;
+        m.err = st.err_deg;
+        m.thr = st.thr;
+        std::copy(st.ore_loc, st.ore_loc + 3, m.ore_loc);
+        if (sid == g_cmd.ship) g_last_err = st.err_deg;
     }
 
     // WHAT: speed monitor sample for ship sid, run on every poll step (CMD_POLL_S = 0.25 s).
@@ -767,7 +875,7 @@ namespace
     void move_tick(double dt)
     {
         std::vector<int> ids;
-        for (const auto& kv : g_mvs) ids.push_back(kv.first);   // copy: a finish erases its entry
+        for (const auto& kv : g_mvs) if (!kv.second.sc_on) ids.push_back(kv.first);   // copy: a finish erases its entry
         for (int sid : ids)
         {
             auto it = g_mvs.find(sid);
@@ -783,6 +891,12 @@ namespace
             if (g_mvs.count(sid) && !seh_run(mv_fault_finish_fn, &fc)) log_line(STR("MOVE fault finish faulted too: ") + seh_describe(g_seh));
             g_mvs.erase(sid);
         }
+        // ShipControl jobs (sc_on): one tick of all of them. -1 = ShipControl killed or MSCore unusable: every job is ended.
+        std::vector<int> sc_ids;
+        for (const auto& kv : g_mvs) if (kv.second.sc_on) sc_ids.push_back(kv.first);
+        if (sc_ids.empty()) return;
+        if (sc_tick_frame(dt) == -1) { for (int sid : sc_ids) mv_finish(sid, STR("error: MSCore flight unavailable")); return; }
+        for (int sid : sc_ids) sc_mv_sync(sid);
     }
 
     // WHAT: start a face_rock or approach_rock job. Returns "waiting" when started, else the error text. Only one move job at a time.
@@ -790,7 +904,8 @@ namespace
     //       (GetThrottleSteps). 4 find the PilotConsoleObject and cache its id. 5 pick the rock (rock_sel, else nearest of INI resource).
     //       6 approach_rock needs mining_distance set. 7 record the start quaternion, set phase 1 (aim), log the start.
     // WHY: all preconditions are checked here before the first write, so a failed start changes nothing on the ship.
-    std::wstring move_start(int sid, const std::string& cmd, int seq, UObject* target = nullptr, const PtTarget* pt = nullptr)
+    // WHAT: ore_pt = scan point (uu) of a floating ore target (sweep): the start point of the ShipControl job. Legacy ignores it (the caller sets ore_loc).
+    std::wstring move_start(int sid, const std::string& cmd, int seq, UObject* target = nullptr, const PtTarget* pt = nullptr, const double* ore_pt = nullptr)
     {
         // 1. one move job at a time, and no dock job for the same ship
         if (mv_active(sid)) return STR("error: move job already running");
@@ -798,20 +913,25 @@ namespace
         // 2. ship
         UObject* ship = find_by_id(STR("DMSPlayerShipObject"), sid);
         if (!alive(ship)) return STR("error: ship not found");
+        // ShipControl path (SC2b): when it is usable for this ship, ShipControl reads the steps and the console itself (steps 3-4 are legacy only)
+        const bool sc = sc_move_ready(sid);
         MoveJob m;
         m.kind = cmd;
         m.sid = sid;
         m.seq = seq;
         std::wstring pick_rule;   // which pick_rock rule chose the rock (start log)
-        // 3. throttle steps
-        call_int(ship, STR("GetThrottleSteps"), m.steps);
-        // 4. console id (rotation = view_send; cached for the whole job)
-        std::wstring how;
-        size_t pcount = 0;
-        UObject* console = pilot_console_of(sid, how, pcount);
-        if (!alive(console)) return STR("error: PilotConsoleObject not found");
-        m.cid = obj_id(console);
-        if (m.steps < 1) return STR("error: Throttle steps unreadable");
+        if (!sc)
+        {
+            // 3. throttle steps
+            call_int(ship, STR("GetThrottleSteps"), m.steps);
+            // 4. console id (rotation = view_send; cached for the whole job)
+            std::wstring how;
+            size_t pcount = 0;
+            UObject* console = pilot_console_of(sid, how, pcount);
+            if (!alive(console)) return STR("error: PilotConsoleObject not found");
+            m.cid = obj_id(console);
+            if (m.steps < 1) return STR("error: Throttle steps unreadable");
+        }
         // 5. rock
         std::wstring why;
         if (pt)
@@ -838,13 +958,57 @@ namespace
         }
         // 6. approach needs the stop distance
         if (cmd == "approach_rock" && !pt && parse_distance(eff_cfg(sid).mining_distance) < 0.0) return STR("error: mining_distance unset");
-        // 7. start: quaternion for the rate sample, phase 1 (aim)
-        quat4(ship, m.qs);
-        // WHY: aiming starts at once (no forward-axis test phase before it)
-        m.phase = 1;
-        if (sid == g_cmd.ship) g_last_err = -1.0;
-        if (cmd == "approach_rock") move_warp_begin(sid, ship, m);   // far-trip warp first (mb_mining.hpp): the job then waits for the landing
+        // 7. start. ShipControl: the job is built there (mode 0 rock, 1 point, 2 ore); its warp comes from sc_host_warp_begin.
+        if (sc)
+        {
+            ScMoveReq req = {};
+            req.size = static_cast<int32_t>(sizeof(ScMoveReq));
+            req.kind = cmd == "approach_rock" ? 1 : 0;
+            req.seq = seq;
+            req.tag = m.rock_id;
+            req.stop_m = parse_distance(eff_cfg(sid).mining_distance) >= 0.0 ? parse_distance(eff_cfg(sid).mining_distance) : 0.0;
+            if (pt)
+            {
+                req.mode = 1;
+                req.sys = pt->sys;
+                std::copy(pt->ch, pt->ch + 3, req.ch);
+                std::copy(pt->loc, pt->loc + 3, req.loc);
+            }
+            else if (m.ore_on)
+            {
+                req.mode = 2;
+                req.handle = target;
+                if (ore_pt) std::copy(ore_pt, ore_pt + 3, req.pt_uu);
+            }
+            else
+            {
+                req.mode = 0;
+                if (!rock_loc_uu(m.rock_act, req.pt_uu)) return STR("error: rock lost");
+                req.handle = m.rock_act;
+                req.radius_m = rock_radius_raw(m.rock_act) / g_raw_per_m;
+            }
+            std::wstring serr;
+            MoveJob* prev = g_sc_start_mv;
+            g_sc_start_mv = &m;   // warp_begin (approach) reads this job
+            const bool started = sc_move_start(req, sid, serr);
+            g_sc_start_mv = prev;
+            if (!started) return serr;
+            m.sc_on = true;
+            m.cid = req.out_cid;
+            m.steps = req.out_steps;
+            m.phase = 1;
+        }
+        else
+        {
+            // 7. legacy start: quaternion for the rate sample, phase 1 (aim)
+            quat4(ship, m.qs);
+            // WHY: aiming starts at once (no forward-axis test phase before it)
+            m.phase = 1;
+            if (sid == g_cmd.ship) g_last_err = -1.0;
+            if (cmd == "approach_rock") move_warp_begin(sid, ship, m);   // far-trip warp first (mb_mining.hpp): the job then waits for the landing
+        }
         g_mvs[sid] = m;
+        if (sc) sc_mv_sync(sid);
         tlog(STR("start ") + widen(cmd) + STR(" ship=") + std::to_wstring(sid) + STR(" seq=") + std::to_wstring(seq) +
              STR(" cid=") + std::to_wstring(m.cid) +
              STR(" rock=") + std::to_wstring(m.rock_id) + (m.rock_id > 0 ? STR(" kind=") + m.rock_name + STR(" pick=") + pick_rule : std::wstring()));

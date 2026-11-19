@@ -2101,7 +2101,7 @@ namespace
             std::copy(m.sw_list[(size_t)i].p, m.sw_list[(size_t)i].p + 3, m.sw_prev);
             m.sw_prev_ok = true;
             g_mv_res.erase(sid);   // SW_APPROACH reads the result of this job only
-            const std::wstring r = move_start(sid, "approach_rock", -1, m.sw_ore, nullptr);
+            const std::wstring r = move_start(sid, "approach_rock", -1, m.sw_ore, nullptr, m.sw_list[(size_t)i].p);
             if (r == STR("waiting"))
             {
                 MoveJob& mv = g_mvs[sid];   // fly to the cached scan point; aim_calc_ore re-reads the ore when near it
