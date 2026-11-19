@@ -89,6 +89,14 @@ function C.edit_field(find, name, v)
   if api.ok(e) then pcall(function() e:SetText(FText(v ~= nil and tostring(v) or "")) end) end
 end
 
+-- focused: true while the edit box has keyboard focus (user typing); repaint must leave it alone
+function C.focused(find, name)
+  local e = find(name)
+  if not api.ok(e) then return false end
+  local s, v = pcall(function() return e:HasKeyboardFocus() end)
+  return s and v == true
+end
+
 -- read_edit: number or text as typed; the box is read only through api.reading() (never right after a tab change)
 function C.read_edit(find, name, isNumber)
   local e = find(name)

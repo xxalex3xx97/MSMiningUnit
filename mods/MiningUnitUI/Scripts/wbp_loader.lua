@@ -2553,7 +2553,8 @@ M.api = { w = w, setVis = setVis, setText = M.setText, try = try, ok = ok, rd = 
   src = SRC, data = M.DATA }
 local okF, F = pcall(dofile, SRC .. "fleet_ui.lua")
 FLEET = okF and F or nil
-if FLEET and not try("fleet init", FLEET.init, M.api) then FLEET = nil end
+-- no new locals here: the main chunk is at Lua's 200-local limit. F holds the error when dofile/init fails
+if FLEET then okF, F = pcall(FLEET.init, M.api); if not okF then FLEET = nil end end
 if not FLEET then L("fleet_ui load failed " .. tostring(F)) end
 
 return M
