@@ -2214,6 +2214,44 @@ static void t_dock_tags()
     reset_globals();
 }
 
+static void t_parking()
+{
+    reset_globals();
+    CHECK(dock_tag_parse(1, "[PARKING]").park);
+    DockTag pb = dock_tag_parse(2, "Bay [parking] [titanium]"); CHECK(pb.park && (pb.ores == std::vector<int>{0}));
+    CHECK(!dock_tag_parse(1, "[PARK]").park);
+    g_dock_tags = {dock_tag_parse(9, "[PARKING]")};
+    g_cfg.misc_docks = {9}; g_cfg.ore_docks[0] = {9, 5}; g_cfg.refuel_docks = {9};
+    Config c = eff_cfg(1);
+    CHECK(c.misc_docks.empty() && c.refuel_docks.empty());
+    CHECK((c.ore_docks[0] == std::vector<int>{5}));
+    CHECK(c.ore_docks[1].empty());
+    DockTag pa = dock_tag_parse(8, "[PARKING] [AUTO-FILTER] [NICKEL]");
+    Config m; CHECK(autofilter_pairs({pa}, {m}).empty());
+    g_dock_tags.clear();
+    std::vector<DockTag> mix = {dock_tag_parse(3, "[PARKING]"), dock_tag_parse(5, "[MISC]"), dock_tag_parse(9, "[PARKING]")};
+    CHECK((park_ids(mix) == std::vector<int>{3, 9}));
+    CHECK((park_order({1, 2, 3}, {500, -1, 100}) == std::vector<int>{3, 1, 2}));
+    CHECK(!park_wanted({}, 0, false, false));
+    CHECK(!park_wanted({3}, 0, true, false));
+    CHECK(!park_wanted({3}, 0, false, true));
+    CHECK(!park_wanted({3}, 3, false, false));
+    CHECK(park_wanted({3}, 0, false, false));
+    // manual parking_docks merged with tags; stripped from other lists
+    reset_globals();
+    g_dock_tags = {dock_tag_parse(9, "[PARKING]")};
+    g_cfg.park_docks = {7, 9}; g_cfg.ore_docks[1] = {7, 3}; g_cfg.misc_docks = {7}; g_cfg.refuel_docks = {7};
+    Config e = eff_cfg(1);
+    CHECK((e.park_docks == std::vector<int>{9, 7}));
+    CHECK((e.ore_docks[1] == std::vector<int>{3}));
+    CHECK(e.misc_docks.empty() && e.refuel_docks.empty());
+    { Config k; apply_kv(k, {{"parking_docks", "4,5,x"}}, false); CHECK((k.park_docks == std::vector<int>{4, 5})); }
+    g_ship_kv[1] = {{"parking_docks", "8"}};
+    CHECK((eff_cfg(1).park_docks == std::vector<int>{9, 8}));
+    { Config pc; pc.park_docks = {7}; CHECK(autofilter_pairs({dock_tag_parse(7, "[AUTO-FILTER] [NICKEL]")}, {pc}).empty()); }
+    reset_globals();
+}
+
 int main()
 {
     const Case cases[] = {
@@ -2243,6 +2281,7 @@ int main()
         {"hazard_flee", t_hazard_flee}, {"targett_entry", t_targett_entry},
         {"path_block", t_path_block}, {"path_perf", t_path_perf}, {"path_waypoint", t_path_waypoint}, {"shield_drop", t_shield_drop}, {"safety_net", t_safety_net}, {"flee_guard_shield_units", t_flee_guard_shield_units}, {"flee_fallback_docks", t_flee_fallback_docks}, {"attack_dist_and_flee_class", t_attack_dist_and_flee_class}, {"flee_idle_move", t_flee_idle_move}, {"flee_real_warp_hold", t_flee_real_warp_hold},{"fast_sample", t_fast_sample},
         {"dock_tags", t_dock_tags},
+        {"parking", t_parking},
         {"rock_depleted", t_rock_depleted},
         {"reg_table", t_reg_table}, {"reg_events", t_reg_events}, {"reg_world_track", t_reg_world_track}, {"reg_within_nearest", t_reg_within_nearest}, {"reg_surface_block", t_reg_surface_block_radius},
         {"approach_throttle", t_approach_throttle}, {"bubble", t_bubble}, {"bubble_ladder", t_bubble_ladder}, {"bubble_scope", t_bubble_scope}, {"tune_geom", t_tune_geom}, {"flight_warp", t_flight_warp}, {"sweep_return_flee", t_sweep_return_flee}, {"path2_rules", t_path2_rules},

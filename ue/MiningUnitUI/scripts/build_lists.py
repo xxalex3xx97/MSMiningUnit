@@ -84,5 +84,6 @@ dyn_list(main, 'Dyn_RDock', 'Row_CardInnerRDock', 'WBP_DockRow', add_btn='Row_Sz
 for k in ORES:
     dyn_list(main, 'Dyn_UDock_' + k, 'Row_CardInnerUD' + k, 'WBP_DockRow', add_btn='Row_Sz_Btn_UDockAdd_' + k)
 dyn_list(main, 'Dyn_UDock_Misc', 'Row_CardInnerUDMisc', 'WBP_DockRow', add_btn='Row_Sz_Btn_UDockAdd_Misc')
+dyn_list(main, 'Dyn_UDock_Park', 'Row_CardInnerUDPark', 'WBP_DockRow', add_btn='Row_Sz_Btn_UDockAdd_Park')
 save(main)
 print('LISTS built')

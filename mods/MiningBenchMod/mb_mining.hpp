@@ -102,6 +102,7 @@ namespace
         ULONGLONG path_off_ms = 0;             // periodic path checks paused until this GetTickCount64 time (slow check, PATH_SLOW_OFF_S)
         ULONGLONG dmg_log_ms = 0;              // last COMBAT damage line (one per second per ship)
         bool flee = false;                     // hull hit: the dock trip ends in HALT (trip_end)
+        int qpark = 0;   // queue-wait park: 0 none, 1 parking job running, 2 parked in a parking dock (queue place kept), 3 done / not possible (once per trip)
         int64_t unl_prev = -1;                 // unload chain: docked-ore cargo after the last dock trip (-1 = first hop)
         bool unl_undock = false;               // MS_UNDOCK: the undock is the unload chain's (then dock_mining trip), not the seek undock
         double since_stop = 1e9;               // seconds since STOP ALL (mine_halt)
@@ -771,10 +772,12 @@ namespace
         return sum;
     }
 
+    bool park_try(UObject* ship, int sid, MineSt& m, const wchar_t* why);   // defined above trip_end
     // start a dock trip chosen by the auto rule. Failure -> HALT with the reason.
     void trip_begin(UObject* ship, int sid, MineSt& m, const std::wstring& why, const std::string& force = "")
     {
         cancel_dock_job(ship, sid);
+        m.qpark = 0;
         m.backout = false;   // a dock trip replaces a pending hazard back-out (flee_now)
         std::wstring w;
         m.trip = force.empty() ? auto_rule(sid, ship, w) : force;
@@ -806,9 +809,9 @@ namespace
         m.err = false; m.dwait = false; m.warp_to = 0; m.dwait_total = 0.0;
         m.wait_gate = LogGate(); m.q_gate = LogGate();   // a new trip starts its own wait lines
         if (r == STR("waiting dock")) { m.st = MS_TRIP; m.dwait = true; m.dwait_t = 0.0; m.dwait_shown = -1.0; dock_wait_text(sid, m); return; }
-        if (r == STR("nothing to unload")) { g_flee_pick.erase(sid); m.st = MS_HALT; mset(sid, m, STR("Nothing to unload")); return; }
-        if (net_real_error(r)) { g_flee_pick.erase(sid); m.st = MS_HALT; m.err = true; mset(sid, m, STR("ERROR: ") + r.substr(7), STR("ERROR: ") + r.substr(7)); return; }
-        if (r != STR("waiting")) { g_flee_pick.erase(sid); m.st = MS_HALT; mset(sid, m, STR("dock trip failed: ") + r); return; }
+        if (r == STR("nothing to unload")) { g_flee_pick.erase(sid); const bool was_park = g_park_pick.erase(sid) != 0; if (m.leave && !was_park && park_try(ship, sid, m, STR("stopped"))) return; m.st = MS_HALT; mset(sid, m, STR("Nothing to unload")); return; }
+        if (net_real_error(r)) { g_flee_pick.erase(sid); g_park_pick.erase(sid); m.st = MS_HALT; m.err = true; mset(sid, m, STR("ERROR: ") + r.substr(7), STR("ERROR: ") + r.substr(7)); return; }
+        if (r != STR("waiting")) { g_flee_pick.erase(sid); g_park_pick.erase(sid); m.st = MS_HALT; mset(sid, m, STR("dock trip failed: ") + r); return; }
         g_flee_pick.erase(sid);   // the flee pick is used up once its job runs
         m.st = MS_TRIP;
         const std::wstring shown = is_refuel(m) ? STR("Refueling: ") + w : STR("Docking to unload: ") + why;
@@ -866,6 +869,18 @@ namespace
         return false;
     }
 
+    // WHAT: idle/stop: park the ship in a parking dock (dock trip, nothing unloaded). Returns true when the park trip started (caller returns).
+    bool park_try(UObject* ship, int sid, MineSt& m, const wchar_t* why)
+    {
+        if (m.btn || m.flee) return false;
+        const std::vector<int> pk = eff_cfg(sid).park_docks;
+        if (!park_wanted(pk, net_docked_at(sid, ship), false, m.err)) return false;
+        g_park_pick.insert(sid);
+        mlog(sid, STR("Idle: parking (") + std::wstring(why) + STR(")"));
+        trip_begin(ship, sid, m, std::wstring(STR("idle: ")) + why, "dock_mining");
+        return true;
+    }
+
     // trip finished at the dock: autopilot off, then continue / stop. Orders are left in place (next build clears them, undock reuses a DeliverOrder).
     void trip_end(UObject* ship, int sid, MineSt& m, const Config& c)
     {
@@ -873,6 +888,7 @@ namespace
         m.noy_run = 0;   // unloaded: the no-yield run starts over
         set_autopilot(sid, false, err);
         zero_all(ship);
+        if (g_park_pick.erase(sid)) { m.st = MS_HALT; m.fin = false; m.noore = false; m.leave = false; mset(sid, m, STR("parked at dock, waiting for instruction"), STR("Parked")); return; }
         // hull hit: fled to dock, the trip is over for good
         if (m.flee)
         {
@@ -920,8 +936,8 @@ namespace
         }
         const bool refuel = is_refuel(m);
         m.t = 0.0;
-        if (m.leave) { m.st = MS_HALT; mset(sid, m, STR("switched off, parked at dock")); return; }
-        if (!refuel && m.fin) { m.fin = false; const bool no = m.noore; m.noore = false; m.st = MS_HALT; if (no) mset(sid, m, STR("idle: no sector has the ore, parked at base"), STR("Idle: no ore in any sector")); else mset(sid, m, STR("queue done (repeat off), waiting for instruction")); return; }
+        if (m.leave) { if (park_try(ship, sid, m, STR("stopped"))) return; m.st = MS_HALT; mset(sid, m, STR("switched off, parked at dock")); return; }
+        if (!refuel && m.fin) { m.fin = false; const bool no = m.noore; m.noore = false; if (park_try(ship, sid, m, no ? STR("no ore") : STR("queue done"))) return; m.st = MS_HALT; if (no) mset(sid, m, STR("idle: no sector has the ore, parked at base"), STR("Idle: no ore in any sector")); else mset(sid, m, STR("queue done (repeat off), waiting for instruction")); return; }
         m.st = MS_CHECK; m.fails = 0;
         mset(sid, m, STR("trip done, checking"));
     }
@@ -1070,7 +1086,7 @@ namespace
         if (!on)
         {
             if (m.st == MS_HALT) return true;   // keep the stop reason; Start resets it
-            if (m.st == MS_OFF || m.st == MS_CHECK) { chunk_hold_release(sid); m.st = MS_OFF; m.leave = false; m.empty_t = 0.0; mset(sid, m, m.run ? STR("idle: Enabled is off") : STR("idle")); return true; }
+            if (m.st == MS_OFF || m.st == MS_CHECK) { const bool was_chk = m.st == MS_CHECK; chunk_hold_release(sid); m.st = MS_OFF; m.leave = false; m.empty_t = 0.0; mset(sid, m, m.run ? STR("idle: Enabled is off") : STR("idle")); if (was_chk && park_try(ship, sid, m, STR("stopped"))) return true; return true; }
             if (m.st == MS_SEEK || m.st == MS_MINE || m.st == MS_WARP || m.st == MS_COLLECT) { m.leave = true; go_home(ship, sid, m, STR("mining switched off")); return true; }
             m.leave = true;   // UNDOCK / TRIP / HOLD: let them end, then park
         }
@@ -1177,7 +1193,7 @@ namespace
         if (!in_range && !m.noy_skip.empty() && all_rocks_skipped(rock_in_range(sid, m.anchor, item, rad) != nullptr, in_range))
         {
             // every rock in range is no-yield: no belt = HALT (not an error); with a belt this sector counts as empty, the belt picks the next one
-            if (noy_all_halt(c.belt)) { m.st = MS_HALT; mset(sid, m, STR("rocks give no ore")); return; }
+            if (noy_all_halt(c.belt)) { if (park_try(ship, sid, m, STR("no rocks"))) return; m.st = MS_HALT; mset(sid, m, STR("rocks give no ore")); return; }
             const int c0 = cur_sector_id(ship);
             if (c0 > 0) m.tried.insert(c0);
         }
@@ -1205,7 +1221,7 @@ namespace
                 if (m.empty_t >= MINE_BELT_EMPTY_S && !in_range && belt_go(ship, sid, m, c, item, true) != 0) return;
             }
             // belt off: this many empty checks in a row = HALT (IDLE_POLL_MAX)
-            if (belt_off(c.belt) && idle_poll_halt(++m.idle_polls)) { m.st = MS_HALT; mset(sid, m, STR("no rock in range")); return; }
+            if (belt_off(c.belt) && idle_poll_halt(++m.idle_polls)) { if (park_try(ship, sid, m, STR("no rocks"))) return; m.st = MS_HALT; mset(sid, m, STR("no rock in range")); return; }
             m.st = MS_OFF; m.chk_t = 0.0; mset(sid, m, STR("nothing in range")); return;   // Update 15: do not undock
         }
         m.empty_t = 0.0;
@@ -1556,7 +1572,7 @@ namespace
             if (!rock && all_rocks_skipped(rock_in_range(sid, m.anchor, item, rad) != nullptr, false))
             {
                 m.abandon = nullptr; m.col_rock = 0; g_sel_rocks.erase(sid);
-                if (noy_all_halt(c.belt)) { mine_stop_work(ship, sid); m.st = MS_HALT; mset(sid, m, STR("rocks give no ore")); return; }
+                if (noy_all_halt(c.belt)) { mine_stop_work(ship, sid); if (park_try(ship, sid, m, STR("no rocks"))) return; m.st = MS_HALT; mset(sid, m, STR("rocks give no ore")); return; }
                 if (belt_go(ship, sid, m, c, item, true) != 0) return;   // warp started, or HALT / go home (no sector left)
             }
             // approach_rock picks the nearest rock by itself (no skip lists): pin the rock rock_in_range chose (it honours the no-yield and hazard skips)
@@ -2644,17 +2660,44 @@ namespace
         // dock busy: no job runs; the ship waits in the dock queue (mb_net.hpp). The grant starts the job; a 60 s poll is the safety net.
         if (m.dwait)
         {
-            if (m.leave && !m.btn) { net_leave_slot(sid); m.dwait = false; m.st = MS_HALT; mset(sid, m, STR("stopped while waiting for dock")); return; }
+            if (m.leave && !m.btn) { net_leave_slot(sid); m.dwait = false; m.qpark = 0; if (park_try(ship, sid, m, STR("stopped"))) return; m.st = MS_HALT; mset(sid, m, STR("stopped while waiting for dock")); return; }
             m.dwait_t += dt;
             m.dwait_total += dt;
             if (dwait_halt(m.dwait_total))   // longest dock wait of this trip (MINE_DWAIT_MAX_S): HALT, not an error
             {
-                net_leave_slot(sid); m.dwait = false; m.flee = false; m.flee_t = -1.0; g_flee_pick.erase(sid);   // a flee that waited out: no flee left running
+                net_leave_slot(sid); m.dwait = false; m.flee = false; m.flee_t = -1.0; g_flee_pick.erase(sid); g_park_pick.erase(sid);   // a flee that waited out: no flee left running
                 m.st = MS_HALT; mset(sid, m, STR("waited 15 min for a dock"));
                 return;
             }
             const auto gi = g_net_ships.find(sid);
             const bool granted = gi != g_net_ships.end() && gi->second.granted;
+            if (!granted && !m.flee && !c.park_docks.empty())
+            {
+                if (m.qpark == 2 && net_docked_at(sid, ship) == 0) m.qpark = 3;
+                if (m.qpark == 2)
+                {
+                    if (m.dwait_shown < 0.0 || m.dwait_t - m.dwait_shown >= 1.0) { m.dwait_shown = m.dwait_t; dock_wait_text(sid, m); m.result += STR(" (parked)"); }
+                    return;
+                }
+                if (m.qpark == 1)
+                {
+                    if (job_running(sid)) return;
+                    const std::wstring r = g_job_res[sid];
+                    g_job_res.erase(sid);
+                    m.qpark = ok_res(r) ? 2 : 3;
+                    if (m.qpark == 3) mlog(sid, STR("Queue park failed: ") + r + STR(", holding as before"));
+                    return;
+                }
+                if (m.qpark == 0)
+                {
+                    mv_cancel(sid); zero_all(ship); slot_clear(sid); g_job_res.erase(sid);
+                    g_park_raw.insert(sid);
+                    const std::wstring r = job_start(sid, "dock_mining", -1);
+                    g_park_raw.erase(sid);
+                    if (r == STR("waiting")) { m.qpark = 1; mlog(sid, STR("Waiting for dock: parking meanwhile")); return; }
+                    m.qpark = 3;
+                }
+            }
             if (!granted && m.dwait_t < 60.0)
             {
                 // holding slot: fly / warp there and hold (every tick, cheap); the wait text once a second: dock, holder, queue place, elapsed time
@@ -2703,10 +2746,11 @@ namespace
             if (r == STR("waiting dock")) { dock_wait_text(sid, m); return; }
             m.dwait = false;
             m.wait_gate = LogGate(); m.q_gate = LogGate();
-            if (r == STR("nothing to unload")) { g_flee_pick.erase(sid); m.st = MS_HALT; mset(sid, m, STR("Nothing to unload")); return; }
-            if (net_real_error(r)) { g_flee_pick.erase(sid); m.st = MS_HALT; m.err = true; mset(sid, m, STR("ERROR: ") + r.substr(7), STR("ERROR: ") + r.substr(7)); return; }
-            if (r != STR("waiting")) { g_flee_pick.erase(sid); m.st = MS_HALT; mset(sid, m, STR("dock trip failed: ") + r); return; }
+            if (r == STR("nothing to unload")) { g_flee_pick.erase(sid); g_park_pick.erase(sid); m.st = MS_HALT; mset(sid, m, STR("Nothing to unload")); return; }
+            if (net_real_error(r)) { g_flee_pick.erase(sid); g_park_pick.erase(sid); m.st = MS_HALT; m.err = true; mset(sid, m, STR("ERROR: ") + r.substr(7), STR("ERROR: ") + r.substr(7)); return; }
+            if (r != STR("waiting")) { g_flee_pick.erase(sid); g_park_pick.erase(sid); m.st = MS_HALT; mset(sid, m, STR("dock trip failed: ") + r); return; }
             g_flee_pick.erase(sid);
+            m.qpark = 0;
             if (cleared_dock.empty()) for (const auto& kv : g_net_docks) if (kv.second.resv == sid) cleared_dock = widen(net_dock_label(kv.first));
             const std::wstring what = is_refuel(m) ? STR("Refuel") : STR("Unload");
             mset(sid, m, STR("Cleared for ") + what + STR(" ") + cleared_dock, STR("Control: ") + widen(net_ship_label(sid)) + STR(" cleared for ") + what + STR(" ") + cleared_dock);
@@ -3613,7 +3657,7 @@ namespace
         }
         g_mine.erase(sid); g_mine_fault_n.erase(sid); g_mine_log.erase(sid); g_state_ring.erase(sid);
         g_sel_rocks.erase(sid); g_item_idx.erase(sid);
-        g_flee_pick.erase(sid); g_dock_pick.erase(sid); g_unl_ores.erase(sid); g_unl_misc.erase(sid);
+        g_flee_pick.erase(sid); g_park_pick.erase(sid); g_dock_pick.erase(sid); g_unl_ores.erase(sid); g_unl_misc.erase(sid);
         g_job_res.erase(sid); g_mv_res.erase(sid); g_skip.erase(sid);
         g_ob.erase(sid); g_pf.erase(sid); g_spds.erase(sid); g_mvs.erase(sid);
         g_warp_wait.erase(sid); g_wr_wait.erase(sid);
@@ -3647,11 +3691,12 @@ namespace
         warp_cancel(sid);   // before the early return: ships without a MineSt too
         chunk_hold_release(sid);
         net_leave_slot(sid);     // leaves the dock queue (STOP ALL on a waiter)
-        g_flee_pick.erase(sid);
+        g_flee_pick.erase(sid); g_park_pick.erase(sid);
         g_path_skip.erase(sid);   // path skips are for one visit: a stop ends it
         auto it = g_mine.find(sid);
         if (it == g_mine.end()) return;
         it->second.btn = false;
+        it->second.qpark = 0;
         it->second.flee = false; it->second.warp_to = 0; it->second.col_rock = 0; it->second.sweep = false;
         it->second.st = MS_HALT;
         it->second.run = false;
@@ -3695,7 +3740,7 @@ namespace
         if (start)
         {
             m.btn = false;             g_item_idx[sid] = 0; m.got = 0; m.fin = false; m.noore = false; m.unl_prev = -1; m.unl_undock = false;   // always: a stale queue position must not survive a Start
-            m.sweep = false;
+            m.sweep = false; m.qpark = 0;
             m.flee = false; m.warp_to = 0; m.tried.clear(); m.hull = -1; m.dl_n = 0;    // a new run starts with no flee, no pending warp, no sector blacklist, no dock time limit rounds
             m.noy_run = 0; m.noy_visits.clear(); m.noy_skip.clear(); m.lost_n = 0; m.idle_polls = 0; m.dwait_total = 0.0;   // and no no-yield skips, rock lost or idle poll counts
             if (m.st == MS_HALT) m.st = MS_OFF;

@@ -105,6 +105,8 @@ namespace
         std::vector<int> misc_docks;
         // refuel docks in list order (INI: refuel_docks=id,id). refuel_dock_id is tried first. Per-ship overridable.
         std::vector<int> refuel_docks;
+        // parking docks (INI: parking_docks=id,id). Merged with [PARKING] tags; never an unload/misc/refuel dock. Per-ship overridable.
+        std::vector<int> park_docks;
         // s: wait at the dock after the order list (global only). (INI: wait_seconds)
         int wait_seconds = 10;
         // per fuel: on / refuel threshold / amount (global only). (INI: fuel_<key>_on / _threshold / _amount)
@@ -200,7 +202,7 @@ namespace
     }
     // WHAT: tags in one dock name. [TITANIUM] etc (one ore per tag), [MISC], [AUTO-FILTER]. Square brackets, any case; spaces, _ and - inside the brackets are ignored ("[Water Ice]" = [WATERICE]).
     // WHY: user rule 2026-11-18: a tagged dock is paired by name, no INI write. The Lua window (MiningUnitUI) reads the same result from DockTags.txt.
-    struct DockTag { int id = 0; std::vector<int> ores; bool misc = false; bool autof = false; };
+    struct DockTag { int id = 0; std::vector<int> ores; bool misc = false; bool autof = false; bool park = false; };
     std::vector<DockTag> g_dock_tags;   // docks that carry at least one tag; refreshed by dock_tags_refresh (mb_docktags.hpp)
     std::string tag_norm(const std::string& s) { std::string o; for (unsigned char ch : s) if (ch != ' ' && ch != '_' && ch != '-' && ch != '\t') o += static_cast<char>(std::toupper(ch)); return o; }
     DockTag dock_tag_parse(int id, const std::string& name) {
@@ -210,6 +212,7 @@ namespace
             if (e == std::string::npos) break;
             const std::string w = tag_norm(name.substr(p + 1, e - p - 1));
             if (w == "MISC") t.misc = true;
+            else if (w == "PARKING") t.park = true;
             else if (w == "AUTOFILTER") t.autof = true;
             else for (int i = 0; i < N_ORE; ++i)
                 if (w == tag_norm(ORE_KEY[i]) && std::find(t.ores.begin(), t.ores.end(), i) == t.ores.end()) t.ores.push_back(i);
@@ -223,18 +226,27 @@ namespace
         std::vector<int> misc;
         for (const DockTag& t : g_dock_tags) if (t.misc) misc.push_back(t.id);
         for (int d : c.misc_docks) if (std::find(misc.begin(), misc.end(), d) == misc.end()) misc.push_back(d);
+        // [PARKING] docks are never an unload/refuel/misc target: strip them from every list before the empty-list fallback
+        std::vector<int> park;
+        for (const DockTag& t : g_dock_tags) if (t.park) park.push_back(t.id);
+        for (int d : c.park_docks) if (std::find(park.begin(), park.end(), d) == park.end()) park.push_back(d);
+        c.park_docks = park;
+        auto strip = [&](std::vector<int>& v) { v.erase(std::remove_if(v.begin(), v.end(), [&](int d) { return std::find(park.begin(), park.end(), d) != park.end(); }), v.end()); };
+        strip(misc); strip(c.refuel_docks);
         c.misc_docks = misc;
         for (int i = 0; i < N_ORE; ++i) {
             std::vector<int> out;
             for (const DockTag& t : g_dock_tags) if (!t.misc && std::find(t.ores.begin(), t.ores.end(), i) != t.ores.end()) out.push_back(t.id);
             for (int d : c.ore_docks[i]) if (std::find(out.begin(), out.end(), d) == out.end()) out.push_back(d);
+            strip(out);
             if (out.empty()) out = misc;
             c.ore_docks[i] = out; } }
     // WHAT: {dock id, ore index} for every [AUTO-FILTER] dock (never [MISC]): its first ore tag, else the first ore (ore order) whose list in any of cfgs (RAW configs, no tags merged) holds the dock. No ore = no pair.
     std::vector<std::pair<int, int>> autofilter_pairs(const std::vector<DockTag>& tags, const std::vector<Config>& cfgs) {
         std::vector<std::pair<int, int>> out;
         for (const DockTag& t : tags) {
-            if (!t.autof || t.misc) continue;
+            if (!t.autof || t.misc || t.park) continue;
+            bool isPark = false; for (const Config& c : cfgs) if (std::find(c.park_docks.begin(), c.park_docks.end(), t.id) != c.park_docks.end()) isPark = true; if (isPark) continue;
             // never a dock in a misc list
             bool isMisc = false; for (const Config& c : cfgs) if (std::find(c.misc_docks.begin(), c.misc_docks.end(), t.id) != c.misc_docks.end()) isMisc = true; if (isMisc) continue;
             int ore = t.ores.empty() ? -1 : t.ores[0];
@@ -243,6 +255,17 @@ namespace
                     if (std::find(c.ore_docks[i].begin(), c.ore_docks[i].end(), t.id) != c.ore_docks[i].end()) { ore = i; break; }
             if (ore >= 0) out.push_back({t.id, ore}); }
         return out; }
+    // WHAT: ids of [PARKING] docks, in tag (id) order.
+    inline std::vector<int> park_ids(const std::vector<DockTag>& tags) { std::vector<int> o; for (const DockTag& t : tags) if (t.park) o.push_back(t.id); return o; }
+    // WHAT: parking ids nearest first (dist_m parallel to ids); dist < 0 (unknown) last; ties keep order. Sizes differ = unchanged.
+    inline std::vector<int> park_order(std::vector<int> ids, const std::vector<double>& dist_m) {
+        if (ids.size() != dist_m.size()) return ids;
+        std::vector<size_t> ix(ids.size()); for (size_t i = 0; i < ix.size(); ++i) ix[i] = i;
+        std::stable_sort(ix.begin(), ix.end(), [&](size_t a, size_t b) { const bool ua = dist_m[a] < 0, ub = dist_m[b] < 0; if (ua != ub) return ub; return !ua && dist_m[a] < dist_m[b]; });
+        std::vector<int> o; for (size_t i : ix) o.push_back(ids[i]); return o; }
+    // WHAT: should an idle ship park now? Needs a parking dock, no user stop, no error, and not already docked at one.
+    inline bool park_wanted(const std::vector<int>& ids, int docked_at, bool user_stop, bool err) {
+        return !ids.empty() && !user_stop && !err && std::find(ids.begin(), ids.end(), docked_at) == ids.end(); }
     // WHAT: current queue row per ship id (runtime only; 0 = first row). Advanced by item_advance, reset by mine_cmd start.
     std::map<int, int> g_item_idx;
     // WHAT: copies the keys present in kv into c. An empty value counts as missing and keeps c's value.
@@ -293,6 +316,7 @@ namespace
             if (it != kv.end()) c.ore_docks[i] = dock_list(it->second);
         }
         { auto it = kv.find("unload_docks_misc"); if (it != kv.end()) c.misc_docks = dock_list(it->second); }
+        { auto it = kv.find("parking_docks"); if (it != kv.end()) c.park_docks = dock_list(it->second); }
         { auto it = kv.find("refuel_docks"); if (it != kv.end()) c.refuel_docks = dock_list(it->second); }
     }
     // WHAT: effective config for ship sid: g_cfg plus its [ship.<sid>] overrides.
@@ -1149,7 +1173,7 @@ namespace
     // WHAT: a ship's wait reason, why a ship is at a dock, and the holder state of a dock user.
     // WHY: one shared queue per dock, FIFO by global ticket; no game objects here so the tests can run it.
     enum NetReason { NR_OK, NR_WAIT_BUSY, NR_WAIT_QUEUE, NR_WAIT_PARKED, NR_WAIT_FULL, NR_WAIT_UNMANAGED, NR_NOT_CONFIGURED, NR_DOCK_GONE, NR_NOTHING_TO_UNLOAD };
-    enum Purpose { P_NONE, P_UNLOAD, P_REFUEL, P_UNDOCK_TARGET, P_PICK, P_FLEE };
+    enum Purpose { P_NONE, P_UNLOAD, P_REFUEL, P_UNDOCK_TARGET, P_PICK, P_FLEE, P_PARK };
     enum HolderState { HS_WORKING, HS_PARKED };
 
     constexpr double NET_DWELL_S = 20.0;   // a working holder gets this long to unload before a waiter can send it away (s)

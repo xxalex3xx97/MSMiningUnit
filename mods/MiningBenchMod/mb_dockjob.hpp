@@ -238,10 +238,20 @@ namespace
         for (UObject* o : others) { bool isore = false; for (int i = 0; i < N_ORE; ++i) { std::wstring w; if (o == item_c(ORE_ITEM[i], w)) isore = true; } if (!isore) nonore.push_back(o); }
         const bool misc_trip = picker_misc || (fixed <= 0 && unload_misc_trip(cands.size(), mores.size(), nonore.size(), !c.misc_docks.empty()));
         if (misc_trip && fixed <= 0) cands = c.misc_docks;
-        if (fixed <= 0 && g_flee_pick.count(sid))
+        if (fixed <= 0 && (g_flee_pick.count(sid) || g_park_pick.count(sid)))
         {
-            std::wstring rw;
-            cands = flee_fallback_docks(cands, std::vector<std::vector<int>>(c.ore_docks, c.ore_docks + N_ORE), refuel_candidates(c, rw));
+            std::vector<int> pk = c.park_docks;
+            if (!pk.empty())
+            {
+                std::vector<double> dd;
+                for (int d : pk) dd.push_back(trip_dock_dist_m(ship, d));
+                cands = park_order(pk, dd);
+            }
+            else if (g_flee_pick.count(sid))
+            {
+                std::wstring rw;
+                cands = flee_fallback_docks(cands, std::vector<std::vector<int>>(c.ore_docks, c.ore_docks + N_ORE), refuel_candidates(c, rw));
+            }
         }
         if (cands.empty())
         {
@@ -251,9 +261,10 @@ namespace
             for (int i = 0; i < N_ORE; ++i) if (c.misc_docks.empty() && in_cargo[i] && !has_docks[i]) { v.reason = NR_NOT_CONFIGURED; subject = ORE_KEY[i]; break; }
             return v;
         }
-        const Purpose pur = g_flee_pick.count(sid) && !g_flee_dock.count(sid) ? P_FLEE : P_UNLOAD;
+        const Purpose pur = g_park_pick.count(sid) ? P_PARK : (g_flee_pick.count(sid) && !g_flee_dock.count(sid) ? P_FLEE : P_UNLOAD);
         const NetVerdict v = net_pick(g_net_docks, g_net_ships, g_net_ticket, sid, pur, net_req_of(sid, pur), cands, 0, g_now);
         if (v.k == NetVerdict::ERR) { subject = net_dock_label(cands.front()); return v; }
+        if (pur == P_PARK && v.k == NetVerdict::WAIT) { net_drop_wait(g_net_docks, g_net_ships[sid]); NetVerdict e; e.k = NetVerdict::ERR; e.reason = NR_NOTHING_TO_UNLOAD; return e; }
         if (pur == P_FLEE && v.k == NetVerdict::GO) combat_log(STR("COMBAT flee dock chosen ship=") + std::to_wstring(sid) + STR(" dock=") + widen(net_dock_label(v.dock)));
         // ores unloaded at the chosen dock: cargo ores first, then (picker dock only) the other ores that list it
         std::vector<int> pool;
@@ -296,7 +307,7 @@ namespace
     {
         const int at = net_docked_at(sid, ship);
         if (!dock_undock_first(at, target)) return STR("");
-        net_release_ship(g_net_docks, g_net_ships, sid);   // the pick's reservation and queue place go
+        { const std::vector<int> pk = eff_cfg(sid).park_docks; if (std::find(pk.begin(), pk.end(), at) == pk.end()) net_release_ship(g_net_docks, g_net_ships, sid); }   // the pick's reservation and queue place go (a parking dock keeps them)
         tlog(STR("undock first: ship ") + std::to_wstring(sid) + STR(" docked at ") + std::to_wstring(at) + STR(", target ") + std::to_wstring(target));
         g_dock_after_undock[sid] = cmd;
         const std::wstring r = job_start_run(sid, "undock", seq);
@@ -432,6 +443,24 @@ namespace
             if (v.k == NetVerdict::WAIT) { tlog(STR("refuel docks busy, ship ") + std::to_wstring(sid) + STR(" waits")); return STR("waiting dock"); }
             dk = v.dock;
         }
+        else if (g_park_raw.count(sid))
+        {
+            // queue-wait park: first free parking dock, no net_pick (the ship keeps its queue place)
+            const Config c = eff_cfg(sid);
+            std::vector<int> pk = c.park_docks;
+            std::vector<double> dd;
+            for (int d : pk) dd.push_back(trip_dock_dist_m(ship, d));
+            pk = park_order(pk, dd);
+            dk = 0;
+            for (int d : pk)
+            {
+                const auto it = g_net_docks.find(d);
+                const bool taken = it != g_net_docks.end() && (!it->second.exists || it->second.full || (it->second.occ != 0 && it->second.occ != sid) || (it->second.resv != 0 && it->second.resv != sid));
+                if (!taken && !dock_busy(d, sid)) { dk = d; break; }
+            }
+            if (dk == 0) return STR("error: no free parking dock");
+            { const std::wstring u = undock_first(sid, ship, dk, cmd, seq); if (!u.empty()) return u; }
+        }
         else
         {
             // unload: Dock picker's dock, else the first free unload dock (see unload_pick); the ores are set in 5b
@@ -444,7 +473,7 @@ namespace
             { const std::wstring u = undock_first(sid, ship, v.dock, cmd, seq); if (!u.empty()) return u; }
             if (v.k == NetVerdict::WAIT) { tlog(STR("unload dock busy, ship ") + std::to_wstring(sid) + STR(" waits")); return STR("waiting dock"); }
             dk = v.dock;
-            if (unl.empty() && unlm.empty() && !g_flee_pick.count(sid)) return STR("error: no ore lists this dock");
+            if (unl.empty() && unlm.empty() && !g_flee_pick.count(sid) && !g_park_pick.count(sid)) return STR("error: no ore lists this dock");
         }
         // 4b. checks dock_order_issue would fail on: a job that would fail must not warp
         if (!int_array(ship, STR("OrderIDs"))) return STR("error: OrderIDs unreadable");
