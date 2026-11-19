@@ -781,11 +781,12 @@ end
 -- Every ore has a dock card. An ore unloads when its list is not empty. Warning = no ore has a dock (not in All ships mode).
 local HELP_CARDS = {}
 for _, u in ipairs(UD_ORES) do
-  HELP_CARDS[#HELP_CARDS + 1] = { key = u.k, card = "Pnl_UDockCard_" .. u.k, nice = (u.k == "WaterIce" and "Water Ice" or u.k), tag = u.k:upper() }
+  HELP_CARDS[#HELP_CARDS + 1] = { key = u.k, card = "Pnl_UDockCard_" .. u.k, nice = (u.k == "WaterIce" and "Water Ice" or u.k), tag = u.k:upper(),
+    ini = u.ini, tg = u.ini, ck = "UD" .. u.k, hdr = "Lbl_HdrUD" .. u.k, box = "Dyn_UDock_" .. u.k, base = (u.k == "WaterIce" and "Water Ice" or u.k) .. " Unload Dock" }
 end
-HELP_CARDS[#HELP_CARDS + 1] = { key = "RDock", card = "Pnl_RDockCard", nice = "Refuel", refuel = true }
-HELP_CARDS[#HELP_CARDS + 1] = { key = "Misc", card = "Pnl_UDockCard_Misc", nice = "Misc", tag = "MISC" }
-HELP_CARDS[#HELP_CARDS + 1] = { key = "Park", card = "Pnl_UDockCard_Park", nice = "Parking", tag = "PARKING" }
+HELP_CARDS[#HELP_CARDS + 1] = { key = "RDock", card = "Pnl_RDockCard", nice = "Refuel", refuel = true, ck = "RDock", hdr = "Lbl_HdrRDock", box = "Dyn_RDock", tg = "refuel", base = "Refuel Docks (tried in order)" }
+HELP_CARDS[#HELP_CARDS + 1] = { key = "Misc", card = "Pnl_UDockCard_Misc", nice = "Misc", tag = "MISC", ini = UD_MISC.ini, tg = UD_MISC.ini, ck = "UDMisc", hdr = "Lbl_HdrUDMisc", box = "Dyn_UDock_Misc", base = "Misc Docks" }
+HELP_CARDS[#HELP_CARDS + 1] = { key = "Park", card = "Pnl_UDockCard_Park", nice = "Parking", tag = "PARKING", ini = UD_PARK.ini, tg = "park", ck = "UDPark", hdr = "Lbl_HdrUDPark", box = "Dyn_UDock_Park", base = "Parking Docks" }
 local function helpLines(h)
   local t
   if h.refuel then
@@ -802,6 +803,25 @@ local function helpLines(h)
   for i, line in ipairs(t) do out[i] = { id = tostring(i), text = line } end
   return out
 end
+local function cardHead(h, tagged)
+  local c = w(h.card); if not c then return end
+  S.cfw = S.cfw or {}
+  local f = S.cfw[h.key]
+  if not (f and ok(f.box)) then
+    f = { hdr = deepFind(c, h.hdr), box = deepFind(c, h.box), line = deepFind(c, "Row_Sz_Row_CardLine" .. h.ck), g = deepFind(c, "Txt_DockFold_" .. h.key) }
+    S.cfw[h.key] = f
+  end
+  local tg, isTg, n = tagged[h.tg] or {}, {}, 0
+  for _, id in ipairs(tg) do isTg[id] = true; n = n + 1 end
+  for _, id in ipairs(h.refuel and S.rd or S.ud[h.ini] or {}) do if not isTg[id] then n = n + 1 end end
+  local fold = S.cardFold and S.cardFold[h.key]
+  S.tc = S.tc or {}
+  local t = h.base .. " (" .. n .. ")"
+  if f.hdr and S.tc["ch_" .. h.key] ~= t then if try("cardHdr", function() f.hdr:SetText(FText(t)) end) then S.tc["ch_" .. h.key] = t end end
+  local g = fold and ">" or "v"
+  if f.g and S.tc["cg_" .. h.key] ~= g then if try("cardFold", function() f.g:SetText(FText(g)) end) then S.tc["cg_" .. h.key] = g end end
+  setVis(f.box, fold and 1 or 0); setVis(f.line, fold and 1 or 0)
+end
 local function udRender()
   if not S.ud then return end
   local docks, nodock = S.docks or {}, 0
@@ -817,6 +837,7 @@ local function udRender()
   dynDocks("UDock_" .. UD_PARK.k, function() return S.ud and S.ud[UD_PARK.ini] or {} end, udSave, "Parking dock", docks, "Pnl_UDockCard_" .. UD_PARK.k, function() return tagged.park or {} end)
   setVis(w("Pnl_RDockCard"), 0)
   dynDocks("RDock", function() return S.rd end, udSave, "Refuel dock", docks, "Pnl_RDockCard", function() return tagged.refuel or {} end)
+  for _, h in ipairs(HELP_CARDS) do cardHead(h, tagged) end
   S.warn = (not S.all and nodock == #UD_ORES) and "No unload dock set for any ore" or ""
   M.setText("Txt_ShipWarn", S.warn)
   setVis(w("Txt_ShipWarn"), S.warn ~= "" and 0 or 1)
@@ -1865,7 +1886,7 @@ function M.close()
   S.req, S.simple = nil, nil
   S.fleet, S.holoOut, S.tc = nil, nil, nil
   S.logFold, S.logFw, S.logSid = nil, nil, nil
-  S.logGFold, S.docksFold, S.logSl, S.logGk, S.logFg = nil, nil, nil, nil, nil
+  S.logGFold, S.docksFold, S.logSl, S.logGk, S.logFg, S.cardFold, S.cfw = nil, nil, nil, nil, nil, nil, nil
   S.ud, S.rd, S.warn, S.dyn, S.dynWarn = nil, nil, nil, nil, nil
   if not (S.root or S.p or S.frame) then return end
   if M.closing and os.clock() - (M.closing_at or 0) < 3 then return end   -- already closing: idempotent (a teardown lost for 3 s is ignored)
@@ -2182,7 +2203,7 @@ function M.open(ship)
     S.mode, S.t0 = mode, os.clock()
     S.logKey = nil   -- new widgets: repaint the Log tab on the first tick
     S.logFold, S.logFw, S.logSid = nil, nil, nil
-    S.logGFold, S.docksFold, S.logSl, S.logGk, S.logFg = nil, nil, nil, nil, nil
+    S.logGFold, S.docksFold, S.logSl, S.logGk, S.logFg, S.cardFold, S.cfw = nil, nil, nil, nil, nil, nil, nil
     S.docksKey = nil
     S.wc, S.wbuilt = nil, nil   -- new window: the python-built index is walked once again (lazily)
     -- ship list = bench ships; sid = block's ship if listed, else last picked (F4), else first; empty list = nil
@@ -2265,21 +2286,26 @@ function M.open(ship)
       S.last = S.last or {}
       for _, u in ipairs(UD_ORES) do
         bind("Btn_UDockAdd_" .. u.k, function()
+          S.cardFold = S.cardFold or {}; S.cardFold[u.k] = false; udRender()
           modalSelect{ title = "Unload dock", options = S.docks or {}, onPick = function(id) table.insert(S.ud[u.ini], id); udSave() end }
         end)
       end
       bind("Btn_UDockAdd_" .. UD_MISC.k, function()
+        S.cardFold = S.cardFold or {}; S.cardFold["Misc"] = false; udRender()
         modalSelect{ title = "Unload dock", options = S.docks or {}, onPick = function(id) table.insert(S.ud[UD_MISC.ini], id); udSave() end }
       end)
       bind("Btn_UDockAdd_" .. UD_PARK.k, function()
+        S.cardFold = S.cardFold or {}; S.cardFold["Park"] = false; udRender()
         modalSelect{ title = "Parking dock", options = S.docks or {}, onPick = function(id) table.insert(S.ud[UD_PARK.ini], id); udSave() end }
       end)
       bind("Btn_RDockAdd", function()
+        S.cardFold = S.cardFold or {}; S.cardFold["RDock"] = false; udRender()
         modalSelect{ title = "Refuel dock", options = S.docks or {}, onPick = function(id) table.insert(S.rd, id); udSave() end }
       end)
       for _, h in ipairs(HELP_CARDS) do
         local c = w(h.card); local b = c and deepFind(c, "Btn_DockHelp_" .. h.key)
         if b then try("bind help", function() BIND.onClick(b, function() modalSelect{ title = h.nice .. " docks - how to", options = helpLines(h) } end) end) end
+        local fb = c and deepFind(c, "Btn_DockFold_" .. h.key); if fb then try("bind fold", function() BIND.onClick(fb, function() S.cardFold = S.cardFold or {}; S.cardFold[h.key] = not S.cardFold[h.key]; udRender() end) end) end
       end
       selInit("Belt", bind, function(id) S.last.belt = id; iniSave({ belt_sector = id }); shipFill() end, "Sector Selector", function(o) return { cols = o.cols, ores = o.ores } end, loadSectors, function() return { "Sector", "ID", "Distance" } end)
       bind("Btn_BeltPinned", function()
