@@ -9,6 +9,7 @@ param(
     [Parameter(Mandatory)][string[]]$Files,
     [string[]]$Empty = @(),
     [string]$MinNative = '0.5.0',
+    [ValidatePattern('^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@\d+\.\d+\.\d+$')][string[]]$Requires = @(),
     [string]$OutDir
 )
 $ErrorActionPreference = 'Stop'
@@ -50,7 +51,8 @@ try {
     }
     $modDir = Join-Path $stg "Mods\$Name"
     New-Item -ItemType Directory -Force $modDir | Out-Null
-    [IO.File]::WriteAllText((Join-Path $modDir 'mscore.mod'), "name=$Name`nrepo=$Repo`nversion=$Version`n", $utf8)
+    $req = if ($Requires.Count) { "requires=$($Requires -join ',')`n" } else { '' }
+    [IO.File]::WriteAllText((Join-Path $modDir 'mscore.mod'), "name=$Name`nrepo=$Repo`nversion=$Version`n$req", $utf8)
 
     $tops = @(Get-ChildItem -LiteralPath $stg -Directory | ForEach-Object Name)
     New-Item -ItemType Directory -Force $OutDir | Out-Null
@@ -71,6 +73,7 @@ try {
     $size = (Get-Item -LiteralPath $zip).Length
     $m = "name=$Name`nversion=$Version`nzip=$zipName`nsha256=$sha`nsize=$size`n"
     if ($MinNative) { $m += "min_mscore_native=$MinNative`n" }
+    if ($Requires.Count) { $m += "requires=$($Requires -join ',')`n" }
     [IO.File]::WriteAllText((Join-Path $OutDir 'manifest.txt'), $m, $utf8)
     "wrote $zip ($size B, sha256 $sha)"
     $listed | ForEach-Object { "  $_" }
