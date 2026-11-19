@@ -77,6 +77,13 @@ namespace
     // WHAT: no power: the grid consumes (cons > 0), produces nothing (prod <= 0) and efficiency is 0. This is the lost state (grace LOWPOWER_GRACE_S).
     inline bool power_no_power(double cons, double prod, double eff) { return cons > 0.0 && prod <= 0.0 && eff <= 0.0; }
 
+    // WHAT: no-power test from one flight snapshot. known = grid read or low-power flag readable. dead = grid read -> power_no_power, else (flag known and on).
+    inline bool power_dead_from(bool grid_ok, double prod, double cons, double eff, bool lp_known, bool lp_on, bool& known)
+    {
+        known = grid_ok || lp_known;
+        return grid_ok ? power_no_power(cons, prod, eff) : (lp_known && lp_on);
+    }
+
     // WHAT: low-power state of the approach. dead = no power: grid read -> power_no_power, else the low-power flag when known and on.
     //       lp = dead and the low-power limits read (lim_ok). thr / frac are set only when lp, else 0. Returns lp.
     // WHY: same rule as mining power_dead + lp_state (mb_steer.hpp), pure so it can be checked.

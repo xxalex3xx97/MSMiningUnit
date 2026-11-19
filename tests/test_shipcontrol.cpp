@@ -161,6 +161,18 @@ static void t_moved_steer()
     CHECK(!power_no_power(200.0, 80.0, 0.4));
 }
 
+// SC6 D3a: no-power test from one flight snapshot (sc_logic_steer.hpp power_dead_from).
+static void t_power_dead_from()
+{
+    bool known = false;
+    CHECK(power_dead_from(true, 0.0, 40.0, 0.0, false, false, known) && known);     // grid dead
+    CHECK(!power_dead_from(true, 80.0, 200.0, 0.4, false, false, known) && known);  // brown-out, grid still produces
+    CHECK(!power_dead_from(true, 200.0, 80.0, 1.0, true, true, known) && known);    // grid read wins over the flag (grid fine, flag on)
+    CHECK(power_dead_from(false, 0.0, 0.0, 0.0, true, true, known) && known);       // no grid, flag on
+    CHECK(!power_dead_from(false, 0.0, 0.0, 0.0, true, false, known) && known);     // no grid, flag off
+    CHECK(!power_dead_from(false, 0.0, 0.0, 0.0, false, true, known) && !known);    // nothing known
+}
+
 static void t_lp_state_from()
 {
     bool lp = false;
@@ -606,6 +618,7 @@ int main()
 
     t_moved_steer();
     t_lp_state_from();
+    t_power_dead_from();
     t_phase1_steer();
     t_approach_step();
     t_view_and_ore();
