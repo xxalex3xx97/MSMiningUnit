@@ -1567,7 +1567,7 @@ local function logSlotW(name)
       S.logSl = {}
       local pnl = w("Pnl_LogAll")
       local sc = pnl and deepFind(pnl, "Row_LogAllScroll")
-      if sc then try("logSlotW", function() for i = 0, sc:GetChildCount() - 1 do local ch = sc:GetChildAt(i); S.logSl[nm(ch)] = ch end end) end
+      if sc then try("logSlotW", function() for i = 0, sc:GetChildrenCount() - 1 do local ch = sc:GetChildAt(i); S.logSl[nm(ch)] = ch end end) end
     end
   end
   return S.logSl[name]
