@@ -127,6 +127,21 @@ def _t(w, name, parent, size=FONTS[0], hex_=TEXT, var=True, label=None, **slot_k
 
 
 
+def _edit(w, name, parent):
+    """EditableTextBox, var, body font FONTS[0], black text (same style recipe as add_items_groups Edt_PresetName)"""
+    e = add(w, U.EditableTextBox, name, parent, True)
+    blk = U.SlateColor(specified_color=U.LinearColor(0, 0, 0, 1))
+    st = e.get_editor_property('widget_style')
+    ts = st.get_editor_property('text_style')
+    f = ts.get_editor_property('font'); f.set_editor_property('size', FONTS[0]); ts.set_editor_property('font', f)
+    ts.set_editor_property('color_and_opacity', blk)
+    st.set_editor_property('text_style', ts)
+    for pn in ('foreground_color', 'focused_foreground_color', 'read_only_foreground_color'):
+        st.set_editor_property(pn, blk)
+    e.set_editor_property('widget_style', st)
+    return e
+
+
 def _hb(w, name, parent, var=False, **slot_kw):
     h = add(w, U.HorizontalBox, name, parent, var)
     if slot_kw:
@@ -276,8 +291,8 @@ def field(w, key, parent, label, kind, row=None, lbl=None, ctl=None, txt=None, w
         _sel_btn(w, ctl or 'Sel_' + key, txt or 'Txt_Sel' + key, row, v='Center')
     elif kind in ('number', 'text'):
         n = ctl or 'Edt_' + key
-        _sz(w, n + '_Sz', row, w_px, None, v='Center')
-        add(w, U.EditableTextBox, n, n + '_Sz', True)
+        _sz(w, n + '_Sz', row, w_px, 22, v='Center')
+        _edit(w, n, n + '_Sz')
     elif kind == 'check':
         slot(add(w, U.CheckBox, ctl or 'Chk_' + key, row, True), v='Center')
     return r
@@ -425,7 +440,7 @@ def form_row_wbp(wbp_name='WBP_FormRow'):
     _hb(w, 'Row_Root', '', var=True)
     _t(w, 'Txt_Lbl', 'Row_Root', FONTS[0], DIM, pad=(0, 0, 8, 0), fill=1.0, h='Left', v='Center')
     _sel_btn(w, 'Btn_Sel', 'Txt_Sel', 'Row_Root', fill=1.5, h='Fill', v='Center')
-    e = add(w, U.EditableTextBox, 'Edt_Val', 'Row_Root', True)
+    e = _edit(w, 'Edt_Val', 'Row_Root')
     slot(e, fill=1.5, h='Fill', v='Center')
     add(w, U.CheckBox, 'Chk_Val', 'Row_Root', True)
     save(w)

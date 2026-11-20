@@ -23,10 +23,6 @@ TITLES = {'Defend': 'Role: Defend', 'Haul': 'Role: Haul', 'Attack': 'Role: Attac
 CLASSES = ['All', 'Miner', 'Hauler', 'Fighter', 'Frigate', 'Capital']
 # icon textures that exist in Content/MiningUnitUI; i_call/i_home/i_sel have no texture yet -> nearest existing (GUESS, swap when i_* are generated)
 IC_CALL, IC_HOLD, IC_SEL, IC_DOCK, IC_SEND = 'T_IconUp', 'T_IconStIdle', 'T_IconShip', 'T_IconDown', 'T_IconPin'
-ESC_BAR = [('Btn_FlESelect', 'Txt_FlESelect', 'Select ship', IC_SEL, 'Img_FlESelect'), ('Btn_FlEDock', 'Txt_FlEDock', 'Return to dock', IC_DOCK, 'Img_FlEDock'),
-           ('Btn_FlERecall', 'Txt_FlERecall', 'Recall to me', IC_CALL, 'Img_FlERecall'), ('Btn_FlEHold', 'Txt_FlEHold', 'Hold', IC_HOLD, 'Img_FlEHold'),
-           ('Btn_FlESend', 'Txt_FlESend', 'Send ship', IC_SEND, 'Img_FlESend'), None,
-           ('Btn_FlEUnselect', 'Txt_FlEUnselect', 'Unselect target', None, None)]
 # escort list header cells: (key, label, px or None, fill)
 ESC_HEAD = [('Holo', '', 44, None), ('Name', 'Ship', None, 1.1), ('Role', 'Role', 66, None), ('Doing', 'Doing now', None, 1.7),
             ('Hull', 'Hull', 78, None), ('Dist', 'Distance', 70, None), ('Pin', '', 28, None), ('Act', '', 28, None)]
@@ -46,7 +42,7 @@ def head(w, row, parent, prefix):
 def role_card(w, parent, role, letter, fields):
     c = 'Rl' + role
     p = _vb(w, 'Pnl_' + c, parent, var=True, pad=(0, 0, 5, 0), fill=1.0, h='Fill', v='Fill')
-    box(w, 'Bx_' + c, 'Pnl_' + c, TITLES[role], 'Txt_%sTitle' % c, INSET, 5)
+    slot(box(w, 'Bx_' + c, 'Pnl_' + c, TITLES[role], 'Txt_%sTitle' % c, INSET, 5, fill=True), fill=1.0, h='Fill', v='Fill')
     inn = 'Bx_%s_In' % c
     _hb(w, 'Row_%sTop' % c, inn)
     _ship_img(w, 'Img_%sHolo' % c, 'Row_%sTop' % c, 47)
@@ -66,6 +62,7 @@ def role_card(w, parent, role, letter, fields):
             field(w, k, inn, label, fk, lbl='Txt_%sLbl' % k, ctl=pre + k)
     if letter == 'H':
         _ship_img(w, 'Img_RlHItem', 'Row_RlHItem', 24)  # placeholder, Lua sets the item texture
+    slot(add(w, U.Spacer, 'Sp_%s' % c, inn, False), fill=1.0, h='Fill', v='Fill')  # pushes the buttons row to the card bottom
     _hb(w, 'Row_%sBtns' % c, inn, var=True, pad=(0, 6, 0, 0), h='Fill')
     for key, label, icon in (('Recall', 'Recall to me', IC_CALL), ('Hold', 'Hold', IC_HOLD), ('Default', 'Set as default', None)):
         n = c + key
@@ -117,7 +114,6 @@ def main_build():
                 dyn_list(main, dn, parent, row, spacing=2.0)
             else:
                 print('MISSING row WBP:', row)
-        action_bar(main, 'Bdr_FlEscActionBar', 'Row_FlEscActionBar', 'Pnl_PageEscort', ESC_BAR)
     save(main)
 
 

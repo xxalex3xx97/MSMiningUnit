@@ -34,8 +34,8 @@ M.NAMES = {
   "Txt_FrName", "Bdr_FrChip", "Txt_FrRole", "Txt_FrDoing", "PB_FrHull", "Txt_FrHullPct",
   "PB_FrCargo", "Txt_FrCargoPct", "Txt_FrNoCargo", "Btn_FrRemove", "Btn_FrGoto", "Txt_FrLostHint",
   "Txt_FlFollowName", "Sel_FlFollow", "Txt_SelFlFollow", "Sel_FlDist", "Txt_SelFlDist", "Btn_FlStopAll",
-  "Dyn_FlTargets", "Txt_FlAssignedTitle", "Dyn_FlAssigned", "Dyn_FlFree", "Btn_FlESelect", "Btn_FlEDock", "Btn_FlERecall",
-  "Btn_FlEHold", "Btn_FlESend", "Btn_FlEUnselect",
+  "Dyn_FlTargets", "Txt_FlAssignedTitle", "Dyn_FlAssigned", "Dyn_FlFree",
+  "Bdr_FlActionBar", "Txt_FlUnselectAll",
   "Img_FeHolo", "Txt_FeName", "Bdr_FeChip", "Txt_FeRole", "Txt_FeDoing", "PB_FeHull", "Txt_FeHullPct",
   "Txt_FeDist", "Btn_FePin", "Btn_FeAction", "Img_FtHolo", "Txt_FtName", "Btn_FtPick",
   "Pnl_RlDefend", "Pnl_RlHaul", "Pnl_RlAttack", "Pnl_RlEscort", "Btn_RlDefendRecall", "Btn_RlDefendHold",
@@ -399,31 +399,27 @@ function M.bind()
   local function cmd(find, n, fn) UI.bind_button(find, n, function() fn(selIds()) end) end
   -- fleet page: class strip + group, selection bar, action bar (e-stop, start, hold, dock, undock, refuel)
   UI.bind_button(pf, "Sel_FlGroup", function() FS.set_filter("group") end)
-  cmd(pf, "Btn_FlEmergencyStop", FS.emergency_stop)
-  cmd(pf, "Btn_FlStart", FS.start)
-  cmd(pf, "Btn_FlUndock", FS.undock)
-  cmd(pf, "Btn_FlRefuel", FS.refuel)
+  -- shared footer (Bdr_FlActionBar, below PageSwitcher, same on every tab)
+  local pb = UI.index("Bdr_FlActionBar")
+  cmd(pb, "Btn_FlEmergencyStop", FS.emergency_stop)
+  cmd(pb, "Btn_FlStart", FS.start)
+  cmd(pb, "Btn_FlUndock", FS.undock)
+  cmd(pb, "Btn_FlRefuel", FS.refuel)
   for _, k in ipairs(CLASSES) do
     UI.bind_button(pf, "Btn_FlCls" .. k, function() S.cls = k; FS.set_filter(k); M.repaint() end)
   end
   UI.bind_button(pf, "Btn_FlApply", function() if S.roleSel then FS.set_role(selIds(), S.roleSel) end end)
   UI.bind_button(pf, "Btn_FlNewGroup", function() FS.new_group(selIds()) end)
-  UI.bind_button(pf, "Btn_FlSelect", selectCur)
-  cmd(pf, "Btn_FlRecall", FS.recall)
-  cmd(pf, "Btn_FlHold2", FS.hold)
-  cmd(pf, "Btn_FlDockBtn", FS.dock)
-  UI.bind_button(pf, "Btn_FlSend", sendEscort)
-  UI.bind_button(pf, "Btn_FlUnselectAll", function() S.sel = {}; FS.unselect_all(); M.repaint() end)
+  UI.bind_button(pb, "Btn_FlSelect", selectCur)
+  cmd(pb, "Btn_FlRecall", FS.recall)
+  cmd(pb, "Btn_FlHold2", FS.hold)
+  cmd(pb, "Btn_FlDockBtn", FS.dock)
+  UI.bind_button(pb, "Btn_FlSend", sendEscort)
+  UI.bind_button(pb, "Btn_FlUnselectAll", function() S.sel = {}; FS.unselect_all(); M.repaint() end)
   -- escort page (Pnl_PageEscort)
   UI.bind_button(pe, "Btn_FlStopAll", function()
     for _, r in ipairs(S.rowsA) do FS.escort_remove(r.item.id) end
   end)
-  UI.bind_button(pe, "Btn_FlESelect", selectCur)
-  cmd(pe, "Btn_FlEDock", FS.dock)
-  cmd(pe, "Btn_FlERecall", FS.recall)
-  cmd(pe, "Btn_FlEHold", FS.hold)
-  UI.bind_button(pe, "Btn_FlESend", sendEscort)
-  UI.bind_button(pe, "Btn_FlEUnselect", function() S.sel = {}; FS.unselect_all(); M.repaint() end)
   -- role page: default buttons send the whole form (defend_set etc.), per-card recall/hold
   for _, role in ipairs(CARD_ROLES) do
     cmd(pr, "Btn_Rl" .. role .. "Recall", FS.recall)
@@ -443,6 +439,7 @@ end
 function M.onTab(i)
   S.page = i
   S.sig = nil
+  UI.text(UI.index("Bdr_FlActionBar")("Txt_FlUnselectAll"), i == 3 and "Unselect target" or "Unselect all")
   M.repaint()
 end
 

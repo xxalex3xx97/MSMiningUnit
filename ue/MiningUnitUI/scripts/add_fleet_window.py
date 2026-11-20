@@ -113,7 +113,7 @@ if not _find(main, 'Bx_FlMain'):
     txt(main, 'Txt_FlEmptyTitle', 'Bx_FlEmpty_In', 'No ships yet', FONTS[2], var=True, h='Center')
     t = txt(main, 'Txt_FlEmptyHint', 'Bx_FlEmpty_In', 'Build a ship at a station and it appears here.', FONTS[1], DIM, var=True)
     t.set_editor_property('auto_wrap_text', True)
-    action_bar(main, 'Bdr_FlActionBar', 'Row_FlActionBar', P)  # empty bar, items added below (e-stop first)
+    action_bar(main, 'Bdr_FlActionBar', 'Row_FlActionBar', 'Col_CentreIn')  # ONE shared footer below PageSwitcher (all tabs); items added below (e-stop first)
     R = 'Row_FlActionBar'
     # E-stop (left end): hazard-stripe frame > yellow rim > red rounded button
     hazard_border(main, 'Row_FlEstopFrame', R, (5, 5, 5, 5), v='Center')
