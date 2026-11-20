@@ -172,7 +172,7 @@ namespace
     // WHAT: one step of a build. kind 0 = clear all orders; 1 = DeliverOrder to dock; 2 = child of the last DeliverOrder (cls, item, cmp, amount).
     // WHY: fresh orders with wait conditions. Steps run one send at a time, and each send is confirmed by a readback before the next.
     struct OBStep { int kind = 0; std::wstring cls; std::string item; int cmp = 0; int amount = 0; int dock = 0; UObject* itemo = nullptr; };
-    struct OrderBuild { std::vector<OBStep> steps; size_t i = 0; int phase = 0; double t = 0; int before = 0; int deliver_id = 0, first_deliver = 0; int state = 1; /*1 running, 2 ok, 3 failed*/ std::wstring result; };
+    struct OrderBuild { std::vector<OBStep> steps; size_t i = 0; int phase = 0; double t = 0; int before = 0; int deliver_id = 0, first_deliver = 0; int state = 1; /*1 running, 2 ok, 3 failed*/ std::wstring result; int clear_tries = 0; };
     std::map<int, OrderBuild> g_ob;
     constexpr double OB_TIMEOUT_S = 5.0, OB_SETTLE_S = 0.5;
 
@@ -202,6 +202,7 @@ namespace
         ++b.i;
         b.phase = 0;
         b.t = 0;
+        b.clear_tries = 0;
     }
 
     // WHAT: runs one phase of the current step. Sends at most one command per call.
@@ -226,7 +227,12 @@ namespace
             }
             b.t += dt;
             if (n < b.before) { b.phase = 0; b.t = 0; }
-            else if (b.t >= OB_TIMEOUT_S) ob_fail(b, STR("clear timeout"));
+            else if (b.t >= OB_TIMEOUT_S)
+            {
+                // ponytail: fallback, no pause flag in MB. A pause (pause menu) freezes the send, so retry the DeleteOrder up to 2 times before failing.
+                if (b.clear_tries < 2) { ++b.clear_tries; b.phase = 0; b.t = 0; }
+                else ob_fail(b, STR("clear timeout n=") + std::to_wstring(n) + STR(" before=") + std::to_wstring(b.before));
+            }
             return;
         }
         if (s.kind == 1)
