@@ -476,6 +476,8 @@ namespace
     // WHAT: far trip warp only inside one sector: both sector ids known (> 0) and equal.
     // WHY: a warp across sectors is not wanted; an unknown sector (0) on either side skips the warp (the ship flies as before).
     inline bool trip_same_sector(int ship_sec, int dock_sec) { return ship_sec > 0 && ship_sec == dock_sec; }
+    // WHAT: dt that counts toward an order-build timeout: 0 while paused (a paused sim processes no commands), else dt.
+    inline double ob_dt(double dt, bool paused) { return paused ? 0.0 : dt; }
     // WHAT: the two sectors conflict only when both are known and different. An unknown sector (0, open space outside the named sectors) never blocks a warp.
     // WHY: the rule is warp when the flight is longer than warp_trip_km; open space has no sector, so it must not refuse the warp.
     inline bool sectors_conflict(int a, int b) { return a > 0 && b > 0 && a != b; }

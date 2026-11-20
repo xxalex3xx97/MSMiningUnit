@@ -229,7 +229,7 @@ namespace
             if (n < b.before) { b.phase = 0; b.t = 0; }
             else if (b.t >= OB_TIMEOUT_S)
             {
-                // ponytail: fallback, no pause flag in MB. A pause (pause menu) freezes the send, so retry the DeleteOrder up to 2 times before failing.
+                // retry the DeleteOrder up to 2 times before failing (safety net). Pause: ob_tick passes dt=0 while MSCore says paused, so b.t does not grow.
                 if (b.clear_tries < 2) { ++b.clear_tries; b.phase = 0; b.t = 0; }
                 else ob_fail(b, STR("clear timeout n=") + std::to_wstring(n) + STR(" before=") + std::to_wstring(b.before));
             }
@@ -315,8 +315,11 @@ namespace
 
     // WHAT: advances every running build by one call. A ship that is gone fails its build.
     // WHY: called from jobs_tick (slice B3) with the poll step dt.
-    void ob_tick(double dt)
+    void ob_tick(double dt_real)
     {
+        bool any = false;
+        for (auto& e : g_ob) if (e.second.state == 1) { any = true; break; }
+        const double dt = any ? ob_dt(dt_real, ms_paused()) : dt_real;   // one pause query per tick, only while a build runs
         for (auto& e : g_ob)
         {
             OrderBuild& b = e.second;

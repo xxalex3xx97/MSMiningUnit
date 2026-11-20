@@ -72,6 +72,7 @@ namespace
         int (*ship_flight)(int, int, MsFlight*) = nullptr;
         int (*ship_set_throttle)(int, int, wchar_t*, int) = nullptr;
         int (*ship_zero)(int, wchar_t*, int) = nullptr;
+        int (*world_paused)() = nullptr;
     };
     MsApi g_ms;
 
@@ -118,6 +119,7 @@ namespace
             m.ship_flight = reinterpret_cast<int (*)(int, int, MsFlight*)>(GetProcAddress(h, "MSCore_ship_flight"));
             m.ship_set_throttle = reinterpret_cast<int (*)(int, int, wchar_t*, int)>(GetProcAddress(h, "MSCore_ship_set_throttle"));
             m.ship_zero = reinterpret_cast<int (*)(int, wchar_t*, int)>(GetProcAddress(h, "MSCore_ship_zero"));
+            m.world_paused = reinterpret_cast<int (*)()>(GetProcAddress(h, "MSCore_world_paused"));
         }
         const bool full = m.api && m.add_input && m.view_send && m.throttle && m.find_item && m.find_dock && m.new_order &&
                           m.update_order && m.delete_order && m.autopilot && m.skip_to && m.filter_send && m.filters_read &&
@@ -215,6 +217,16 @@ namespace
         if (!ms_load(why) || !g_ms.ship_zero) return false;
         wchar_t buf[256] = {0};
         try { return g_ms.ship_zero(sid, buf, 256) == 1; }
+        catch (...) { return false; }
+    }
+
+    // WHAT: MSCore_world_paused. true only when MSCore says paused (1). Missing export, -1, -2 or exception = false.
+    // WHY: fail closed: unknown keeps the old real-time timeout. Pause query is game-fragile and lives in MSCore.
+    bool ms_paused()
+    {
+        std::wstring why;
+        if (!ms_load(why) || !g_ms.world_paused) return false;
+        try { return g_ms.world_paused() == 1; }
         catch (...) { return false; }
     }
 
