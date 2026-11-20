@@ -1110,6 +1110,16 @@ static void t_trip_progress()
     CHECK(!trip_same_sector(1008, 0));
 }
 
+static void t_ob_dt()
+{
+    CHECK(ob_dt(0.25, false) == 0.25);
+    CHECK(ob_dt(0.25, true) == 0.0);
+    double t = 0; for (int i = 0; i < 100; ++i) t += ob_dt(0.1, true);
+    CHECK(t == 0.0);
+    for (int i = 0; i < 60; ++i) t += ob_dt(0.1, false);
+    CHECK(t >= 5.0);
+}
+
 // clear-path geometry: segment vs sphere (in front, behind, beyond the end, tangent)
 static void t_path_block()
 {
@@ -2266,7 +2276,7 @@ int main()
         {"shield_from_raw", t_shield_from_raw},
         {"apply_kv_empty_keeps_old", t_apply_kv_empty_keeps_old}, {"apply_kv_dock_per_ship", t_apply_kv_dock_per_ship},
         {"apply_kv_items_empty_clears", t_apply_kv_items_empty_clears}, {"dock_lists", t_dock_lists}, {"eff_cfg_items_row", t_eff_cfg_items_row},
-        {"eff_cfg_does_not_touch_global", t_eff_cfg_does_not_touch_global}, {"trip_progress", t_trip_progress},
+        {"eff_cfg_does_not_touch_global", t_eff_cfg_does_not_touch_global}, {"trip_progress", t_trip_progress}, {"ob_dt", t_ob_dt},
         {"parse_cmd_line", t_parse_cmd_line}, {"cmd_seq_is_new", t_cmd_seq_is_new},
         {"belt", t_belt}, {"csq", t_csq}, {"sector_contains", t_sector_contains}, {"warp_fuel", t_warp_fuel},
         {"cargo_pct", t_cargo_pct}, {"fuel_low", t_fuel_low}, {"got_delta", t_got_delta}, {"row_done", t_row_done},
