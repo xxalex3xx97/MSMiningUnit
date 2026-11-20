@@ -90,7 +90,7 @@ Build and asset scripts read these environment variables. Unset = the built-in f
 | `tools/` | `compat_dump.py` (native pattern generator / verifier), `compat_names.py` (contract name list) |
 | `scripts/package.ps1` | builds `dist\MSMiningUnit-<ver>-preview-for-developer.zip` |
 | `build.ps1` | compile the DLL (`-Install` copies it into the game; game must be closed) |
-| `docs/` | `ASSETS.md` (art origin and license), `DevReference.html` (developer reference, not in the zip) |
+| `docs/` | `ASSETS.md` (art origin and license), `DevReference.html` (developer reference, not in the zip), `REBUILD-AFTER-UPDATE.md` (rebuild mod paks after a game update) |
 
 Include order (dependency order, `dllmain.cpp`): `mb_version, mb_common, mb_pattern, mb_compat, mb_config, mb_ue, mb_mscore, mb_math, mb_docks, mb_ships, mb_weapons, mb_orders, mb_filters, mb_cmdstate, mb_rocks, mb_steer, mb_net, mb_dockjob, mb_pin, mb_warp, mb_warpreal, mb_belt, mb_mining, mb_chunkhold, mb_devcmd, mb_testcmd, mb_compat_run`.
 
@@ -117,3 +117,4 @@ A full game restart is needed for any DLL change.
 - Check: search `COMPAT` in UE4SS.log or `MiningCompat.txt` in the mod folder. All OK = nothing to do. A DISABLED feature = that part is off, the game runs. SAFE MODE = restart the game.
 - `kill_switch=1` in `MiningBench.ini` stops the mod completely (hot reload); `0` resumes.
 - Tested build exe size 149200896 (informational only, logged as `COMPAT build size=`).
+- Pak donors can change too: see [docs/REBUILD-AFTER-UPDATE.md](docs/REBUILD-AFTER-UPDATE.md) (`scripts\rebuild-after-update.ps1`).
