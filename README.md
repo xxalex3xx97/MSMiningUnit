@@ -26,6 +26,115 @@ MIT, see `LICENSE`. It covers our own code only.
 
 A Mining Unit window (F4) automates mining for the bench ships: mine rocks, collect floating ore, dock, refuel, unload, and warp to a belt, with per-ship settings saved in `MiningBench.ini`. Ships act only through the game's normal input commands (`AddInputCommand`), the same path the player's controls use. The mod writes no simulation state of its own. It is designed to be co-op safe for that reason, but it has been tested in single-player only. It is made for single-player.
 
+## How to use
+
+### 1. Make a mining ship
+
+A ship is a mining ship only with **both**:
+
+| Part | Note |
+|---|---|
+| Mining Bench block | the building block added by this mod (`pakchunk99-ClonedBlock_P`) |
+| Mining laser | no laser = the ship is not in the Mining window list |
+
+Build it, then press **F4**.
+
+### 2. The F4 window
+
+Tabs: **Ship**, **Items**, **Operation**, **Log**, **Docks**. Pick the ship in the header selector (bench ships only).
+
+| Tab | Use it for |
+|---|---|
+| Ship | Start / Stop the loop, Collect floating ore, and the dock buttons (Dock, Undock, Refuel, Unload, Park). **Dock** asks "Dock at" first (the Dock picker). |
+| Items | ordered ore queue: ore + amount (0 = until the cargo is full). Saved as `items=` for that ship. |
+| Operation | radius, mining distance, warp range, idle / wait / dock-hold seconds, per-fuel on / threshold / amount, Enabled, Repeat. Saved at once to `MiningBench.ini`. |
+| Log | last lines per ship (`MiningLog.txt`). |
+| Docks | dock queues, who waits where, per dock purpose. |
+
+Steps:
+1. Pick a ship, open **Items**, add an ore (e.g. Titanium).
+2. Open **Ship**, click **Start**. The ship mines, docks, unloads, refuels and goes back.
+3. Floating ore around? Click **Collect** (the button reads `Collect <n> ores`).
+4. **Stop** ends the loop.
+
+### 3. Name your docks with tags
+
+Rename a dock in game. The mod reads `[tags]` from the dock name. No INI edit.
+
+| Tag | Meaning |
+|---|---|
+| `[TITANIUM]` `[NICKEL]` `[COBALT]` `[IRIDIUM]` `[WATERICE]` (or `[ICE]`) `[SILICA]` `[GRAPHITE]` | unload dock for that ore. One ore tag per dock: 2 or more ore tags = the dock is ignored (logged once). |
+| `[MISC]` | unload dock for non-ore cargo, and for ores with no dock of their own |
+| `[AUTO-FILTER]` | sets the dock's item filter to its ore (its ore tag, else the ore whose INI dock list holds it) |
+| `[PARKING]` | parking dock. Never an unload, misc or refuel target. |
+| `[REFUEL]` | refuel-only dock |
+| `[HYDROGEN]` `[DEUTERIUM]` `[WARP]` | which fuel the `[REFUEL]` dock serves. No fuel tag = all fuels. |
+
+Rules: tags are in square brackets, any case. Spaces, `_` and `-` inside the brackets are ignored (`[Water Ice]` = `[WATERICE]`, `[auto filter]` = `[AUTO-FILTER]`). Tags can be combined in one name.
+
+Copy-paste names:
+```
+Titanium unload [TITANIUM]
+Ice [WATERICE] [AUTO-FILTER]
+Junk [MISC]
+Hangar [PARKING]
+Fuel [REFUEL] [HYDROGEN] [WARP]
+Any fuel [REFUEL]
+```
+
+Tags can also go in a **ship name** to set its queue (replaces the Items tab queue, INI untouched): `Miner [TITANIUM:200] [NICKEL]` = 200 titanium, then nickel until full. An unknown word is skipped; a repeated ore keeps the first.
+
+### 4. Refuel rule
+
+Each cycle the ship checks its enabled fuels (Operation tab; defaults: hydrogen on, warp on, deuterium off, threshold 300 each).
+- Any **enabled** fuel in cargo **below its threshold** -> refuel route.
+- Otherwise -> mining route (unload).
+
+Refuel dock order:
+1. the Dock picker choice (Dock at)
+2. `refuel_dock_id` / `refuel_dock_name` (INI)
+3. `refuel_docks` list: `[REFUEL]`-tagged docks first (id order), then the manual picks
+4. first free dock of that list
+
+### 5. MiningBench.ini keys
+
+File: `Binaries\Win64\ue4ss\Mods\MiningBenchMod\dlls\MiningBench.ini`. Created with defaults on first run, reloaded while the game runs. Top level = global; a `[ship.<id>]` section at the end overrides per-ship keys.
+
+```ini
+# kill_switch: 1 = mod stops touching the game (global)
+kill_switch=0
+# watchdog: freeze watchdog (global)
+watchdog=1
+# radius: mining radius (per-ship ok)
+radius=50km
+# warp_trip_km: a dock trip longer than this warps if the ship has warp fuel
+warp_trip_km=5
+# dock_hold_limit: max seconds at the dock, 0 = no limit
+dock_hold_limit=300
+# wait_seconds: wait at the dock (global)
+wait_seconds=10
+# fuel_<hydrogen|warp|deuterium>_on / _threshold / _amount (global)
+fuel_hydrogen_on=1
+fuel_hydrogen_threshold=300
+fuel_hydrogen_amount=300
+# refuel_dock_id: dock id (digits) or in-game dock name; empty = none
+refuel_dock_id=Fuel
+# refuel_docks: ids only, tried in order (per-ship ok)
+refuel_docks=12,15
+# unload_docks_<titanium|nickel|cobalt|iridium|waterice|silica|graphite>: ids
+unload_docks_titanium=12
+# unload_docks_misc: ids (global)
+unload_docks_misc=14
+# parking_docks: ids (per-ship ok)
+parking_docks=20
+
+[ship.123456]
+items=ITEM_TitaniumOre:500,ITEM_NickelOre:0
+refuel_dock_id=12
+```
+
+Dock lists take ids only (names are not allowed in lists). Tagged docks are merged in on top of these lists.
+
 ## Install
 
 Use **MSCoreManager.exe** from [MSCore](https://github.com/xxalex3xx97/MSCore/releases/latest). It installs and updates the mod for you. Do not copy files by hand unless you have to.
