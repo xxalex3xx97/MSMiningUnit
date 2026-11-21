@@ -73,6 +73,8 @@ namespace
         int (*ship_set_throttle)(int, int, wchar_t*, int) = nullptr;
         int (*ship_zero)(int, wchar_t*, int) = nullptr;
         int (*world_paused)() = nullptr;
+        int (*ship_mining_caps)(void*) = nullptr;               // API 15
+        int (*presence_step)(int, int, int, int*) = nullptr;    // API 15
     };
     MsApi g_ms;
 
@@ -120,6 +122,8 @@ namespace
             m.ship_set_throttle = reinterpret_cast<int (*)(int, int, wchar_t*, int)>(GetProcAddress(h, "MSCore_ship_set_throttle"));
             m.ship_zero = reinterpret_cast<int (*)(int, wchar_t*, int)>(GetProcAddress(h, "MSCore_ship_zero"));
             m.world_paused = reinterpret_cast<int (*)()>(GetProcAddress(h, "MSCore_world_paused"));
+            m.ship_mining_caps = reinterpret_cast<int (*)(void*)>(GetProcAddress(h, "MSCore_ship_mining_caps"));
+            m.presence_step = reinterpret_cast<int (*)(int, int, int, int*)>(GetProcAddress(h, "MSCore_presence_step"));
         }
         const bool full = m.api && m.add_input && m.view_send && m.throttle && m.find_item && m.find_dock && m.new_order &&
                           m.update_order && m.delete_order && m.autopilot && m.skip_to && m.filter_send && m.filters_read &&
@@ -218,6 +222,33 @@ namespace
         wchar_t buf[256] = {0};
         try { return g_ms.ship_zero(sid, buf, 256) == 1; }
         catch (...) { return false; }
+    }
+
+    // WHAT: the mining laser gate exports (MSCore API 15). Missing export = gate off, logged once. Game thread only.
+    bool ms_laser_gate_ok()
+    {
+        std::wstring why;
+        if (ms_load(why) && g_ms.ship_mining_caps && g_ms.presence_step) return true;
+        static bool warned = false;
+        if (!warned) { warned = true; log_line(STR("MSCore too old (needs 0.8.15): mining laser gate off")); }
+        return false;
+    }
+
+    // WHAT: MSCore_ship_mining_caps of a ship: 0..3 bitmask (1 MiningLaser, 2 ItemScooper), -1 unknown, -2 module off. Missing export or exception = -1.
+    int ms_mining_caps(UObject* ship)
+    {
+        if (!ms_laser_gate_ok()) return -1;
+        try { return g_ms.ship_mining_caps(static_cast<void*>(ship)); }
+        catch (...) { return -1; }
+    }
+
+    // WHAT: MSCore_presence_step (pure debounce). Returns the accepted flag (1 / 0) and sets bad_out (may be null).
+    // Missing export = hold: the listed flag is returned unchanged and bad_n is kept.
+    int ms_presence_step(int bad_n, int listed, int read, int* bad_out)
+    {
+        if (!ms_laser_gate_ok()) { if (bad_out) *bad_out = bad_n; return listed ? 1 : 0; }
+        try { return g_ms.presence_step(bad_n, listed, read, bad_out); }
+        catch (...) { if (bad_out) *bad_out = bad_n; return listed ? 1 : 0; }
     }
 
     // WHAT: MSCore_world_paused. true only when MSCore says paused (1). Missing export, -1, -2 or exception = false.

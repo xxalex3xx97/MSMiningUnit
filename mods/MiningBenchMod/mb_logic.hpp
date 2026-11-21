@@ -664,21 +664,13 @@ namespace
         return count >= need;
     }
 
-    // WHAT: laser read of one ship (mb_ships.hpp, under SEH): LASER_YES = weapon array readable and has a MiningLaser,
-    //       LASER_NO = readable, no MiningLaser, LASER_UNKNOWN = array null, SEH fault, or ship not readable.
-    constexpr int LASER_NO = 0;
-    constexpr int LASER_YES = 1;
-    constexpr int LASER_UNKNOWN = 2;
-    // WHAT: laser gate state of one ship: bad_n = consecutive NO scans, accepted = the ship is in the mining list.
-    struct LaserStep { int bad_n = 0; bool accepted = false; };
-    // WHAT: one scan of the laser gate. listed = accepted on the previous scan (bench block required by the caller).
-    //       YES: reset, accepted. UNKNOWN: hold (state unchanged). NO: +1; a listed ship survives 2 bad scans, dropped on the 3rd; an unlisted ship is rejected at once.
-    // WHY: a null or faulting weapon read is not evidence of "no laser" (save load, streaming), so it never counts as a bad scan.
-    inline LaserStep laser_step(int bad_n, bool listed, int read)
+    // WHAT: maps MSCore_ship_mining_caps (API 15) to the presence read: caps < 0 (unknown, dead, module off, fault) = -1 unknown;
+    //       bit 1 (MiningLaser) set = 1 present; readable with no MiningLaser = 0 absent. ItemScooper-only (2) = 0.
+    // WHY: MSCore_presence_step takes read 1 / 0 / -1; the mod only maps the caps value to it.
+    inline int mining_read_from_caps(int caps)
     {
-        if (read == LASER_YES) return {0, true};
-        if (read == LASER_UNKNOWN) return {bad_n, listed};
-        return {bad_n + 1, listed && bad_n + 1 < 3};
+        if (caps < 0) return -1;
+        return (caps & 1) ? 1 : 0;
     }
 
     // WHAT: TArray Num read from game memory, clamped to 0..100000 before it sizes a buffer.

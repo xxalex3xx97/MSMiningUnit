@@ -35,7 +35,6 @@ namespace
         return cn.find(STR("MiningLaser")) != std::wstring::npos || cn.find(STR("ItemScooper")) != std::wstring::npos;
     }
 
-
     // ---------------- firing writes ----------------
 
     // WHAT: calls SetFiring(bNewFiring) on the weapon's Actor object. false when the actor or the function is missing.

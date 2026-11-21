@@ -2266,21 +2266,15 @@ static void t_shield_from_raw()
     CHECK(shield_from_raw(65536LL * 60 + 100) == 60);
 }
 
-static bool ls_is(LaserStep s, int bad_n, bool accepted) { return s.bad_n == bad_n && s.accepted == accepted; }
-
-static void t_laser_step()
+static void t_mining_read_from_caps()
 {
-    // a never-listed ship with no laser is rejected at once; a listed one survives 2 bad scans, dropped on the 3rd
-    CHECK(ls_is(laser_step(0, false, LASER_YES), 0, true));
-    CHECK(ls_is(laser_step(0, false, LASER_NO), 1, false));
-    CHECK(ls_is(laser_step(0, false, LASER_UNKNOWN), 0, false));
-    CHECK(ls_is(laser_step(0, true, LASER_YES), 0, true));
-    CHECK(ls_is(laser_step(0, true, LASER_NO), 1, true));
-    CHECK(ls_is(laser_step(1, true, LASER_NO), 2, true));
-    CHECK(ls_is(laser_step(2, true, LASER_NO), 3, false));
-    CHECK(ls_is(laser_step(2, true, LASER_UNKNOWN), 2, true));
-    CHECK(ls_is(laser_step(5, true, LASER_YES), 0, true));
-    CHECK(ls_is(laser_step(3, false, LASER_NO), 4, false));
+    // MSCore_ship_mining_caps -> presence read: unknown/off = -1, bit 1 (MiningLaser) = 1, else 0
+    CHECK(mining_read_from_caps(-1) == -1);
+    CHECK(mining_read_from_caps(-2) == -1);
+    CHECK(mining_read_from_caps(0) == 0);
+    CHECK(mining_read_from_caps(1) == 1);
+    CHECK(mining_read_from_caps(2) == 0);
+    CHECK(mining_read_from_caps(3) == 1);
 }
 
 int main()
@@ -2318,7 +2312,7 @@ int main()
         {"rock_depleted", t_rock_depleted},
         {"reg_table", t_reg_table}, {"reg_events", t_reg_events}, {"reg_world_track", t_reg_world_track}, {"reg_within_nearest", t_reg_within_nearest}, {"reg_surface_block", t_reg_surface_block_radius},
         {"ship_zone", t_ship_zone},
-        {"laser_step", t_laser_step},
+        {"mining_read_from_caps", t_mining_read_from_caps},
         {"approach_throttle", t_approach_throttle}, {"bubble", t_bubble}, {"bubble_ladder", t_bubble_ladder}, {"bubble_scope", t_bubble_scope}, {"tune_geom", t_tune_geom}, {"flight_warp", t_flight_warp}, {"sweep_return_flee", t_sweep_return_flee}, {"path2_rules", t_path2_rules},
         {"reg_targeted_ore_budget", t_reg_targeted_ore_budget}, {"reg_bench", t_reg_bench}, {"reg_abs_m", t_reg_abs_m},
         {"box_probe_parse", t_box_probe_parse}, {"box_probe_uu_fwd", t_box_probe_uu_fwd}, {"reg_check_summary", t_reg_check_summary},

@@ -1,13 +1,12 @@
 // FILE: mods/MiningBenchMod/mb_ships.hpp
 // WHAT: bench-ship helpers: a log dedupe helper for skipped orders, the ships.txt writer, and the ship scan that logs bench ships.
 // WHY separate: ship-level maintenance and scanning form one unit, kept apart from the order, steering and command code.
-// DEPENDS ON: mb_common (g_skip, g_sig_ships_file, trim, get_dll_dir, write_atomic, log_line, u8), mb_config (g_cfg), mb_ue (count_bench, read_struct_int, obj_id, obj_display), mb_weapons (weapon_array, weapon_match).
+// DEPENDS ON: mb_common (g_skip, g_sig_ships_file, trim, get_dll_dir, write_atomic, log_line, u8), mb_config (g_cfg), mb_ue (count_bench, read_struct_int, obj_id, obj_display), mb_mscore (ms_mining_caps, ms_presence_step), mb_logic (mining_read_from_caps).
 // USED BY: mb_dockjob (skip), dllmain.cpp (scan_and_log).
 // GAME FACTS:
 //   VERIFIED (logs): the bench block of ship 41709 sits in Subobjects, with BuildingBlocks=0 (M1 scan).
 //   ASSUMPTION: a ship has the bench when count_bench finds it in BuildingBlocks or in Subobjects.
 #pragma once
-#include "mb_weapons.hpp"   // own dependency: the laser read uses weapon_array/weapon_match, so the include order does not matter
 
 namespace
 {
@@ -41,8 +40,9 @@ namespace
     // g_dead_n: ship id -> consecutive scans with the destroyed signal. g_bench_prev: ids with a bench in the last scan (an id missing from the list stays until confirmed).
     std::map<int, int> g_dead_n;
     std::set<int> g_bench_prev;
-    // g_laser: ship id -> laser gate state (laser_step in mb_logic.hpp). accepted = in the mining list on the last scan.
-    std::map<int, LaserStep> g_laser;
+    // laser gate state (MSCore_presence_step is stateless, so the mod keeps it): g_laser_listed = ships accepted on the last scan, g_laser_bad = consecutive absent reads.
+    std::set<int> g_laser_listed;
+    std::map<int, int> g_laser_bad;
 
     // WHAT: Health read of one ship under SEH (ctx for seh_run). ok = the property was read.
     struct HpCtx { UObject* ship; int32_t hp; bool ok; };
@@ -52,28 +52,22 @@ namespace
         c->ok = get_int_prop(c->ship, STR("Health"), c->hp);
     }
 
-    // WHAT: laser read of one ship under SEH (ctx for seh_run). read = LASER_* (mb_logic.hpp); stays LASER_UNKNOWN on a fault.
-    // WHY: the weapon TArray is a raw native read (weapon_array), a fault must not crash the game.
-    struct LaserCtx { UObject* ship; int read; };
-    void laser_read_fn(void* p)
+    // WHAT: MSCore_ship_mining_caps of one ship under SEH (ctx for seh_run). caps stays -1 on a fault.
+    struct CapsCtx { UObject* ship; int caps; };
+    void caps_read_fn(void* p)
     {
-        auto* c = static_cast<LaserCtx*>(p);
-        c->read = LASER_UNKNOWN;
-        TArray<UObject*>* a = weapon_array(c->ship);
-        if (!a) return;
-        c->read = LASER_NO;
-        for (int32_t i = 0; i < a->Num(); ++i)
-            if (weapon_match((*a)[i], STR("MiningLaser"))) { c->read = LASER_YES; return; }
+        auto* c = static_cast<CapsCtx*>(p);
+        c->caps = ms_mining_caps(c->ship);
     }
 
     // WHAT: scans all player ships. Each ship with bench blocks gets a log line (id, class, bench counts, DockID, MiningBeaconID), and an entry in bench_ships. Then writes ships.txt.
     //       Destroyed ships go to dead_ids instead, and are written with has-bench 0.
     //       Signals: A = hull Health reads 0 (SHIP_DEAD_SCANS scans in a row). B = the ship had a bench last scan and is missing from FindAllOf
     //       (SHIP_MISSING_SCANS scans in a row; skipped while the list is empty: save load).
-    //       Laser gate: a ship with the bench is in the mining list while laser_step accepts it. A ship the gate just removed goes to lost_laser_ids.
     // WHY: a destroyed ship's UObject can still be listed and readable (log 2026-11-04: ships kept showing in the bench and the selector), so the scan decides, not the object's alive().
     // WHY bench_prev: the scan is the only place that sees the list each time; the mining state is cleared by the caller (mine_set_bench -> mine_forget_ship).
     // It calls FindAllOf on every call, so the caller runs it on a timer, not every frame.
+    //       Laser gate: a ship with the bench is in the mining list while MSCore_presence_step accepts its MSCore_ship_mining_caps read. A ship the gate dropped goes to lost_laser_ids (only that list halts).
     void scan_and_log(std::vector<std::pair<UObject*, int>>& bench_ships, std::vector<int>& dead_ids, std::vector<int>& lost_laser_ids)
     {
         std::vector<UObject*> ships;
@@ -100,19 +94,24 @@ namespace
                 g_dead_n[id] = dead_scan_next(g_dead_n[id], hull0);
             }
             const bool dead = id > 0 && dead_confirmed(g_dead_n[id]);
-            // laser gate: only a live ship with a bench and id > 0 is read. No bench or dead = state dropped. id <= 0 is never accepted.
+            // laser gate: only a live ship with a bench and id > 0 is read. id <= 0, dead or no bench = not accepted, state dropped (no halt: only a laser drop halts).
             bool has = false;
             if (id > 0 && bench && !dead)
             {
-                LaserCtx lc{ship, LASER_UNKNOWN};
-                const int lr = seh_run(laser_read_fn, &lc) ? lc.read : LASER_UNKNOWN;
-                const LaserStep prev = g_laser[id];
-                const LaserStep st = laser_step(prev.bad_n, prev.accepted, lr);
-                if (prev.accepted && !st.accepted) lost_laser_ids.push_back(id);
-                g_laser[id] = st;
-                has = st.accepted;
+                CapsCtx cc{ship, -1};
+                const int caps = seh_run(caps_read_fn, &cc) ? cc.caps : -1;
+                const bool listed = g_laser_listed.count(id) > 0;
+                int bad = g_laser_bad[id];
+                has = ms_presence_step(bad, listed ? 1 : 0, mining_read_from_caps(caps), &bad) == 1;
+                g_laser_bad[id] = bad;
+                if (has) g_laser_listed.insert(id);
+                else
+                {
+                    g_laser_listed.erase(id);
+                    if (listed) lost_laser_ids.push_back(id);   // the caller logs the one drop line (mine_set_bench)
+                }
             }
-            else if (id > 0) g_laser.erase(id);
+            else if (id > 0) { g_laser_listed.erase(id); g_laser_bad.erase(id); }
             if (id > 0) txt += std::to_string(id) + "|" + u8(name) + "|" + (has && !dead ? "1" : "0") + "\n";
             if (dead)
             {
@@ -142,11 +141,11 @@ namespace
                 if (n == SHIP_MISSING_SCANS) log_line(STR("DEAD signal ship=") + std::to_wstring(id) + STR(" missing from the ship list on ") + std::to_wstring(SHIP_MISSING_SCANS) + STR(" scans"));
                 dead_ids.push_back(id);
                 g_dead_n.erase(id);
+                g_laser_listed.erase(id); g_laser_bad.erase(id);
             }
             else bench_now.insert(id);
         }
         g_bench_prev = bench_now;
-        for (auto it = g_laser.begin(); it != g_laser.end();) it = seen.count(it->first) ? std::next(it) : g_laser.erase(it);
         write_ships_file(txt);
         if (g_debug) Output::send<LogLevel::Normal>(STR("[MiningBenchMod] scan: ships={} with_bench={}\n"), ships.size(), bench_ships.size());
     }
