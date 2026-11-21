@@ -3787,7 +3787,19 @@ namespace
         log_line(STR("ship ") + std::to_wstring(sid) + STR(" ") + name + STR(" destroyed, removed"));
     }
 
-    void mine_set_bench(const std::vector<std::pair<UObject*, int>>& bench, const std::vector<int>& dead)
+    void mine_halt(int sid);   // defined below (STOP ALL)
+    // forward declared: mine_set_bench (the laser drop) comes before the definition. Not a default argument: mine_halt is called under __try (compat_seh_halt), which forbids objects with unwinding.
+    void mine_halt_why(int sid, const std::wstring& why);   // defined below
+
+    // WHAT: bench list of this scan. dead: destroyed ships (state dropped). lost_laser: ships the laser gate just removed (halted, one log line each).
+    //       Nothing else halts by list membership: a ship missing from one scan is not stopped.
+    // WHAT of the status text: the laser drop's halt reason. bench = the bench block was still there (only the laser was missing).
+    std::wstring laser_drop_text(bool bench)
+    {
+        return bench ? STR("no mining laser: removed from the mining list") : STR("no Mining Bench: removed from the mining list");
+    }
+
+    void mine_set_bench(const std::vector<std::pair<UObject*, int>>& bench, const std::vector<int>& dead, const std::vector<std::pair<int, bool>>& lost_laser)
     {
         for (int sid : dead) mine_forget_ship(sid);   // before the rebuild: a destroyed ship is in neither list below
         g_bench_ids.clear();
@@ -3803,10 +3815,20 @@ namespace
         std::vector<int> ids;
         for (const auto& p : bench) if (p.second > 0) ids.push_back(p.second);
         chunk_hold_keep_only(ids);   // a ship that left the bench drops its chunk hold
+        // a ship accepted again: its own laser-drop status text goes back to idle (other texts are left alone)
+        for (const auto& p : bench)
+        {
+            auto it = g_mine.find(p.second);
+            if (it != g_mine.end() && (it->second.result == laser_drop_text(true) || it->second.result == laser_drop_text(false))) it->second.result = STR("idle");
+        }
+        for (const auto& l : lost_laser) mine_halt_why(l.first, laser_drop_text(l.second));
     }
 
     // STOP ALL: hard stop, latch HALT and run=false; Start loop restarts.
-    void mine_halt(int sid)
+    void mine_halt(int sid) { mine_halt_why(sid, STR("stopped by STOP ALL")); }
+
+    // WHAT: the hard halt of mine_halt with a status text (why) and the matching log line. Laser drop passes its own text.
+    void mine_halt_why(int sid, const std::wstring& why)
     {
         warp_cancel(sid);   // before the early return: ships without a MineSt too
         chunk_hold_release(sid);
@@ -3823,8 +3845,8 @@ namespace
         it->second.since_stop = 0.0;
         it->second.dl_n = 0;   // also cancels a dock time limit wait (MS_DLWAIT is left by st = MS_HALT)
         it->second.backout = false; it->second.wp_on = false; it->second.wp_n = 0;   // a pending back-out or waypoint is cancelled with the job
-        it->second.result = STR("stopped by STOP ALL");
-        log_line(STR("MINE ship=") + std::to_wstring(sid) + STR(" stopped by STOP ALL"));
+        it->second.result = why;
+        log_line(STR("MINE ship=") + std::to_wstring(sid) + STR(" ") + why);
         mlog(sid, STR("Stopped: loop halted (stop)"));
     }
 

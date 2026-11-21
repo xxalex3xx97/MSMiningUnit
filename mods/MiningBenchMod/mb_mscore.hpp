@@ -73,6 +73,8 @@ namespace
         int (*ship_set_throttle)(int, int, wchar_t*, int) = nullptr;
         int (*ship_zero)(int, wchar_t*, int) = nullptr;
         int (*world_paused)() = nullptr;
+        int (*ship_mining_caps)(void*) = nullptr;               // API 15
+        int (*presence_step)(int, int, int, int*) = nullptr;    // API 15
     };
     MsApi g_ms;
 
@@ -120,6 +122,8 @@ namespace
             m.ship_set_throttle = reinterpret_cast<int (*)(int, int, wchar_t*, int)>(GetProcAddress(h, "MSCore_ship_set_throttle"));
             m.ship_zero = reinterpret_cast<int (*)(int, wchar_t*, int)>(GetProcAddress(h, "MSCore_ship_zero"));
             m.world_paused = reinterpret_cast<int (*)()>(GetProcAddress(h, "MSCore_world_paused"));
+            m.ship_mining_caps = reinterpret_cast<int (*)(void*)>(GetProcAddress(h, "MSCore_ship_mining_caps"));
+            m.presence_step = reinterpret_cast<int (*)(int, int, int, int*)>(GetProcAddress(h, "MSCore_presence_step"));
         }
         const bool full = m.api && m.add_input && m.view_send && m.throttle && m.find_item && m.find_dock && m.new_order &&
                           m.update_order && m.delete_order && m.autopilot && m.skip_to && m.filter_send && m.filters_read &&
@@ -218,6 +222,44 @@ namespace
         wchar_t buf[256] = {0};
         try { return g_ms.ship_zero(sid, buf, 256) == 1; }
         catch (...) { return false; }
+    }
+
+    // WHAT: laser check availability (MSCore API 15): 0 = available, 1 = MSCore load failed, 2 = export missing (MSCore older than 0.8.15).
+    // WHY: 0 and 2 are final and cached for the process. 1 is not cached: the load is retried at most every 10 s (MSCore may be installed later). Game thread only.
+    int ms_laser_avail()
+    {
+        static int cached = -1;
+        static ULONGLONG next_try = 0;
+        if (cached >= 0) return cached;
+        const ULONGLONG now = GetTickCount64();
+        if (next_try && now < next_try) return 1;
+        std::wstring err;
+        if (!ms_load(err)) { next_try = now + 10000; return 1; }
+        cached = (g_ms.ship_mining_caps && g_ms.presence_step) ? 0 : 2;
+        return cached;
+    }
+
+    // WHAT: the one 'laser check unavailable' line (why = 'load failed' / 'missing export' / 'module off'). Logged once per process.
+    void ms_laser_fallback_log(const wchar_t* why)
+    {
+        static bool logged = false;
+        if (logged) return;
+        logged = true;
+        log_line(std::wstring(STR("MSCore laser check unavailable (")) + why + STR(": needs MSCore >= 0.8.15): bench-only"));
+    }
+
+    // WHAT: MSCore_ship_mining_caps of a ship: 0..3 bitmask (1 MiningLaser, 2 ItemScooper), -1 unknown, -2 module off.
+    // WHY: raw read, no try/catch: the caller checks ms_laser_avail() == 0 and reads under SEH (mb_ships caps_read_fn).
+    int ms_mining_caps(UObject* ship)
+    {
+        return g_ms.ship_mining_caps(static_cast<void*>(ship));
+    }
+
+    // WHAT: MSCore_presence_step (pure debounce). Returns the accepted flag (1 / 0) and sets bad_out (may be null).
+    // WHY: raw call, no try/catch; the caller checks ms_laser_avail() == 0 first.
+    int ms_presence_step(int bad_n, int listed, int read, int* bad_out)
+    {
+        return g_ms.presence_step(bad_n, listed, read, bad_out);
     }
 
     // WHAT: MSCore_world_paused. true only when MSCore says paused (1). Missing export, -1, -2 or exception = false.

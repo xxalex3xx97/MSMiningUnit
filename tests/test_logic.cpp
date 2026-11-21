@@ -2266,6 +2266,59 @@ static void t_shield_from_raw()
     CHECK(shield_from_raw(65536LL * 60 + 100) == 60);
 }
 
+static void t_mining_read_from_caps()
+{
+    // MSCore_ship_mining_caps -> presence read: unknown/off = -1, bit 1 (MiningLaser) = 1, else 0
+    CHECK(mining_read_from_caps(-1) == -1);
+    CHECK(mining_read_from_caps(-2) == -1);
+    CHECK(mining_read_from_caps(0) == 0);
+    CHECK(mining_read_from_caps(1) == 1);
+    CHECK(mining_read_from_caps(2) == 0);
+    CHECK(mining_read_from_caps(3) == 1);
+}
+
+static void t_laser_gate()
+{
+    // laser gate mode: no export or module off = bench-only fallback; unknown read = hold; 0..3 = check
+    CHECK(laser_gate_mode(false, 1) == LASER_FALLBACK_BENCH_ONLY);
+    CHECK(laser_gate_mode(true, -2) == LASER_FALLBACK_BENCH_ONLY);
+    CHECK(laser_gate_mode(true, -1) == LASER_HOLD);
+    CHECK(laser_gate_mode(true, 0) == LASER_CHECK);
+    CHECK(laser_gate_mode(true, 3) == LASER_CHECK);
+    // presence read: no bench block = absent, else the caps mapping
+    CHECK(bench_read(false, 3) == 0);
+    CHECK(bench_read(true, -1) == -1);
+    CHECK(bench_read(true, 0) == 0);
+    CHECK(bench_read(true, 1) == 1);
+    CHECK(bench_read(true, 2) == 0);
+    // gate_accept(bench, mode, listed, presence_accepted): FALLBACK = bench; HOLD = bench (unknown accepted, listed or not); CHECK = presence
+    // bench, mode, listed, pres -> has
+    CHECK(gate_accept(false, LASER_FALLBACK_BENCH_ONLY, false, false) == false);
+    CHECK(gate_accept(false, LASER_FALLBACK_BENCH_ONLY, false, true) == false);
+    CHECK(gate_accept(false, LASER_FALLBACK_BENCH_ONLY, true, false) == false);
+    CHECK(gate_accept(false, LASER_FALLBACK_BENCH_ONLY, true, true) == false);
+    CHECK(gate_accept(true, LASER_FALLBACK_BENCH_ONLY, false, false) == true);
+    CHECK(gate_accept(true, LASER_FALLBACK_BENCH_ONLY, false, true) == true);
+    CHECK(gate_accept(true, LASER_FALLBACK_BENCH_ONLY, true, false) == true);
+    CHECK(gate_accept(true, LASER_FALLBACK_BENCH_ONLY, true, true) == true);
+    CHECK(gate_accept(false, LASER_HOLD, false, false) == false);
+    CHECK(gate_accept(false, LASER_HOLD, false, true) == false);
+    CHECK(gate_accept(false, LASER_HOLD, true, false) == false);
+    CHECK(gate_accept(false, LASER_HOLD, true, true) == false);
+    CHECK(gate_accept(true, LASER_HOLD, false, false) == true);    // never listed, unknown read: accepted as bench-only
+    CHECK(gate_accept(true, LASER_HOLD, false, true) == true);
+    CHECK(gate_accept(true, LASER_HOLD, true, false) == true);     // listed, unknown read: stays listed
+    CHECK(gate_accept(true, LASER_HOLD, true, true) == true);
+    CHECK(gate_accept(false, LASER_CHECK, false, false) == false);  // presence decides (debounce)
+    CHECK(gate_accept(false, LASER_CHECK, false, true) == true);    // listed, bench absent, still inside the debounce
+    CHECK(gate_accept(false, LASER_CHECK, true, false) == false);
+    CHECK(gate_accept(false, LASER_CHECK, true, true) == true);
+    CHECK(gate_accept(true, LASER_CHECK, false, false) == false);   // bench, no laser (read 0), never listed: rejected
+    CHECK(gate_accept(true, LASER_CHECK, false, true) == true);     // bench + laser (read 1)
+    CHECK(gate_accept(true, LASER_CHECK, true, false) == false);    // listed, no laser for 3 reads: dropped
+    CHECK(gate_accept(true, LASER_CHECK, true, true) == true);
+}
+
 int main()
 {
     const Case cases[] = {
@@ -2301,6 +2354,7 @@ int main()
         {"rock_depleted", t_rock_depleted},
         {"reg_table", t_reg_table}, {"reg_events", t_reg_events}, {"reg_world_track", t_reg_world_track}, {"reg_within_nearest", t_reg_within_nearest}, {"reg_surface_block", t_reg_surface_block_radius},
         {"ship_zone", t_ship_zone},
+        {"mining_read_from_caps", t_mining_read_from_caps}, {"laser_gate", t_laser_gate},
         {"approach_throttle", t_approach_throttle}, {"bubble", t_bubble}, {"bubble_ladder", t_bubble_ladder}, {"bubble_scope", t_bubble_scope}, {"tune_geom", t_tune_geom}, {"flight_warp", t_flight_warp}, {"sweep_return_flee", t_sweep_return_flee}, {"path2_rules", t_path2_rules},
         {"reg_targeted_ore_budget", t_reg_targeted_ore_budget}, {"reg_bench", t_reg_bench}, {"reg_abs_m", t_reg_abs_m},
         {"box_probe_parse", t_box_probe_parse}, {"box_probe_uu_fwd", t_box_probe_uu_fwd}, {"reg_check_summary", t_reg_check_summary},

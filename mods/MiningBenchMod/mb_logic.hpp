@@ -664,6 +664,44 @@ namespace
         return count >= need;
     }
 
+    // WHAT: maps MSCore_ship_mining_caps (API 15) to the presence read: caps < 0 (unknown, dead, module off, fault) = -1 unknown;
+    //       bit 1 (MiningLaser) set = 1 present; readable with no MiningLaser = 0 absent. ItemScooper-only (2) = 0.
+    // WHY: MSCore_presence_step takes read 1 / 0 / -1; the mod only maps the caps value to it.
+    inline int mining_read_from_caps(int caps)
+    {
+        if (caps < 0) return -1;
+        return (caps & 1) ? 1 : 0;
+    }
+
+    // WHAT: laser gate mode per ship. FALLBACK_BENCH_ONLY = no MSCore laser check (export missing / load failed, or module off = caps -2): the released behaviour.
+    //       HOLD = caps unknown (-1): presence_step holds the state. CHECK = caps 0..3 read.
+    // WHY: a standalone mod must keep working with an older or disabled MSCore.
+    enum LaserGateMode { LASER_CHECK, LASER_HOLD, LASER_FALLBACK_BENCH_ONLY };
+    inline LaserGateMode laser_gate_mode(bool have_export, int caps)
+    {
+        if (!have_export || caps == -2) return LASER_FALLBACK_BENCH_ONLY;
+        if (caps == -1) return LASER_HOLD;
+        return LASER_CHECK;
+    }
+
+    // WHAT: has (in the mining list) for one live ship. FALLBACK = bench alone. HOLD (caps unknown) = bench alone too: an unknown read accepts a bench ship, listed or not.
+    //       CHECK = presence_accepted (MSCore_presence_step debounce; also used for a bench-less read, which is 0 and debounced).
+    // WHY: a ship with a bench and an unreadable laser stays usable; a ship without a laser is still dropped by the debounce once it reads 0.
+    // NOTE: listed is not needed by any mode (kept in the signature for the scan's call shape).
+    inline bool gate_accept(bool bench, LaserGateMode mode, bool listed, bool presence_accepted)
+    {
+        (void)listed;
+        if (mode == LASER_FALLBACK_BENCH_ONLY || mode == LASER_HOLD) return bench;
+        return presence_accepted;
+    }
+
+    // WHAT: presence read for MSCore_presence_step: no bench block = absent (0); else mining_read_from_caps.
+    // WHY: a ship that loses the bench or the laser is absent for the debounce; one transient bench read of 0 does not drop it.
+    inline int bench_read(bool bench, int caps)
+    {
+        return bench ? mining_read_from_caps(caps) : 0;
+    }
+
     // WHAT: TArray Num read from game memory, clamped to 0..100000 before it sizes a buffer.
     // WHY: a stale or wrong array count must not allocate or index past the array.
     constexpr int32_t TARRAY_NUM_MAX = 100000;
