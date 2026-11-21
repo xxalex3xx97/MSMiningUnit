@@ -19,6 +19,9 @@ Get-ChildItem "$src\mods\$Mod" -File | Where-Object { $_.Extension -in '.cpp', '
 # MiningBenchMod calls ShipControl through its C ABI header (mb_shipctl.hpp includes sc_api.h).
 # ShipControl is the pinned submodule external\ShipControl (tag in deps.lock); its headers are copied here.
 if ($Mod -eq 'MiningBenchMod') {
+    foreach ($f in 'sc_api.h', 'sc_logic_path.hpp', 'sc_logic_steer.hpp', 'sc_logic_bubble.hpp', 'sc_flight_abi.h') {
+        if (-not (Test-Path "$src\external\ShipControl\$f")) { throw "external\ShipControl is not initialised: run git submodule update --init" }
+    }
     Copy-Item "$src\external\ShipControl\sc_api.h" -Destination $mirror -Force
     Copy-Item "$src\external\ShipControl\sc_logic_path.hpp" -Destination $mirror -Force   # mb_logic.hpp includes the path/warp geometry
     Copy-Item "$src\external\ShipControl\sc_logic_steer.hpp" -Destination $mirror -Force  # mb_logic.hpp includes the approach/low-power rules

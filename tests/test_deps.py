@@ -16,7 +16,9 @@ def rd(rel):
 
 
 def git(*args, cwd=ROOT):
-    return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True).stdout
+    p = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+    assert p.returncode == 0, "git %s failed (rc %d): %s" % (" ".join(args), p.returncode, p.stderr.strip())
+    return p.stdout
 
 
 def load_lock():
@@ -44,9 +46,10 @@ def c_pin():
     m = re.match(r"160000 commit ([0-9a-f]{40})\texternal/ShipControl", out)
     assert m, "external/ShipControl is not a gitlink (mode 160000) in HEAD: %r" % out.strip()
     assert m.group(1) == pin, "gitlink %s != deps.lock %s" % (m.group(1), pin)
-    if os.path.exists(os.path.join(SC, ".git")):
-        head = git("rev-parse", "HEAD", cwd=SC).strip()
-        assert head == pin, "checked-out submodule %s != pin %s (run git submodule update)" % (head, pin)
+    assert os.path.exists(os.path.join(SC, ".git")) and os.path.isfile(os.path.join(SC, "sc_version.hpp")), \
+        "external/ShipControl not initialised (no .git or sc_version.hpp): run git submodule update --init"
+    head = git("rev-parse", "HEAD", cwd=SC).strip()
+    assert head == pin, "checked-out submodule %s != pin %s (run git submodule update)" % (head, pin)
 
 
 def c_version():
