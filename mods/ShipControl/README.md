@@ -1,8 +1,12 @@
 # ShipControl
 
-Version **0.3.0** (`sc_version.hpp`), API level **4** (`sc_api.h`, `SC_API_LEVEL`). A UE4SS mod that owns ship control for other mods (MiningBenchMod is the first user). It exports a plain C ABI; other mods load `main.dll` and resolve the names with `GetProcAddress`. Needs MSCore 0.8.13 at runtime (flight reads and writes go through MSCore).
+Version **0.3.1** (`sc_version.hpp`), API level **4** (`sc_api.h`, `SC_API_LEVEL`). A UE4SS mod that owns ship control for other mods (MiningBenchMod is the first user). It exports a plain C ABI; other mods load `main.dll` and resolve the names with `GetProcAddress`. Needs MSCore 0.8.13 at runtime (flight reads and writes go through MSCore).
 
 The header `sc_api.h` is the contract. Append only: an export or a field is never changed or reordered.
+
+## Changes
+
+- 0.3.1: no code or API change. The version is bumped because the ShipControl source moves to its own repository (history kept). The header comments in `sc_logic_path.hpp` no longer name a single mod, since MiningBenchMod and Fleet both include it. A mod that requires ShipControl@0.3.0 is still satisfied.
 
 ## API levels
 

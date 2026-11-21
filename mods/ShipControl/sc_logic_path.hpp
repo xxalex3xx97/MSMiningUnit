@@ -2,9 +2,9 @@
 // WHAT: pure path, warp and hazard geometry for the ship flights: far-trip warp settle (warp_settle_done), hazard move-away circle (hazard_dir),
 //       rock blocking radius (block_r_m, ROCK_BLOCK_SCALE), first blocker on a segment (path_first_blocker, seg_sphere_blocks), waypoint
 //       candidates and pick (side_point, waypoint_candidate, waypoint_pick, path_waypoint), path2 gates (replan_gate, grace_ignore, strikes_reached).
-// WHY separate: these have no UE or Windows calls, so ShipControl (its unit checks) and MiningBenchMod (mb_logic.hpp includes this header) share one copy.
+// WHY separate: these have no UE or Windows calls, so ShipControl (its unit checks) and the mods that use it (their mb_logic.hpp includes this header) share one copy.
 // DEPENDS ON (exact): <algorithm>, <cmath>, <cstddef>, <cstdint>. No UE4SS, no Windows.h, no mining types.
-// USED BY: mods/MiningBenchMod/mb_logic.hpp (mirror copy next to it, build.ps1), tests/test_shipcontrol.cpp, tests/test_logic.cpp
+// USED BY: mods that include it through their mb_logic.hpp (mirror copy built by their build.ps1), tests/test_shipcontrol.cpp, tests/test_logic.cpp
 // RULE: keep this file free of UE/Windows headers, mining types and STR(); use L"" literals. Move, do not copy: mb_logic.hpp must not redefine these.
 #pragma once
 #include <algorithm>
