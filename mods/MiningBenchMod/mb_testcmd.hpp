@@ -207,16 +207,16 @@ namespace
     void registry_frame(double dt)
     {
         static std::map<int, std::pair<ULONGLONG, int>> sys_cache;   // sid -> (GetTickCount64 of the read, sys)
-        std::vector<RegShip> ships;
+        std::vector<MsRegShip> ships;
         std::vector<int> targets;
         const ULONGLONG now = GetTickCount64();
         for (const auto& kv : g_mine)
         {
             if (kv.second.st == MS_OFF) continue;
             auto& c = sys_cache[kv.first];
-            if (c.first == 0 || now - c.first >= REG_SYS_MS) { UObject* sh = find_by_id(STR("DMSPlayerShipObject"), kv.first); c = {now, sh ? sys_id(sh) : 0}; }
+            if (c.first == 0 || now - c.first >= 2000)   /* sys re-read period ms */ { UObject* sh = find_by_id(STR("DMSPlayerShipObject"), kv.first); c = {now, sh ? sys_id(sh) : 0}; }
             if (c.second <= 0) continue;
-            RegShip r;
+            MsRegShip r{};
             r.sid = kv.first;
             r.sys = c.second;
             for (int k = 0; k < 3; ++k) r.p[k] = kv.second.anchor[k] / MV_UU_PER_M;
@@ -224,17 +224,17 @@ namespace
             if (kv.second.rock > 0) targets.push_back(kv.second.rock);
         }
         for (const auto& kv : g_mvs) if (kv.second.rock_id > 0) targets.push_back(kv.second.rock_id);
-        // approach segments: ship -> target rock centre (radius reads first, see reg_radius_stage)
-        for (RegShip& r : ships)
+        // approach segments: ship -> target rock centre (MSCore reads their radii first)
+        for (MsRegShip& r : ships)
         {
             auto mv = g_mvs.find(r.sid);
             if (mv == g_mvs.end() || mv->second.kind != "approach_rock" || mv->second.rock_id <= 0) continue;
-            const RegRock* tr = reg_st().tab.get(mv->second.rock_id);
-            if (!tr) continue;
-            r.has_seg = true;
-            std::copy(tr->c, tr->c + 3, r.q);
+            RegRock tr;
+            if (!reg_get(mv->second.rock_id, tr)) continue;
+            r.has_seg = 1;
+            std::copy(tr.c, tr.c + 3, r.q);
         }
-        registry_tick(dt, ships, targets);
+        reg_feed(REG_OWNER, ships, targets);
     }
 
     // WHAT: engine tick driver for the Test tab. Steps: 1 bump the actor_ok() frame (set rebuilt once per tick).

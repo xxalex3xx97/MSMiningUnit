@@ -1286,138 +1286,6 @@ static void t_path_perf()
     CHECK(PATH_CANDIDATES == 8);
 }
 
-// ---------- mb_registry_logic.hpp (rock table, chunk grid, events, ore) ----------
-
-static void reg_add(RockReg& g, int id, int sys, double x, double y, double z, void* item = nullptr, double rad = -1.0)   // rad < 0 = radius not read yet
-{
-    const double c[3] = {x, y, z};
-    std::vector<void*> items;
-    if (item) items.push_back(item);
-    const size_t i = g.add(id, sys, c, items);
-    if (rad >= 0.0) g.set_radius(i, rad);
-}
-
-static void t_reg_table()
-{
-    RockReg g;
-    const uint64_t v0 = g.version;
-    reg_add(g, 1, 7, 0, 0, 0);
-    reg_add(g, 2, 7, 100, 0, 0);
-    CHECK(g.version == v0 + 2);
-    reg_add(g, 1, 7, 5, 0, 0);                    // known id: updated, not duplicated
-    CHECK(g.rocks.size() == 2);
-    CHECK(g.version == v0 + 2);
-    CHECK(g.is_alive(1) && g.is_alive(2) && !g.is_alive(3));
-    CHECK(g.kill(2, 10));
-    CHECK(!g.kill(2, 11));                        // already dead: no second event
-    CHECK(!g.is_alive(2));
-    CHECK(g.get(2) != nullptr && g.get(2)->destroyed_at == 10);
-    CHECK(g.version == v0 + 3);
-    CHECK(g.event_seq == 1);
-    int dummy = 0;
-    g.set_act(0, &dummy);
-    CHECK(g.index_of_act(&dummy) == 0);
-    CHECK(g.kill(1, 12) && g.index_of_act(&dummy) == 0);   // dead entry keeps its handle; lookup still by index
-}
-
-static void t_reg_events()
-{
-    RockReg g;
-    for (int i = 1; i <= 70; ++i) reg_add(g, i, 1, i * 10.0, 0, 0);
-    std::vector<RegEvent> ev;
-    for (int i = 1; i <= 70; ++i) g.kill(i, 100 + i);
-    CHECK(g.event_seq == 70);
-    CHECK(!g.events_since(0, ev));                // 64-entry ring: seq 1..6 gone
-    CHECK(ev.size() == 64 && ev.front().seq == 7 && ev.back().seq == 70);
-    CHECK(g.events_since(68, ev) && ev.size() == 2 && ev[0].id == 69 && ev[1].id == 70);
-    CHECK(g.events_since(70, ev) && ev.empty());
-    CHECK(g.events_since(6, ev) && ev.size() == 64);
-}
-
-static void t_reg_world_track()
-{
-    RegWorldTrack t;
-    CHECK(reg_world_step(t, 7, 4) == RWE_LOADED && t.ok);          // (a) first world
-    CHECK(reg_world_step(t, 7, 4) == RWE_NONE);                    // (b) warp: same id, other system
-    for (int i = 0; i < 3; ++i) CHECK(reg_world_step(t, 0, 4) == RWE_NONE);   // (c) 3 failed reads: debounced
-    CHECK(t.ok);
-    CHECK(reg_world_step(t, 7, 4) == RWE_NONE && t.bad == 0);
-    for (int i = 0; i < 3; ++i) reg_world_step(t, 0, 4);
-    CHECK(reg_world_step(t, 0, 4) == RWE_LOST && !t.ok && t.id == 0);   // (d) 4th failed read in a row
-    CHECK(reg_world_step(t, 0, 4) == RWE_NONE && !t.ok);           // further failed reads: nothing new
-    CHECK(reg_world_step(t, 7, 4) == RWE_LOADED && t.ok);          // (e) world back
-    CHECK(reg_world_step(t, 9, 4) == RWE_LOADED && t.ok);          // (f) save load without a gap
-}
-
-static void t_reg_within_nearest()
-{
-    RockReg g;
-    int tag = 0;
-    void* ore = &tag;
-    reg_add(g, 1, 7, 0, 0, 0, ore, 10);
-    reg_add(g, 2, 7, 3000, 0, 0, ore, 10);      // another grid cell than rock 1
-    reg_add(g, 3, 7, 1000, 0, 0, nullptr, 10);  // no ore item
-    reg_add(g, 4, 8, 500, 0, 0, ore, 10);       // other system
-    const double o[3] = {0, 0, 0};
-    std::vector<size_t> out;
-    CHECK(g.within(7, o, 1500, out) == 2);      // rocks 1 and 3
-    out.clear();
-    CHECK(g.within(7, o, 5000, out) == 3);
-    double d = 0;
-    size_t n = g.nearest(7, ore, o, nullptr, nullptr, 0, d);
-    CHECK(n != RockReg::npos && g.rocks[n].id == 1 && d == 0.0);
-    std::set<int> skip = {1};
-    n = g.nearest(7, ore, o, nullptr, &skip, 0, d);
-    CHECK(n != RockReg::npos && g.rocks[n].id == 2 && std::fabs(d - 3000.0) < 1e-9);
-    CHECK(g.nearest(7, ore, o, nullptr, &skip, 2000, d) == RockReg::npos);   // max_m
-    CHECK(g.nearest(9, ore, o, nullptr, nullptr, 0, d) == RockReg::npos);     // unknown system
-    int handle = 0;
-    g.set_act(0, &handle);
-    CHECK(g.nearest(7, ore, o, &handle, nullptr, 0, d) == 1);                 // skip by actor handle: rock 1 out, rock 2 found
-    std::vector<std::pair<double, size_t>> nn;
-    CHECK(g.nearest_n(7, ore, o, nullptr, nullptr, 5000, 8, nn) == 2);
-    CHECK(nn[0].first <= nn[1].first && g.rocks[nn[0].second].id == 1);
-    g.kill(1, 1);
-    n = g.nearest(7, ore, o, nullptr, nullptr, 0, d);
-    CHECK(n != RockReg::npos && g.rocks[n].id == 2);
-}
-
-static void t_reg_surface_block_radius()
-{
-    RockReg g;
-    reg_add(g, 1, 7, 1000, 0, 0, nullptr, 900);   // big: surface 100
-    reg_add(g, 2, 7, 500, 0, 0, nullptr, 0);      // centre 500, surface 500
-    const double o[3] = {0, 0, 0};
-    double s = 0;
-    const size_t n = g.nearest_surface(7, o, nullptr, s);
-    CHECK(n != RockReg::npos && g.rocks[n].id == 1 && std::fabs(s - 100.0) < 1e-9);
-
-    RockReg b;
-    reg_add(b, 1, 7, 1000, 0, 0, nullptr, 50);    // on the path y=0, x 0..3000
-    reg_add(b, 2, 7, 1000, 400, 0, nullptr, 50);  // 400 m off the path: clearance 300 + radius 50 = 350 < 400, clear
-    int handle = 0;
-    b.set_act(0, &handle);
-    const double a[3] = {0, 0, 0}, e[3] = {3000, 0, 0};
-    double dd = 0;
-    size_t k = b.first_blocker(7, a, e, 300.0, nullptr, 0, nullptr, 0, dd);
-    CHECK(k != RockReg::npos && b.rocks[k].id == 1 && std::fabs(dd) < 1e-9);
-    CHECK(b.first_blocker(7, a, e, 300.0, nullptr, 1, nullptr, 0, dd) == RockReg::npos);   // skip_id
-    CHECK(b.first_blocker(7, a, e, 300.0, &handle, 0, nullptr, 0, dd) == RockReg::npos);   // skip_act
-    std::set<int> hz = {2};
-    const size_t hb = b.first_blocker(7, a, e, 300.0, &handle, 0, &hz, 500.0, dd);   // rock 2: 50 + 300 + 500 = 850 m reach, 400 m off: blocks
-    CHECK(hb != RockReg::npos && b.rocks[hb].id == 2);
-    CHECK(b.first_blocker(7, a, e, 300.0, &handle, 0, nullptr, 0, dd) == RockReg::npos);   // rock 2: 350 m reach, clear
-    std::vector<std::array<double, 3>> refs = {{{0.0, 0.0, 0.0}}};
-    std::vector<size_t> want;
-    b.radius_wanted(7, refs, 5000, 10, want);
-    CHECK(want.empty());                                      // both radii are known
-    RockReg c;
-    reg_add(c, 1, 7, 1000, 0, 0);                             // radius unknown
-    want.clear();
-    c.radius_wanted(7, refs, 5000, 10, want);
-    CHECK(want.size() == 1);
-}
-
 // approach Throttle (approach_throttle, mb_logic.hpp): full speed beyond APPROACH_RAMP_M, linear to 1 inside, 0 at or past the stand-off point
 static void t_approach_throttle()
 {
@@ -1441,7 +1309,7 @@ static void t_approach_throttle()
     CHECK(mono);
 }
 
-// bubble geometry (mb_logic.hpp + registry first_blocker): look-ahead, clearance, target exclusion, unknown radius = 35 m
+// bubble geometry (mb_logic.hpp): look-ahead, clearance
 static void t_bubble()
 {
     CHECK(bubble_look_ahead(0.0) == 100.0);
@@ -1449,23 +1317,6 @@ static void t_bubble()
     CHECK(bubble_look_ahead(50.0) == 200.0);               // 4 s x 50 m/s
     CHECK(bubble_look_ahead(-5.0) == 100.0);
     CHECK(bubble_clear_m(12.0, 30.0) == 42.0);             // ship radius + 30 m clearance
-    RockReg g;
-    reg_add(g, 1, 7, 150, 0, 0, nullptr, 8.0);             // on the nose
-    reg_add(g, 2, 7, 150, 60, 0, nullptr, 8.0);            // 60 m off: 8 + 42 = 50 < 60, clear
-    reg_add(g, 3, 7, 150, 49, 0, nullptr, 8.0);            // 49 m off: inside
-    reg_add(g, 4, 7, 400, 0, 0, nullptr, 8.0);             // beyond the look-ahead
-    const double a[3] = {0, 0, 0}, b[3] = {200, 0, 0};
-    double d = 0.0;
-    size_t i = g.first_blocker(7, a, b, bubble_clear_m(12.0, 30.0), nullptr, 0, nullptr, 0.0, d);
-    CHECK(i != RockReg::npos && g.rocks[i].id == 1 && std::fabs(d) < 1e-9);
-    i = g.first_blocker(7, a, b, bubble_clear_m(12.0, 30.0), nullptr, 1, nullptr, 0.0, d);   // target excluded (stand-off phase)
-    CHECK(i != RockReg::npos && g.rocks[i].id == 3 && std::fabs(d - 49.0) < 1e-9);
-    RockReg u;
-    reg_add(u, 9, 7, 150, 60, 0);                          // radius unknown: 35 m until read, 35 + 42 = 77 > 60 blocks
-    CHECK(u.first_blocker(7, a, b, bubble_clear_m(12.0, 30.0), nullptr, 0, nullptr, 0.0, d) != RockReg::npos);
-    RockReg v;
-    reg_add(v, 9, 7, 150, 0, 0, nullptr, 8.0);
-    CHECK(v.first_blocker(7, a, b, bubble_clear_m(12.0, 30.0), nullptr, 9, nullptr, 0.0, d) == RockReg::npos);   // only the target is there
 }
 
 // bubble ladder (bubble_step): brake on a hit, replan after the stop, give up after BUBBLE_MAX_REPLAN replans
@@ -1612,68 +1463,6 @@ static void t_tune_geom()
     CHECK(!appr_capped(70000, 80000) && appr_capped(70000, 130000));
 }
 
-static void t_reg_targeted_ore_budget()
-{
-    RockReg g;
-    reg_add(g, 5, 1, 0, 0, 0);
-    g.target_set(5, true);
-    CHECK(g.targeted().count(5) == 1);
-    g.target_set(5, false);
-    CHECK(g.targeted().empty());
-    int a1 = 0, a2 = 0;
-    const double p[3] = {0, 0, 0}, q[3] = {10, 0, 0};
-    g.ore_put(&a1, p);
-    g.ore_put(&a2, q);
-    CHECK(g.ore_ok(&a1) && g.ore_within(p, 20) == 2 && g.ore_within(p, 5) == 1);
-    CHECK(g.ore_kill(&a1) && !g.ore_ok(&a1) && g.ore_within(p, 20) == 1);
-    g.ore_prune();
-    CHECK(g.ore.size() == 1 && g.ore_ok(&a2) && !g.ore_ok(&a1));
-    CHECK(!reg_over_budget(0.9) && reg_over_budget(1.1));
-}
-
-// WHAT: micro-benchmark: 24000 rocks in one system (100 km cube), 7 ships, 4 Hz. Each tick = 7 queries (4 nearest + 3 first_blocker).
-//       Prints ms per query. Bound: a tick of 7 queries under 2 ms (wall clock, loose).
-static void t_reg_bench()
-{
-    RockReg g;
-    uint64_t s = 12345;
-    auto rnd = [&s]() { s = s * 6364136223846793005ull + 1442695040888963407ull; return static_cast<double>(s >> 11) / 9007199254740992.0; };
-    int tag = 0;
-    void* ore = &tag;
-    const int N = 24000;
-    for (int i = 0; i < N; ++i)
-    {
-        const double c[3] = {rnd() * 100000.0, rnd() * 100000.0, rnd() * 100000.0};
-        reg_add(g, i + 1, 7, c[0], c[1], c[2], ore, 8.0 + rnd() * 60.0);
-    }
-    double ships[7][3];
-    for (auto& sh : ships) { sh[0] = rnd() * 100000.0; sh[1] = rnd() * 100000.0; sh[2] = rnd() * 100000.0; }
-    const int TICKS = 200;
-    double worst = 0.0, total = 0.0;
-    int hits = 0;
-    for (int t = 0; t < TICKS; ++t)
-    {
-        for (auto& sh : ships) { sh[0] += 3.0; sh[1] -= 2.0; }   // ships move a little each tick
-        const auto t0 = std::chrono::steady_clock::now();
-        for (int k = 0; k < 7; ++k)
-        {
-            double d = 0.0;
-            if (k < 4) hits += g.nearest(7, ore, ships[k], nullptr, nullptr, 0, d) != RockReg::npos;
-            else
-            {
-                const double b[3] = {ships[k][0] + 3000.0, ships[k][1], ships[k][2]};
-                hits += g.first_blocker(7, ships[k], b, 300.0, nullptr, 0, nullptr, 0, d) != RockReg::npos;
-            }
-        }
-        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-        total += ms;
-        if (ms > worst) worst = ms;
-    }
-    std::printf("bench: rocks=%d ships=7 ticks=%d avg tick(7 queries)=%.4f ms worst=%.4f ms per query=%.4f ms hits=%d\n",
-                N, TICKS, total / TICKS, worst, total / TICKS / 7.0, hits);
-    CHECK(total / TICKS < 2.0);
-}
-
 static void t_reg_abs_m()
 {
     // chunk (1, 0, -1) + loc raw (65536, 0, 131072) at 65536 raw per m = (2048 + 1, 0, -2048 + 2) m
@@ -1684,7 +1473,12 @@ static void t_reg_abs_m()
     NEAR(c[0], 2049.0, 1e-9);
     NEAR(c[1], 0.0, 1e-9);
     NEAR(c[2], -2046.0, 1e-9);
-    CHECK(reg_cell_idx(-1.0) == -1 && reg_cell_idx(2047.9) == 0 && reg_cell_idx(2048.0) == 1);
+    RegRock r;   // radius not read: conservative default; read: the radius (never negative)
+    NEAR(reg_eff_rad(r), REG_RAD_UNKNOWN_M, 1e-12);
+    r.rad_known = true; r.rad_m = 12.5;
+    NEAR(reg_eff_rad(r), 12.5, 1e-12);
+    r.rad_m = -3.0;
+    NEAR(reg_eff_rad(r), 0.0, 1e-12);
 }
 
 // ---------- box probe and reg_check parsers (mb_logic.hpp, mb_registry_logic.hpp) ----------
@@ -1749,9 +1543,6 @@ static void t_reg_check_summary()
     CHECK(!reg_check_parse("reg_check:5:-1", sid, n));
     CHECK(!reg_check_parse("reg_check:5:3:4", sid, n));
     CHECK(!reg_check_parse("reg_check:", sid, n));
-    CHECK(reg_summary_line(3, 1.5, 0.5, 2) == "SUMMARY n=3 max_err_m=1.500 mean_err_m=0.500 missing=2");
-    CHECK(reg_summary_line(3, 1.5, 0.5, -1) == "SUMMARY n=3 max_err_m=1.500 mean_err_m=0.500 missing=n/a");
-    CHECK(reg_summary_line(0, 0.0, 0.0, 0) == "SUMMARY n=0 max_err_m=0.000 mean_err_m=0.000 missing=0");
 }
 
 // ---------- runner ----------
@@ -1831,168 +1622,15 @@ static void t_probe_collision()
     CHECK(!probe_parse_sid_pfx("probe_collision:", "probe_collision:", sid));
 }
 
-// ---------- seed order, seeded areas, disk cache (mb_registry_logic.hpp) ----------
+// ---------- chunk of a metre position (mb_registry_logic.hpp) ----------
 
-static RegCacheData t_cache_sample()
+static void t_reg_chunk_of_m()
 {
-    RegCacheData d;
-    d.kinds = {"Iron", "Ice ore"};
-    RegCacheRec a; a.id = 11; a.sys = 7; a.c[0] = 1.5; a.c[1] = -2048.25; a.c[2] = 4096.0; a.rad = 12.5f; a.ore = 0;
-    RegCacheRec b; b.id = 12; b.sys = 7; b.c[0] = 0.0; b.c[1] = 0.0; b.c[2] = 0.0; b.rad = -1.0f; b.ore = -1;
-    RegCacheRec c; c.id = 13; c.sys = 8; c.c[0] = 3.0; c.c[1] = 4.0; c.c[2] = 5.0; c.rad = 0.0f; c.ore = 1;
-    d.recs = {a, b, c};
-    d.h.exe_size = 1234;
-    d.h.save_n = 3;
-    return d;
-}
-
-static void t_reg_cache_round_trip()
-{
-    const std::vector<uint8_t> img = reg_cache_encode(t_cache_sample());
-    CHECK(img.size() == REG_CACHE_HDR + 3 * REG_CACHE_REC + 4 + (2 + 4) + (2 + 7));
-    RegCacheData o;
-    std::string why;
-    CHECK(reg_cache_parse(img.data(), img.size(), 1234, o, why));
-    CHECK(o.h.save_n == 3 && o.h.rock_n == 3 && o.h.exe_size == 1234);
-    CHECK(o.kinds.size() == 2 && o.kinds[0] == "Iron" && o.kinds[1] == "Ice ore");
-    CHECK(o.recs.size() == 3);
-    CHECK(o.recs[0].id == 11 && o.recs[0].sys == 7 && o.recs[0].c[1] == -2048.25 && o.recs[0].rad == 12.5f && o.recs[0].ore == 0);
-    CHECK(o.recs[1].rad == -1.0f && o.recs[1].ore == -1);
-    CHECK(o.recs[2].c[2] == 5.0 && o.recs[2].rad == 0.0f && o.recs[2].ore == 1);
-}
-
-static void t_reg_cache_reject()
-{
-    const std::vector<uint8_t> good = reg_cache_encode(t_cache_sample());
-    RegCacheData o;
-    std::string why;
-    auto bad = [&](const std::vector<uint8_t>& img, uint64_t exe) { return !reg_cache_parse(img.data(), img.size(), exe, o, why); };
-    CHECK(bad(good, 999));                                                   // exe size changed
-    CHECK(bad(good, 0));                                                     // exe size unknown
-    { auto x = good; x[0] ^= 0xFF; CHECK(bad(x, 1234)); }                    // magic
-    { auto x = good; x[4] = 2; CHECK(bad(x, 1234)); }                        // version
-    { auto x = good; x[REG_CACHE_HDR + 9] ^= 0x10; CHECK(bad(x, 1234)); }    // record byte: checksum
-    { auto x = good; x.pop_back(); CHECK(bad(x, 1234)); }                    // truncated
-    { auto x = good; x.resize(20); CHECK(bad(x, 1234)); }                    // short
-    { RegCacheData d = t_cache_sample(); d.recs[0].ore = 5; CHECK(bad(reg_cache_encode(d), 1234)); }     // ore index out of range
-    { RegCacheData d = t_cache_sample(); d.recs[1].id = 0; CHECK(bad(reg_cache_encode(d), 1234)); }     // id 0
-    { RegCacheData d = t_cache_sample(); d.recs[0].c[0] = std::nan(""); CHECK(bad(reg_cache_encode(d), 1234)); }
-    { RegCacheData d = t_cache_sample(); d.recs[0].rad = -5.0f; CHECK(bad(reg_cache_encode(d), 1234)); }
-    CHECK(reg_cache_parse(good.data(), good.size(), 1234, o, why));          // the good image still passes
-    RegCacheData e;
-    e.h.exe_size = 5;
-    const std::vector<uint8_t> eimg = reg_cache_encode(e);                  // empty table is a valid image
-    CHECK(reg_cache_parse(eimg.data(), eimg.size(), 5, o, why) && o.recs.empty());
-}
-
-static void t_reg_cache_verdict()
-{
-    CHECK(reg_cache_verdict(5, 5, 50, 0) == RCV_TRUST);
-    CHECK(reg_cache_verdict(5, 6, 50, 0) == RCV_MERGE);
-    CHECK(reg_cache_verdict(5, 5, 50, 1) == RCV_RESEED);
-    CHECK(reg_cache_verdict(5, 5, 0, 0) == RCV_RESEED);
-    const double a[3] = {1, 2, 3}, b[3] = {1.005, 2, 3}, c[3] = {1.02, 2, 3};
-    CHECK(reg_same_pos(a, b) && !reg_same_pos(a, c));
-}
-
-static void t_reg_kill_unseen()
-{
-    RockReg g;
-    const double p[3] = {0, 0, 0};
-    g.add(1, 7, p, {});
-    g.add(2, 7, p, {});
-    g.add(3, 7, p, {});
-    const std::vector<uint64_t> seen = {5, 4, 5};   // pass 5: rock 2 not seen
-    CHECK(reg_kill_unseen(g, seen, 5, 9) == 1);
-    CHECK(g.is_alive(1) && !g.is_alive(2) && g.is_alive(3));
-    CHECK(reg_kill_unseen(g, seen, 5, 10) == 0);    // already dead: not counted again
-    CHECK(g.add(4, 7, p, {}) == 3 && g.is_alive(4));   // a new id is merged in alive
-    CHECK(g.kill(4, 11) && !g.is_alive(4));
-}
-
-static void t_reg_seed_rings()
-{
-    std::vector<RegSrc> src(1);
-    src[0].sys = 7;   // ship in chunk (0,0,0)
-    const int64_t a0[3] = {0, 0, 0}, a3[3] = {3, 0, -1}, a13[3] = {13, 0, 0}, a20[3] = {20, 0, 0}, far[3] = {10000, 0, 0};
-    CHECK(reg_ring_of(7, a0, src) == 0);
-    CHECK(reg_ring_of(7, a3, src) == 3);
-    CHECK(reg_ring_of(7, a13, src) == 13);
-    CHECK(reg_ring_of(7, far, src) == REG_RING_CAP);
-    CHECK(reg_ring_of(9, a0, src) == REG_RING_FAR);   // no ship in that system
-    const std::vector<int> ring = {13, 0, REG_RING_FAR, 3, 20};
-    std::vector<size_t> order;
-    size_t near_n = 0;
-    reg_order_rings(ring, REG_PRIORITY_CHUNKS, order, near_n);
-    CHECK(order.size() == 5 && near_n == 2);   // phase A = rings 0 and 3
-    CHECK(order[0] == 1 && order[1] == 3 && order[2] == 0 && order[3] == 4 && order[4] == 2);
-    // the chunk of a metre position: 2048 m per chunk, floor for negatives
+    // 2048 m per chunk, floor for negatives
     const double pm[3] = {2047.9, -0.5, 4096.0};
     int64_t cm[3] = {0, 0, 0};
     reg_chunk_of_m(pm, cm);
     CHECK(cm[0] == 0 && cm[1] == -1 && cm[2] == 2);
-}
-
-static void t_reg_area_ready()
-{
-    RockReg g;
-    std::vector<RegSrc> src(1);
-    src[0].sys = 7;
-    g.zones_begin(1, src, REG_PRIORITY_CHUNKS);
-    const int64_t c0[3] = {0, 0, 0}, c11[3] = {11, 0, 0}, c12[3] = {12, 0, 0}, cm12[3] = {-12, 0, 0};
-    CHECK(!g.area_ready(7, c0, 0));              // not ready yet
-    g.zones_ready(1);
-    CHECK(g.area_ready(7, c11, 1));              // 11 + 1 <= 12
-    CHECK(!g.area_ready(7, c12, 1));             // 12 + 1 > 12
-    CHECK(g.area_ready(7, cm12, 0));
-    CHECK(!g.area_ready(8, c0, 0));              // other system
-    std::vector<RegSrc> src2(1);
-    src2[0].sys = 9;
-    g.zones_begin(2, src2, REG_PRIORITY_CHUNKS); // drops the zones not ready, keeps the ready one
-    CHECK(g.area_ready(7, c0, 0));
-    CHECK(!g.area_ready(9, c0, 0));
-}
-
-static void t_reg_cache_bench()
-{
-    // 160,799 records (the live save count). Encode once; time the parse (file bytes -> records) and the table build (RockReg::add).
-    RegCacheData d;
-    d.kinds = {"Iron", "Ice", "Gold"};
-    d.h.exe_size = 99;
-    d.h.save_n = 160799;
-    d.recs.resize(160799);
-    uint64_t s = 42;
-    for (size_t i = 0; i < d.recs.size(); ++i)
-    {
-        s = s * 6364136223846793005ull + 1442695040888963407ull;
-        RegCacheRec& r = d.recs[i];
-        r.id = static_cast<int32_t>(i + 1);
-        r.sys = 7 + static_cast<int32_t>(i % 3);
-        r.c[0] = static_cast<double>(s >> 40) - 8.0e6;
-        r.c[1] = static_cast<double>((s >> 20) & 0xFFFFF) - 5.0e5;
-        r.c[2] = static_cast<double>(s & 0xFFFFF) - 5.0e5;
-        r.rad = (i % 4) ? 12.5f : -1.0f;
-        r.ore = static_cast<int32_t>(i % 3);
-    }
-    const std::vector<uint8_t> img = reg_cache_encode(d);
-    RegCacheData o;
-    std::string why;
-    const auto t0 = std::chrono::steady_clock::now();
-    const bool ok = reg_cache_parse(img.data(), img.size(), 99, o, why);
-    const auto t1 = std::chrono::steady_clock::now();
-    CHECK(ok && o.recs.size() == 160799);
-    RockReg tab;
-    tab.kinds = o.kinds;
-    for (const RegCacheRec& c : o.recs)
-    {
-        const size_t i = tab.add(c.id, c.sys, c.c, {});
-        tab.rocks[i].ore = c.ore;
-        if (c.rad >= 0.0f) tab.set_radius(i, static_cast<double>(c.rad));
-    }
-    const auto t2 = std::chrono::steady_clock::now();
-    CHECK(tab.rocks.size() == 160799);
-    std::printf("bench reg_cache_parse n=%zu bytes=%zu ms=%.2f\n", o.recs.size(), img.size(), std::chrono::duration<double, std::milli>(t1 - t0).count());
-    std::printf("bench reg_cache_table n=%zu ms=%.2f\n", tab.rocks.size(), std::chrono::duration<double, std::milli>(t2 - t1).count());
 }
 
 static void t_mining_world_ready()
@@ -2352,15 +1990,12 @@ int main()
         {"ship_tags", t_ship_tags},
         {"parking", t_parking},
         {"rock_depleted", t_rock_depleted},
-        {"reg_table", t_reg_table}, {"reg_events", t_reg_events}, {"reg_world_track", t_reg_world_track}, {"reg_within_nearest", t_reg_within_nearest}, {"reg_surface_block", t_reg_surface_block_radius},
         {"ship_zone", t_ship_zone},
         {"mining_read_from_caps", t_mining_read_from_caps}, {"laser_gate", t_laser_gate},
         {"approach_throttle", t_approach_throttle}, {"bubble", t_bubble}, {"bubble_ladder", t_bubble_ladder}, {"bubble_scope", t_bubble_scope}, {"tune_geom", t_tune_geom}, {"flight_warp", t_flight_warp}, {"sweep_return_flee", t_sweep_return_flee}, {"path2_rules", t_path2_rules},
-        {"reg_targeted_ore_budget", t_reg_targeted_ore_budget}, {"reg_bench", t_reg_bench}, {"reg_abs_m", t_reg_abs_m},
+        {"reg_abs_m", t_reg_abs_m}, {"reg_chunk_of_m", t_reg_chunk_of_m},
         {"box_probe_parse", t_box_probe_parse}, {"box_probe_uu_fwd", t_box_probe_uu_fwd}, {"reg_check_summary", t_reg_check_summary},
-        {"reg_cache_round_trip", t_reg_cache_round_trip}, {"reg_cache_reject", t_reg_cache_reject}, {"reg_cache_verdict", t_reg_cache_verdict},
-        {"reg_kill_unseen", t_reg_kill_unseen}, {"reg_seed_rings", t_reg_seed_rings}, {"reg_area_ready", t_reg_area_ready},
-        {"reg_cache_bench", t_reg_cache_bench}, {"lowpower", t_lowpower}, {"power_probe_fmt", t_power_probe_fmt}, {"power_grid_auto", t_power_grid_auto},
+        {"lowpower", t_lowpower}, {"power_probe_fmt", t_power_probe_fmt}, {"power_grid_auto", t_power_grid_auto},
     };
     for (const Case& c : cases)
     {
