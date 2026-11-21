@@ -10,6 +10,7 @@ param(
     [string[]]$Empty = @(),
     [string]$MinNative = '0.5.0',
     [ValidatePattern('^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@\d+\.\d+\.\d+$')][string[]]$Requires = @(),
+    [string[]]$SaveScrub = @(),
     [string]$OutDir
 )
 $ErrorActionPreference = 'Stop'
@@ -52,6 +53,7 @@ try {
     $modDir = Join-Path $stg "Mods\$Name"
     New-Item -ItemType Directory -Force $modDir | Out-Null
     $req = if ($Requires.Count) { "requires=$($Requires -join ',')`n" } else { '' }
+    foreach ($s in $SaveScrub) { $req += "save_scrub=$s`n" }
     [IO.File]::WriteAllText((Join-Path $modDir 'mscore.mod'), "name=$Name`nrepo=$Repo`nversion=$Version`n$req", $utf8)
 
     $tops = @(Get-ChildItem -LiteralPath $stg -Directory | ForEach-Object Name)
