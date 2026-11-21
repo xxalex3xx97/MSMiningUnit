@@ -3787,6 +3787,8 @@ namespace
         log_line(STR("ship ") + std::to_wstring(sid) + STR(" ") + name + STR(" destroyed, removed"));
     }
 
+    void mine_halt(int sid);   // defined below (STOP ALL)
+
     void mine_set_bench(const std::vector<std::pair<UObject*, int>>& bench, const std::vector<int>& dead)
     {
         for (int sid : dead) mine_forget_ship(sid);   // before the rebuild: a destroyed ship is in neither list below
@@ -3803,6 +3805,11 @@ namespace
         std::vector<int> ids;
         for (const auto& p : bench) if (p.second > 0) ids.push_back(p.second);
         chunk_hold_keep_only(ids);   // a ship that left the bench drops its chunk hold
+        // a running loop on a ship that left the bench list (no bench, or no mining laser) is halted
+        std::vector<int> off;   // collected first: mine_halt may touch g_mine
+        for (const auto& kv : g_mine)
+            if (kv.second.run && std::find(g_bench_ids.begin(), g_bench_ids.end(), kv.first) == g_bench_ids.end()) off.push_back(kv.first);
+        for (int sid : off) mine_halt(sid);
     }
 
     // STOP ALL: hard stop, latch HALT and run=false; Start loop restarts.

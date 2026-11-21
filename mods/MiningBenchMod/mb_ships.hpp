@@ -40,6 +40,8 @@ namespace
     // g_dead_n: ship id -> consecutive scans with the destroyed signal. g_bench_prev: ids with a bench in the last scan (an id missing from the list stays until confirmed).
     std::map<int, int> g_dead_n;
     std::set<int> g_bench_prev;
+    // g_laser_bad: ship id -> consecutive scans with the bench but no MiningLaser (mine_laser_gate: 3 in a row drops the ship)
+    std::map<int, int> g_laser_bad;
 
     // WHAT: Health read of one ship under SEH (ctx for seh_run). ok = the property was read.
     struct HpCtx { UObject* ship; int32_t hp; bool ok; };
@@ -67,7 +69,7 @@ namespace
             if (!ship) continue;
             int bb = count_bench(ship, STR("BuildingBlocks"));
             int so = count_bench(ship, STR("Subobjects"));
-            bool has = bb > 0 || so > 0;
+            const bool bench = bb > 0 || so > 0;
             int32_t id = obj_id(ship);
             // a Health read that faults counts as signal A (a destroyed object can fault on read)
             HpCtx hc{ship, 0, false};
@@ -82,6 +84,10 @@ namespace
                 g_dead_n[id] = dead_scan_next(g_dead_n[id], hull0);
             }
             const bool dead = id > 0 && dead_confirmed(g_dead_n[id]);
+            // laser check: once per live ship with a bench. 3 bad scans in a row drop it (mine_laser_gate); no bench = counter reset
+            const bool laser = bench && id > 0 && !dead && ship_has_mining_laser(ship);
+            if (id > 0 && !dead) g_laser_bad[id] = bench ? laser_bad_next(g_laser_bad[id], laser) : 0;
+            const bool has = mine_laser_gate(bench, laser, id > 0 ? g_laser_bad[id] : 0);
             if (id > 0) txt += std::to_string(id) + "|" + u8(name) + "|" + (has && !dead ? "1" : "0") + "\n";
             if (dead)
             {
@@ -115,6 +121,7 @@ namespace
             else bench_now.insert(id);
         }
         g_bench_prev = bench_now;
+        for (auto it = g_laser_bad.begin(); it != g_laser_bad.end();) it = seen.count(it->first) ? std::next(it) : g_laser_bad.erase(it);
         write_ships_file(txt);
         if (g_debug) Output::send<LogLevel::Normal>(STR("[MiningBenchMod] scan: ships={} with_bench={}\n"), ships.size(), bench_ships.size());
     }

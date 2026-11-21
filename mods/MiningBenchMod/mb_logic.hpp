@@ -664,6 +664,12 @@ namespace
         return count >= need;
     }
 
+    // WHAT: mining-ship gate. A ship is a mining ship only with the Mining Bench block AND a mining laser. A ship without the laser stays in the list until 3 bad scans in a row (bad_n is the count after this scan's update).
+    // WHY: weapon_array can read null for a moment while a save loads, so one bad scan must not drop a running ship.
+    inline bool mine_laser_gate(bool bench, bool laser, int bad_n) { return bench && (laser || bad_n < 3); }
+    // WHAT: consecutive no-laser scan counter: a scan with the laser resets to 0, a scan without it adds 1.
+    inline int laser_bad_next(int bad_n, bool laser) { return laser ? 0 : bad_n + 1; }
+
     // WHAT: TArray Num read from game memory, clamped to 0..100000 before it sizes a buffer.
     // WHY: a stale or wrong array count must not allocate or index past the array.
     constexpr int32_t TARRAY_NUM_MAX = 100000;

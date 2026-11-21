@@ -35,6 +35,15 @@ namespace
         return cn.find(STR("MiningLaser")) != std::wstring::npos || cn.find(STR("ItemScooper")) != std::wstring::npos;
     }
 
+    // WHAT: true when the ship has a MiningLaser weapon. false when the weapon list is missing or unreadable (the scan's 3-scan hysteresis absorbs that).
+    bool ship_has_mining_laser(UObject* ship)
+    {
+        if (auto* a = weapon_array(ship))
+            for (int32_t i = 0; i < a->Num(); ++i)
+                if (weapon_match((*a)[i], STR("MiningLaser"))) return true;
+        return false;
+    }
+
     // ---------------- firing writes ----------------
 
     // WHAT: calls SetFiring(bNewFiring) on the weapon's Actor object. false when the actor or the function is missing.
