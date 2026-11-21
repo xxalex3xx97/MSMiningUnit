@@ -664,11 +664,22 @@ namespace
         return count >= need;
     }
 
-    // WHAT: mining-ship gate. A ship is a mining ship only with the Mining Bench block AND a mining laser. A ship without the laser stays in the list until 3 bad scans in a row (bad_n is the count after this scan's update).
-    // WHY: weapon_array can read null for a moment while a save loads, so one bad scan must not drop a running ship.
-    inline bool mine_laser_gate(bool bench, bool laser, int bad_n) { return bench && (laser || bad_n < 3); }
-    // WHAT: consecutive no-laser scan counter: a scan with the laser resets to 0, a scan without it adds 1.
-    inline int laser_bad_next(int bad_n, bool laser) { return laser ? 0 : bad_n + 1; }
+    // WHAT: laser read of one ship (mb_ships.hpp, under SEH): LASER_YES = weapon array readable and has a MiningLaser,
+    //       LASER_NO = readable, no MiningLaser, LASER_UNKNOWN = array null, SEH fault, or ship not readable.
+    constexpr int LASER_NO = 0;
+    constexpr int LASER_YES = 1;
+    constexpr int LASER_UNKNOWN = 2;
+    // WHAT: laser gate state of one ship: bad_n = consecutive NO scans, accepted = the ship is in the mining list.
+    struct LaserStep { int bad_n = 0; bool accepted = false; };
+    // WHAT: one scan of the laser gate. listed = accepted on the previous scan (bench block required by the caller).
+    //       YES: reset, accepted. UNKNOWN: hold (state unchanged). NO: +1; a listed ship survives 2 bad scans, dropped on the 3rd; an unlisted ship is rejected at once.
+    // WHY: a null or faulting weapon read is not evidence of "no laser" (save load, streaming), so it never counts as a bad scan.
+    inline LaserStep laser_step(int bad_n, bool listed, int read)
+    {
+        if (read == LASER_YES) return {0, true};
+        if (read == LASER_UNKNOWN) return {bad_n, listed};
+        return {bad_n + 1, listed && bad_n + 1 < 3};
+    }
 
     // WHAT: TArray Num read from game memory, clamped to 0..100000 before it sizes a buffer.
     // WHY: a stale or wrong array count must not allocate or index past the array.

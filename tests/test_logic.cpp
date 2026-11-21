@@ -2266,24 +2266,21 @@ static void t_shield_from_raw()
     CHECK(shield_from_raw(65536LL * 60 + 100) == 60);
 }
 
-static void t_mine_laser_gate()
-{
-    // bench AND laser required; a ship without the laser stays for 2 bad scans, dropped on the 3rd
-    CHECK(mine_laser_gate(false, true, 0) == false);
-    CHECK(mine_laser_gate(true, true, 0) == true);
-    CHECK(mine_laser_gate(true, false, 0) == true);
-    CHECK(mine_laser_gate(true, false, 2) == true);
-    CHECK(mine_laser_gate(true, false, 3) == false);
-    CHECK(mine_laser_gate(false, false, 9) == false);
-}
+static bool ls_is(LaserStep s, int bad_n, bool accepted) { return s.bad_n == bad_n && s.accepted == accepted; }
 
-static void t_laser_bad_next()
+static void t_laser_step()
 {
-    CHECK(laser_bad_next(0, true) == 0);
-    CHECK(laser_bad_next(0, false) == 1);
-    CHECK(laser_bad_next(2, false) == 3);
-    CHECK(laser_bad_next(2, true) == 0);
-    CHECK(laser_bad_next(7, true) == 0);
+    // a never-listed ship with no laser is rejected at once; a listed one survives 2 bad scans, dropped on the 3rd
+    CHECK(ls_is(laser_step(0, false, LASER_YES), 0, true));
+    CHECK(ls_is(laser_step(0, false, LASER_NO), 1, false));
+    CHECK(ls_is(laser_step(0, false, LASER_UNKNOWN), 0, false));
+    CHECK(ls_is(laser_step(0, true, LASER_YES), 0, true));
+    CHECK(ls_is(laser_step(0, true, LASER_NO), 1, true));
+    CHECK(ls_is(laser_step(1, true, LASER_NO), 2, true));
+    CHECK(ls_is(laser_step(2, true, LASER_NO), 3, false));
+    CHECK(ls_is(laser_step(2, true, LASER_UNKNOWN), 2, true));
+    CHECK(ls_is(laser_step(5, true, LASER_YES), 0, true));
+    CHECK(ls_is(laser_step(3, false, LASER_NO), 4, false));
 }
 
 int main()
@@ -2321,7 +2318,7 @@ int main()
         {"rock_depleted", t_rock_depleted},
         {"reg_table", t_reg_table}, {"reg_events", t_reg_events}, {"reg_world_track", t_reg_world_track}, {"reg_within_nearest", t_reg_within_nearest}, {"reg_surface_block", t_reg_surface_block_radius},
         {"ship_zone", t_ship_zone},
-        {"mine_laser_gate", t_mine_laser_gate}, {"laser_bad_next", t_laser_bad_next},
+        {"laser_step", t_laser_step},
         {"approach_throttle", t_approach_throttle}, {"bubble", t_bubble}, {"bubble_ladder", t_bubble_ladder}, {"bubble_scope", t_bubble_scope}, {"tune_geom", t_tune_geom}, {"flight_warp", t_flight_warp}, {"sweep_return_flee", t_sweep_return_flee}, {"path2_rules", t_path2_rules},
         {"reg_targeted_ore_budget", t_reg_targeted_ore_budget}, {"reg_bench", t_reg_bench}, {"reg_abs_m", t_reg_abs_m},
         {"box_probe_parse", t_box_probe_parse}, {"box_probe_uu_fwd", t_box_probe_uu_fwd}, {"reg_check_summary", t_reg_check_summary},

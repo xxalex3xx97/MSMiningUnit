@@ -48,9 +48,9 @@ namespace
         // WHY: check_config runs before this gate, so the mod can be re-enabled by editing the INI while it is disabled.
         if (!g_cfg.enabled) return;
         std::vector<std::pair<UObject*, int>> bench;
-        std::vector<int> dead;
-        scan_and_log(bench, dead);
-        mine_set_bench(bench, dead);
+        std::vector<int> dead, lost_laser;
+        scan_and_log(bench, dead, lost_laser);
+        mine_set_bench(bench, dead, lost_laser);
         write_lists();
         dock_tags_refresh();
         ship_tags_write();
