@@ -116,6 +116,7 @@ namespace
         std::wstring col_why;                  // MS_COLLECT: reason it started (text shown at the end)
         double col_t = 0.0, col_stall = 0.0, col_scan_t = 0.0;   // MS_COLLECT: seconds total / since ore count dropped / since the last scan
         int col_last = -1;                     // MS_COLLECT: floating ore count at the last scan (-1 none, 0 scan failed)
+        int abandon_id = 0;                    // id of abandon (clear_rock_pick skip set; set and cleared with abandon)
         UObject* abandon = nullptr;            // rock left by the idle watchdog: SEEK and path retargets skip it until the next rock is reached (mined anyway when it is the only rock)
         int64_t rock_got = 0;                  // ore gained on the current rock since its mining started (reset at MS_MINE entry); depletion rule
         bool sweep = false;                    // MS_SWEEP active (collect ore action)
@@ -443,7 +444,6 @@ namespace
         for (const RegRock& rk : near_rocks)
         {
             if (!rk.alive || rk.sys != sys || rk.id == skip_id) continue;
-            if (path_box_reject(a, b, rk.c, PATH_RMAX_M) || seg_point_dist(a, b, rk.c) > PATH_RMAX_M) continue;
             if (grace)
             {   // start grace: a rock that already overlaps the ship start is ignored when moving away or when the first 60 m are inside it
                 const double ab[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
@@ -1364,7 +1364,7 @@ namespace
         rock_claims_of_others(sid, skip);
         zone_rocks_of_others(sid, skip);
         static std::vector<std::pair<double, RegRock>> cand;   // scratch (game thread only)
-        if (m.abandon) skip.insert(rock_id_of(m.abandon));
+        if (m.abandon_id > 0) skip.insert(m.abandon_id);
         reg_nearest_n(sys, item, ps, &skip, PATH_PICK_M, PATH_CANDIDATES, cand);
         int best = 0;
         double best_score = 1e300;
@@ -1634,7 +1634,7 @@ namespace
                 }
                 appr_done(sid, STR("mining"));
                 m.st = MS_MINE; m.t = 0.0; m.idle_t = 0.0; m.chk_t = 0.0;
-                m.rock_got = 0; m.abandon = nullptr;   // new rock: its own ore count (depletion rule), no rock abandoned yet
+                m.rock_got = 0; m.abandon = nullptr; m.abandon_id = 0;   // new rock: its own ore count (depletion rule), no rock abandoned yet
                 mine_fire(sid, true);
                 mset(sid, m, STR("mining rock ") + std::to_wstring(m.rock), STR("Mining ") + item_name(c.resource) + STR(" (rock ") + std::to_wstring(m.rock) + STR(")"));
                 return;
@@ -1662,13 +1662,13 @@ namespace
             // every rock in range is no-yield (skipped): no belt = HALT (not an error); with a belt, warp to the next sector with the ore
             if (!rock && all_rocks_skipped(rock_in_range(sid, m.anchor, item, rad) != nullptr, false))
             {
-                m.abandon = nullptr; m.col_rock = 0; g_sel_rocks.erase(sid);
+                m.abandon = nullptr; m.abandon_id = 0; m.col_rock = 0; g_sel_rocks.erase(sid);
                 if (noy_all_halt(c.belt)) { mine_stop_work(ship, sid); if (park_try(ship, sid, m, STR("no rocks"))) return; m.st = MS_HALT; mset(sid, m, STR("rocks give no ore")); return; }
                 if (belt_go(ship, sid, m, c, item, true) != 0) return;   // warp started, or HALT / go home (no sector left)
             }
             // approach_rock picks the nearest rock by itself (no skip lists): pin the rock rock_in_range chose (it honours the no-yield and hazard skips)
             if (rock && m.col_rock == 0) g_sel_rocks[sid] = rock_id_of(rock);   // a cargo-full return keeps its own pin (set above)
-            if (!rock) m.abandon = nullptr;   // kept while a rock is picked: path_guard retargets must not return to it (cleared at MS_MINE entry)
+            if (!rock) { m.abandon = nullptr; m.abandon_id = 0; }   // kept while a rock is picked: path_guard retargets must not return to it (cleared at MS_MINE entry)
             if (rock) m.idle_polls = 0;
             m.no_rock = !rock;
             if (!rock)
@@ -1766,7 +1766,7 @@ namespace
         const double idle_lim = idle_limit(c.idle_seconds, rock_alive);
         if (idle_lim > 0.0 && m.idle_t >= idle_lim)
         {
-            m.abandon = rock_actor_by_id(m.rock);   // the next seek must not pick this rock again at once
+            m.abandon = rock_actor_by_id(m.rock); m.abandon_id = m.abandon ? m.rock : 0;   // the next seek must not pick this rock again at once
             // no-yield: counted for the ship (noy_run) and for this rock; NOY_SKIP_VISITS visits in a row = the rock is skipped by the search
             ++m.noy_run;
             if (m.rock > 0 && noy_skip_now(++m.noy_visits[m.rock]))

@@ -214,7 +214,7 @@ namespace
         {
             if (kv.second.st == MS_OFF) continue;
             auto& c = sys_cache[kv.first];
-            if (c.first == 0 || now - c.first >= 2000)   /* sys re-read period ms */ { UObject* sh = find_by_id(STR("DMSPlayerShipObject"), kv.first); c = {now, sh ? sys_id(sh) : 0}; }
+            if (c.first == 0 || now - c.first >= REG_SYS_MS) { UObject* sh = find_by_id(STR("DMSPlayerShipObject"), kv.first); c = {now, sh ? sys_id(sh) : 0}; }
             if (c.second <= 0) continue;
             MsRegShip r{};
             r.sid = kv.first;

@@ -3,8 +3,9 @@
 //       (<MSCore mod folder>\rockreg\RockRegCache.bin), radius reads and delete listener all live in MSCore; this file only calls its exports
 //       (g_ms.rockreg_*, resolved in mb_mscore.hpp) and converts MsRegRock to RegRock (mb_registry_logic.hpp).
 // WHY: one shared registry for the standalone mining mod (owner 1) and Fleet (owner 2): both installed seed ONCE, in MSCore.
-// MISSING / OFF: an export missing (old MSCore) or a call returning -2 (module off or caps not registered yet) logs ONCE
-//       "rock registry needs MSCore 0.8.15 (API 16)"; reg_state() then reports world_ok = false so mining waits; queries return nothing.
+// MISSING / OFF: an export missing or API < 16 logs ONCE "rock registry needs MSCore 0.8.15 (API 16)". A -2 (rockreg off or starting) logs ONCE
+//       "rock registry not ready" and is retried on every call; any other negative is logged once per code. Every failure makes reg_state() report
+//       world_ok = false for 2 s, so mining pauses (fail closed) instead of seeing "no rocks".
 // FEED: reg_feed(1, ships, targets) from mb_testcmd.hpp registry_frame every ~0.25 s. MSCore merges the feeds of all mods and ticks once.
 // UNITS: metres (see mb_registry_logic.hpp).
 // DEV CMDS: reg_dump, reg_query:<ship>:<radius_m>, reg_check:<ship>[:<n>] (mb_devcmd.hpp registry_dev) -> MSCore_rockreg_report, files in the
@@ -26,25 +27,47 @@ namespace
 
     constexpr int REG_OWNER = 1;   // owner id of the standalone mining mod in the MSCore feed protocol (Fleet = 2)
 
-    // WHAT: logs the "needs MSCore 0.8.15" line once per process.
-    void reg_unavail_log()
+    constexpr ULONGLONG REG_SYS_MS = 2000;           // mining ship system re-read period (mb_testcmd.hpp registry_frame)
+    constexpr ULONGLONG REG_RETRY_MS = 10000;        // re-check of the registry exports while unresolved
+    constexpr ULONGLONG REG_FAIL_PAUSE_MS = 2000;    // mining pauses this long after a failed call (fail closed)
+    constexpr size_t REG_BUF_ROWS = 64;              // first buffer of reg_box / reg_seg
+    constexpr size_t REG_BUF_MAX = 4096;             // largest retry buffer
+
+    ULONGLONG g_reg_bad_until = 0;   // a registry call failed: reg_state() reports world_ok = false until then
+
+    // WHAT: logs a line once per key (key = small int).
+    void reg_log_once(int key, const std::wstring& text)
     {
-        static bool logged = false;
-        if (logged) return;
-        logged = true;
-        log_line(STR("rock registry needs MSCore 0.8.15 (API 16)"));
+        static std::set<int> seen;
+        if (seen.insert(key).second) log_line(text);
     }
 
-    // WHAT: true when MSCore is loaded, reports API >= 16 and all nine registry exports resolved. Logs once when it is not.
+    // WHAT: a failed call (rc < 0). -2 = MSCore rockreg off or starting (transient, retried on every call, never latched). Other codes (-1 exception ...) logged once per code.
+    //       Either way mining pauses for REG_FAIL_PAUSE_MS (reg_state) instead of seeing "no rocks".
+    void reg_fail(int rc)
+    {
+        g_reg_bad_until = GetTickCount64() + REG_FAIL_PAUSE_MS;
+        if (rc == -2) reg_log_once(-2, STR("rock registry not ready (MSCore rockreg off or starting)"));
+        else reg_log_once(rc, STR("rock registry call failed rc=") + std::to_wstring(rc));
+    }
+
+    // WHAT: true when MSCore is loaded, reports API >= 16 and all nine registry exports resolved. Cached once resolved; while unresolved re-checked every REG_RETRY_MS.
+    //       Missing export or API < 16 logs "needs MSCore 0.8.15 (API 16)" once.
     bool reg_ok()
     {
+        static bool ok = false;
+        static ULONGLONG next_try = 0;
+        if (ok) return true;
+        const ULONGLONG now = GetTickCount64();
+        if (next_try && now < next_try) return false;
+        next_try = now + REG_RETRY_MS;
         std::wstring err;
         if (!ms_load(err)) return false;   // MSCore missing: ms_load logs it; the mod cannot run without it anyway
         const MsApi& m = g_ms;
-        if (m.rockreg_feed && m.rockreg_state && m.rockreg_get && m.rockreg_box && m.rockreg_seg && m.rockreg_nearest_n &&
-            m.rockreg_nearest_surface && m.rockreg_area_ready && m.rockreg_report) return true;
-        reg_unavail_log();
-        return false;
+        ok = m.rockreg_feed && m.rockreg_state && m.rockreg_get && m.rockreg_box && m.rockreg_seg && m.rockreg_nearest_n &&
+             m.rockreg_nearest_surface && m.rockreg_area_ready && m.rockreg_report;
+        if (!ok) reg_log_once(1, STR("rock registry needs MSCore 0.8.15 (API 16)"));
+        return ok;
     }
 
     // WHAT: MsRegRock -> RegRock.
@@ -60,23 +83,32 @@ namespace
         return r;
     }
 
-    // WHAT: a call result: n >= 0 is the answer; -2 (module off / not ready) logs once and counts as no answer.
-    int reg_res(int n)
-    {
-        if (n == -2) reg_unavail_log();
-        return n < 0 ? 0 : n;
-    }
-
     // WHAT: rock id -> out. true when MSCore knows it (dead rocks too: check out.alive).
     bool reg_get(int id, RegRock& out)
     {
         if (id <= 0 || !reg_ok()) return false;
         MsRegRock m{};
         const int rc = g_ms.rockreg_get(id, &m);
-        if (rc == -2) reg_unavail_log();
+        if (rc < 0) reg_fail(rc);
         if (rc != 1) return false;
         out = reg_conv(m);
         return true;
+    }
+
+    // WHAT: one native call into the reusable buffer (REG_BUF_ROWS rows). When the returned total is larger, one retry with a buffer of the total (max REG_BUF_MAX).
+    //       call(MsRegRock* out, int max) returns the total. Returns the rows now in buf (0 on failure).
+    template <class F> int reg_rows(std::vector<MsRegRock>& buf, F call)
+    {
+        if (buf.size() < REG_BUF_ROWS) buf.resize(REG_BUF_ROWS);
+        int n = call(buf.data(), static_cast<int>(buf.size()));
+        if (n < 0) { reg_fail(n); return 0; }
+        if (static_cast<size_t>(n) > buf.size())
+        {
+            buf.resize(std::min(static_cast<size_t>(n), REG_BUF_MAX));
+            n = call(buf.data(), static_cast<int>(buf.size()));
+            if (n < 0) { reg_fail(n); return 0; }
+        }
+        return std::min(n, static_cast<int>(buf.size()));
     }
 
     // WHAT: alive rocks of system sys inside the box lo..hi (m). out is cleared first.
@@ -85,10 +117,7 @@ namespace
         static std::vector<MsRegRock> buf;   // scratch (game thread only)
         out.clear();
         if (!reg_ok()) return;
-        const int n = reg_res(g_ms.rockreg_box(sys, lo, hi, nullptr, 0));
-        if (n <= 0) return;
-        buf.resize(static_cast<size_t>(n));
-        const int got = std::min(n, reg_res(g_ms.rockreg_box(sys, lo, hi, buf.data(), n)));
+        const int got = reg_rows(buf, [&](MsRegRock* o, int mx) { return g_ms.rockreg_box(sys, lo, hi, o, mx); });
         for (int i = 0; i < got; ++i) out.push_back(reg_conv(buf[static_cast<size_t>(i)]));
     }
 
@@ -98,15 +127,12 @@ namespace
         static std::vector<MsRegRock> buf;
         out.clear();
         if (!reg_ok()) return;
-        const int n = reg_res(g_ms.rockreg_seg(sys, a, b, margin, nullptr, 0));
-        if (n <= 0) return;
-        buf.resize(static_cast<size_t>(n));
-        const int got = std::min(n, reg_res(g_ms.rockreg_seg(sys, a, b, margin, buf.data(), n)));
+        const int got = reg_rows(buf, [&](MsRegRock* o, int mx) { return g_ms.rockreg_seg(sys, a, b, margin, o, mx); });
         for (int i = 0; i < got; ++i) out.push_back(reg_conv(buf[static_cast<size_t>(i)]));
     }
 
     // WHAT: the n alive rocks nearest to p (centre distance, m, within max_m), nearest first, holding item (nullptr = any ore), skipping ids in skip.
-    //       out = (distance m, rock). Cleared first.
+    //       out = (distance m, rock). Cleared first. One call: the buffers hold n rows and MSCore returns at most n.
     void reg_nearest_n(int sys, UObject* item, const double p[3], const std::set<int>* skip, double max_m, int n, std::vector<std::pair<double, RegRock>>& out)
     {
         static std::vector<MsRegRock> buf;
@@ -116,11 +142,11 @@ namespace
         if (n <= 0 || !reg_ok()) return;
         ids.clear();
         if (skip) ids.assign(skip->begin(), skip->end());
-        buf.resize(static_cast<size_t>(n));
-        dist.resize(static_cast<size_t>(n));
-        const int got = std::min(n, reg_res(g_ms.rockreg_nearest_n(sys, static_cast<void*>(item), p, ids.empty() ? nullptr : ids.data(), static_cast<int>(ids.size()),
-                                                                  max_m, n, buf.data(), dist.data())));
-        for (int i = 0; i < got; ++i) out.emplace_back(dist[static_cast<size_t>(i)], reg_conv(buf[static_cast<size_t>(i)]));
+        if (buf.size() < static_cast<size_t>(n)) { buf.resize(static_cast<size_t>(n)); dist.resize(static_cast<size_t>(n)); }
+        const int rc = g_ms.rockreg_nearest_n(sys, static_cast<void*>(item), p, ids.empty() ? nullptr : ids.data(), static_cast<int>(ids.size()),
+                                              max_m, n, buf.data(), dist.data());
+        if (rc < 0) { reg_fail(rc); return; }
+        for (int i = 0; i < std::min(rc, n); ++i) out.emplace_back(dist[static_cast<size_t>(i)], reg_conv(buf[static_cast<size_t>(i)]));
     }
 
     // WHAT: the rock of smallest surface distance (centre distance - radius, unread radius = REG_RAD_UNKNOWN_M) to p; skip_id > 0 is left out.
@@ -131,19 +157,24 @@ namespace
         MsRegRock m{};
         double s = 0.0;
         const int rc = g_ms.rockreg_nearest_surface(sys, p, skip_id, REG_RAD_UNKNOWN_M, &m, &s);
-        if (rc == -2) reg_unavail_log();
+        if (rc < 0) reg_fail(rc);
         if (rc != 1) return false;
         surf = s;
         r = reg_conv(m);
         return true;
     }
 
-    // WHAT: area check for the bubble and the path check: true when the area around p (m, system sys, one chunk each way) is seeded in MSCore.
-    //       false = unknown: the caller uses the rocks already known. Logs once until an area is seen ready.
+    // WHAT: area check for the bubble and the path check (as before: log only, the callers use the rocks already known): true when the area around p
+    //       (m, system sys, one chunk each way) is seeded in MSCore. Logs "REG area not ready" once until an area is seen ready.
     bool reg_area_seeded(int sys, const double p[3])
     {
         static bool logged = false;
-        if (reg_ok() && g_ms.rockreg_area_ready(sys, p) == 1) { logged = false; return true; }
+        if (reg_ok())
+        {
+            const int rc = g_ms.rockreg_area_ready(sys, p);
+            if (rc < 0) reg_fail(rc);
+            if (rc == 1) { logged = false; return true; }
+        }
         if (!logged)
         {
             logged = true;
@@ -152,7 +183,7 @@ namespace
         return false;
     }
 
-    // WHAT: registry state. All false / 0 when the registry is unavailable (missing export, -2), so mining waits.
+    // WHAT: registry state. All false / 0 when the registry is unavailable (missing export, any failed call in the last REG_FAIL_PAUSE_MS), so mining pauses.
     struct RegStateV
     {
         bool world_ok = false, world_wait = false, seeding = false, near_done = false;
@@ -165,9 +196,8 @@ namespace
         if (!reg_ok()) return r;
         MsRegState s{};
         const int rc = g_ms.rockreg_state(&s);
-        if (rc == -2) reg_unavail_log();
-        if (rc != 1) return r;
-        r.world_ok = s.world_ok != 0;
+        if (rc != 1) { reg_fail(rc < 0 ? rc : -1); return r; }
+        r.world_ok = s.world_ok != 0 && GetTickCount64() >= g_reg_bad_until;
         r.world_wait = s.world_wait != 0;
         r.seeding = s.seeding != 0;
         r.near_done = s.near_done != 0;
@@ -183,7 +213,7 @@ namespace
         if (!reg_ok()) return;
         const int rc = g_ms.rockreg_feed(owner, ships.empty() ? nullptr : ships.data(), static_cast<int>(ships.size()),
                                          targets.empty() ? nullptr : targets.data(), static_cast<int>(targets.size()));
-        if (rc == -2) reg_unavail_log();
+        if (rc < 0) reg_fail(rc);
     }
 
     // WHAT: a ship's centre (m), system and ok flag (run under seh_run). ok = false when the ship or its frame is unreadable.
@@ -229,7 +259,7 @@ namespace
         if (!sp.ok) return STR("error: ship unreadable");
         wchar_t out[256] = {0};
         const int rc = g_ms.rockreg_report(kind, sp.sys, sp.p, arg, out, 256);
-        if (rc == -2) reg_unavail_log();
+        if (rc < 0) reg_fail(rc);
         return rc == 1 ? std::wstring(out) : STR("error: rock registry report failed (rc ") + std::to_wstring(rc) + STR(")");
     }
 }
