@@ -1,14 +1,12 @@
 # MSDemoMods — Main Sequence Demo Mining Unit
 
-Current version: **0.3.2** (`mods/MiningBenchMod/mb_version.hpp`). A ship is a mining ship only with the Mining Bench block AND a mining laser (no laser = not in the Mining window list). 0.3.2 requires MSCore >= 0.8.15 (API 15); with an older MSCore it falls back to bench-only (no laser check).
+Current version: **0.3.2** (`mods/MiningBenchMod/mb_version.hpp`). A ship is a mining ship only with the Mining Bench block AND a mining laser (no laser = not in the Mining window list). 0.3.2 requires MSCore >= 0.8.15 (API 16).
 
-**Rock registry.** The table of every resource asteroid (seed from the save objects, disk cache, delete listener) lives in MSCore (API 16, MSCore >= 0.8.15, cache `Mods\MSCore
-ockreg\RockRegCache.bin`). The mod is a thin client (`mb_registry.hpp`, owner id 1 in the feed protocol) and needs MSCore >= 0.8.15 for it: 0.3.2 and newer REQUIRE MSCore >= 0.8.15: there is no bench-only fallback for the registry. With an older MSCore the mod logs `rock registry needs MSCore 0.8.15 (API 16)` once and mining waits. While MSCore rockreg is off or starting it logs `rock registry not ready (MSCore rockreg off or starting)` once, retries every call, and mining pauses until it answers. Both this mod and Fleet installed seed once, in MSCore. The old per-mod `MiningRegistryCache.bin` (in the mod dlls folder) is orphaned and safe to delete.
+**Rock registry.** The table of every resource asteroid (seed from the save objects, disk cache, delete listener) lives in MSCore (API 16, MSCore >= 0.8.15, cache `Mods\MSCore\rockreg\RockRegCache.bin`). The mod is a thin client (`mb_registry.hpp`, owner id 1 in the feed protocol) and needs MSCore >= 0.8.15 for it: 0.3.2 and newer REQUIRE MSCore >= 0.8.15: there is no bench-only fallback for the registry. With an older MSCore the mod logs `rock registry needs MSCore 0.8.15 (API 16)` once and mining waits. While MSCore rockreg is off or starting it logs `rock registry not ready (MSCore rockreg off or starting)` once, retries every call, and mining pauses until it answers. Both this mod and Fleet installed seed once, in MSCore. The old per-mod `MiningRegistryCache.bin` (in the mod dlls folder) is orphaned and safe to delete.
 
 **Ownership notice.** All game assets, textures, names, code, binaries and data belong to the game's developer and publisher. This is an unofficial fan mod; no ownership is claimed. Game-derived files in this repo are included only to build the mod (see `docs/ASSETS.md`). They are not covered by the MIT license.
 
-> **Build prerequisite.** `build.ps1` needs the RE-UE4SS source tree (MIT, not included). Clone https://github.com/UE4SS/RE-UE4SS to `build\RE-UE4SS` (init submodules) before building; for the asset packs also put retoc (MIT) in `tools
-etoc\`. Without them the build fails.
+> **Build prerequisite.** `build.ps1` needs the RE-UE4SS source tree (MIT, not included). Clone https://github.com/UE4SS/RE-UE4SS to `build\RE-UE4SS` (init submodules) before building; for the asset packs also put retoc (MIT) in `tools\retoc\`. Without them the build fails.
 
 ## License
 
@@ -17,8 +15,8 @@ MIT, see `LICENSE`. It covers our own code only.
 ## Requirements
 
 - Main Sequence Demo (Steam) and RE-UE4SS for the game (`Binaries\Win64\ue4ss`). RE-UE4SS (MIT) is fetched separately, not in this repo.
-- **MSCore**: separate repo at `<MSCore repo>`. `mods/MiningBenchMod/mb_mscore.hpp` must match its `msc_api.hpp` layout.
-- **MSCore 0.8.13** or newer (flight API 10) and **ShipControl 0.3.0** or newer (API level 4). ShipControl is its own repo, https://github.com/xxalex3xx97/ShipControl, pinned as the submodule `external/ShipControl` (tag in `deps.lock`). Clone with `git clone --recurse-submodules`, or run `git submodule update --init` in an existing checkout. Mining needs both: every ship move, speed guard and bubble ladder runs in ShipControl. Without ShipControl API 4, Start and Collect refuse with `error: ShipControl not installed or too old (needs API 4); update MSCore Manager`, and no loop starts.
+- **MSCore**: separate repo, https://github.com/xxalex3xx97/MSCore. `mods/MiningBenchMod/mb_mscore.hpp` must match its `msc_api.hpp` layout.
+- **MSCore 0.8.15** or newer (API 16) and **ShipControl 0.3.0** or newer (API level 4). ShipControl is its own repo, https://github.com/xxalex3xx97/ShipControl, pinned as the submodule `external/ShipControl` (tag in `deps.lock`). Clone with `git clone --recurse-submodules`, or run `git submodule update --init` in an existing checkout. Mining needs both: every ship move, speed guard and bubble ladder runs in ShipControl. Without ShipControl API 4, Start and Collect refuse with `error: ShipControl not installed or too old (needs API 4); update MSCore Manager`, and no loop starts.
 - retoc (MIT), fetched separately into `tools\retoc\`, only for the asset packs (`ue/MiningUnitUI/scripts/pack.ps1`, `mods/MiningUnitBlockPak`).
 - VS2022 BuildTools for the C++ build.
 
@@ -41,21 +39,21 @@ Build it, then press **F4**.
 
 ### 2. The F4 window
 
-Tabs: **Ship**, **Items**, **Operation**, **Log**, **Docks**. Pick the ship in the header selector (bench ships only).
+Five tabs (Ship, Items, Operation, Log, Docks; names follow the widget names, captions not verified). Pick the ship in the header selector (bench ships only).
 
 | Tab | Use it for |
 |---|---|
-| Ship | Start / Stop the loop, Collect floating ore, and the dock buttons (Dock, Undock, Refuel, Unload, Park). **Dock** asks "Dock at" first (the Dock picker). |
+| Ship | start / stop the loop, collect floating ore, and the dock buttons (Dock, Undock, Refuel, Unload, Park). **Dock** asks "Dock at" first (the Dock picker). |
 | Items | ordered ore queue: ore + amount (0 = until the cargo is full). Saved as `items=` for that ship. |
 | Operation | radius, mining distance, warp range, idle / wait / dock-hold seconds, per-fuel on / threshold / amount, Enabled, Repeat. Saved at once to `MiningBench.ini`. |
 | Log | last lines per ship (`MiningLog.txt`). |
 | Docks | dock queues, who waits where, per dock purpose. |
 
 Steps:
-1. Pick a ship, open **Items**, add an ore (e.g. Titanium).
-2. Open **Ship**, click **Start**. The ship mines, docks, unloads, refuels and goes back.
-3. Floating ore around? Click **Collect** (the button reads `Collect <n> ores`).
-4. **Stop** ends the loop.
+1. Pick a ship, open the Items tab, add an ore (e.g. Titanium).
+2. Open the Ship tab, click the loop start button. The ship mines, docks, unloads, refuels and goes back.
+3. Floating ore around? Click the collect button (it shows the floating ore count).
+4. The loop stop button ends the loop.
 
 ### 3. Name your docks with tags
 
@@ -86,7 +84,7 @@ Tags can also go in a **ship name** to set its queue (replaces the Items tab que
 
 ### 4. Refuel rule
 
-Each cycle the ship checks its enabled fuels (Operation tab; defaults: hydrogen on, warp on, deuterium off, threshold 300 each).
+Each cycle the ship checks its enabled fuels (Operation tab; per-fuel on / threshold / amount, see `MiningBench.ini`).
 - Any **enabled** fuel in cargo **below its threshold** -> refuel route.
 - Otherwise -> mining route (unload).
 
@@ -173,7 +171,7 @@ Use **MSCoreManager.exe** from [MSCore](https://github.com/xxalex3xx97/MSCore/re
 ## Known issues
 
 - Cached raw `UObject*` globals can go stale and crash the game (see Known risks).
-- Flee can trigger on idle ships: a ship can start a dock trip after a hull drop even when its loop was never started.
+- Reported earlier, not re-verified: flee may trigger on an idle ship (a dock trip after a hull drop with the loop never started).
 
 **Happy to remove or change anything you dislike.** Tell me which part and I will take it out or alter it.
 
@@ -196,6 +194,8 @@ Build and asset scripts read these environment variables. Unset = the built-in f
 | `mods/MiningBenchMod/` | the mining C++ mod (release): `dllmain.cpp` entry point, `mb_*.hpp` header-only split (each file starts with a WHAT / WHY / DEPENDS ON / USED BY banner) |
 | `mods/MiningBenchMod/mb_logic.hpp` | pure logic (config/INI parse, rule maths), no game or Windows calls; unit tested |
 | `mods/MiningBenchMod/mb_mining.hpp` | mining loop state machine per ship (`mine_step` and `st_*` states), status and log output |
+| `mods/MiningBenchMod/mb_docktags.hpp` | dock name tags (`[TITANIUM]`, `[MISC]`, `[PARKING]`, `[REFUEL]` ...) read from the dock walk; writes `DockTags.txt` / `DockFilter.txt` |
+| `mods/MiningBenchMod/mb_dockjob.hpp` | dock and undock jobs, one per ship (stages, leave-dock watch) |
 | `mods/MiningBenchMod/mb_net.hpp` | dock network: one queue per dock, reservations, holding slots (Docks tab data) |
 | `mods/MiningUnitUI/` | Mining Unit window (release Lua): `Scripts/main.lua` (F4 / ESC / F keys), `Scripts/wbp_loader.lua` (widget loader, data) |
 | `ue/MiningUnitUI/` | Unreal project for the window and the mining building block (art, paste trees, cook scripts) |
