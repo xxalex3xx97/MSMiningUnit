@@ -416,7 +416,8 @@ ship tick: if JumpAnimProgress &gt; 0: JumpAnimProgress++; UpdateJumpChargeProgr
 
 <!-- ============ MOD ============ -->
 <h2 id="mod">MiningBenchMod (C++ UE4SS mod)</h2>
-<p><b>Needs ShipControl 0.3.0 (API 4) and MSCore 0.8.13.</b> Every ship move, the speed guard and the bubble ladder run in ShipControl. Without it, Start and Collect refuse (see <a href="#sc-policy">ShipControl fail-closed policy</a>). The mining side keeps the mining facts: rock registry, docks, jobs, cargo and the beam hold.</p>
+<p><b>Needs ShipControl 0.3.0 (API 4) and MSCore 0.8.15 (API 16, rock registry).</b> Every ship move, the speed guard and the bubble ladder run in ShipControl. Without it, Start and Collect refuse (see <a href="#sc-policy">ShipControl fail-closed policy</a>). The rock registry lives in MSCore (API 16: seed, cache <code>Mods\MSCore
+ockreg\RockRegCache.bin</code>, radius reads; the old per-mod <code>MiningRegistryCache.bin</code> is orphaned and safe to delete); <code>mb_registry.hpp</code> is a thin client (owner id 1, feed every 0.25 s). The mining side keeps the mining facts: docks, jobs, cargo and the beam hold.</p>
 <p>Header-only split, one responsibility per file, each starting with a banner (WHAT / WHY / DEPENDS ON / USED BY / GAME FACTS). No game SDK headers: every field and function is found by reflection name. Include order (dependency order, <code>dllmain.cpp</code>): <code>mb_version, mb_common, mb_wd_logic, mb_pattern, mb_compat, mb_config, mb_ue, mb_mscore, mb_math, mb_docks, mb_docktags, mb_ships, mb_weapons, mb_orders, mb_filters, mb_cmdstate, mb_rocks, mb_registry, mb_shipctl, mb_steer, mb_net, mb_dockjob, mb_pin, mb_warp, mb_warpreal, mb_belt, mb_mining, mb_bubble, mb_chunkhold, mb_devcmd, mb_testcmd, mb_watchdog, mb_compat_run</code>; <code>dllmain.cpp</code> is only the entry point and the tick glue.</p>
 
 <h3 id="files">Source map</h3>
@@ -834,7 +835,7 @@ every engine tick (step 2):    move_tick(dt)          -&gt; SC_tick_frame(dt)   
 
 <h3 id="sc-not-held">What ShipControl does not hold</h3>
 <ul>
-<li>The rock registry (<code>mb_registry.hpp</code>): rock centres, radii, the blocker query (ship spheres included) is answered by mining through <code>first_blocker</code>.</li>
+<li>The rock registry (MSCore API 16, client <code>mb_registry.hpp</code>): rock centres and radii come from MSCore; the blocker query (ship spheres included) is answered by mining through <code>first_blocker</code>.</li>
 <li>The dock queue, dock jobs and holding slots (<code>mb_net.hpp</code>, <code>mb_dockjob.hpp</code>).</li>
 <li><code>path_guard</code>, <code>path_give_up</code>, the skip lists and the choice of a replan target (<code>mb_mining.hpp</code>). ShipControl only asks for them (<code>on_bubble</code> REPLAN / SKIP).</li>
 <li><code>beam_tick</code>: the laser hold for the 300 m zone (<code>mb_bubble.hpp</code>).</li>

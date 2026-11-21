@@ -116,6 +116,7 @@ namespace
         std::wstring col_why;                  // MS_COLLECT: reason it started (text shown at the end)
         double col_t = 0.0, col_stall = 0.0, col_scan_t = 0.0;   // MS_COLLECT: seconds total / since ore count dropped / since the last scan
         int col_last = -1;                     // MS_COLLECT: floating ore count at the last scan (-1 none, 0 scan failed)
+        int abandon_id = 0;                    // id of abandon (clear_rock_pick skip set; set and cleared with abandon)
         UObject* abandon = nullptr;            // rock left by the idle watchdog: SEEK and path retargets skip it until the next rock is reached (mined anyway when it is the only rock)
         int64_t rock_got = 0;                  // ore gained on the current rock since its mining started (reset at MS_MINE entry); depletion rule
         bool sweep = false;                    // MS_SWEEP active (collect ore action)
@@ -339,18 +340,16 @@ namespace
     // WHY: a ship must not pick or approach a rock inside another mining ship's laser zone.
     void zone_rocks_of_others(int sid, std::set<int>& out)
     {
-        const RockReg& t = reg_st().tab;
+        static std::vector<RegRock> rocks;   // scratch (game thread only)
         for (const auto& kv : g_ship_blk)
         {
             if (kv.first == sid) continue;
             const double* c = kv.second.c;
             const double lo[3] = {c[0] - SHIP_ZONE_M, c[1] - SHIP_ZONE_M, c[2] - SHIP_ZONE_M};
             const double hi[3] = {c[0] + SHIP_ZONE_M, c[1] + SHIP_ZONE_M, c[2] + SHIP_ZONE_M};
-            t.for_box(kv.second.sys, lo, hi, [&](size_t i)
-            {
-                const RegRock& rk = t.rocks[i];
+            reg_box(kv.second.sys, lo, hi, rocks);
+            for (const RegRock& rk : rocks)
                 if (rk.alive && in_ship_zone(rk.c, c)) out.insert(rk.id);
-            });
         }
     }
 
@@ -397,10 +396,10 @@ namespace
             rad_m = SHIP_ZONE_RAD_M;
             return true;
         }
-        const RegRock* r = reg_st().tab.get(id);
-        if (!r) return false;
-        std::copy(r->c, r->c + 3, c);
-        rad_m = reg_eff_rad(*r);
+        RegRock r;
+        if (!reg_get(id, r)) return false;
+        std::copy(r.c, r.c + 3, c);
+        rad_m = reg_eff_rad(r);
         return true;
     }
 
@@ -423,9 +422,11 @@ namespace
         ActFrame f;
         if (!act_frame(ship, f)) return 0;
         const double p[3] = {f.loc[0] / MV_UU_PER_M, f.loc[1] / MV_UU_PER_M, f.loc[2] / MV_UU_PER_M};
-        const RockReg& t = reg_st().tab;
-        const size_t i = t.nearest_surface(sys_id(ship), p, nullptr, surf_m, skip_id);
-        return i == RockReg::npos ? 0 : t.rocks[i].id;
+        RegRock r;
+        double s = 1e300;
+        if (!reg_nearest_surface(sys_id(ship), p, skip_id, s, r)) return 0;
+        surf_m = s;
+        return r.id;
     }
 
     // WHAT: the first rock (registry, all ores) whose blocking sphere cuts the segment a->b in system sys. skip_id is left out (0 = none).
@@ -436,16 +437,13 @@ namespace
     {
         static std::vector<PathRock> pr;   // scratch, reused (game thread only)
         static std::vector<int> ids;
+        static std::vector<RegRock> near_rocks;
         pr.clear();
         ids.clear();
-        const RockReg& t = reg_st().tab;
-        const double lo[3] = {std::min(a[0], b[0]) - PATH_RMAX_M, std::min(a[1], b[1]) - PATH_RMAX_M, std::min(a[2], b[2]) - PATH_RMAX_M};
-        const double hi[3] = {std::max(a[0], b[0]) + PATH_RMAX_M, std::max(a[1], b[1]) + PATH_RMAX_M, std::max(a[2], b[2]) + PATH_RMAX_M};
-        t.for_box(sys, lo, hi, [&](size_t i)
+        reg_seg(sys, a, b, PATH_RMAX_M, near_rocks);
+        for (const RegRock& rk : near_rocks)
         {
-            const RegRock& rk = t.rocks[i];
-            if (!rk.alive || rk.sys != sys || rk.id == skip_id) return;
-            if (path_box_reject(a, b, rk.c, PATH_RMAX_M) || seg_point_dist(a, b, rk.c) > PATH_RMAX_M) return;
+            if (!rk.alive || rk.sys != sys || rk.id == skip_id) continue;
             if (grace)
             {   // start grace: a rock that already overlaps the ship start is ignored when moving away or when the first 60 m are inside it
                 const double ab[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
@@ -455,14 +453,14 @@ namespace
                 const bool away = ab[0] * ac[0] + ab[1] * ac[1] + ab[2] * ac[2] <= 0.0;
                 const bool in60 = seg_point_dist(a, e60, rk.c) < block_r_m(reg_eff_rad(rk), clear_m);
                 const double sd = std::sqrt(ac[0] * ac[0] + ac[1] * ac[1] + ac[2] * ac[2]);
-                if (grace_ignore(sd, BUBBLE_SHIP_R_M, reg_eff_rad(rk), away, in60)) return;
+                if (grace_ignore(sd, BUBBLE_SHIP_R_M, reg_eff_rad(rk), away, in60)) continue;
             }
             PathRock p;
             std::copy(rk.c, rk.c + 3, p.c);
             p.r = block_r_m(reg_eff_rad(rk), clear_m) + (hazard && g_hazard_rocks.count(rk.id) ? HAZARD_CLEAR_EXTRA_M : 0.0);
             pr.push_back(p);
             ids.push_back(rk.id);
-        });
+        }
         for (const auto& kv : g_ship_blk)
         {   // bench ships in MS_MINE with the laser on: sphere of SHIP_ZONE_RAD_M; skip_id never applies to ships
             if (kv.first == self_sid || kv.second.sys != sys) continue;
@@ -1365,15 +1363,15 @@ namespace
         if (psk != g_path_skip.end()) skip.insert(psk->second.begin(), psk->second.end());
         rock_claims_of_others(sid, skip);
         zone_rocks_of_others(sid, skip);
-        const RockReg& t = reg_st().tab;
-        std::vector<std::pair<double, size_t>> cand;
-        t.nearest_n(sys, item, ps, m.abandon, &skip, PATH_PICK_M, PATH_CANDIDATES, cand);
+        static std::vector<std::pair<double, RegRock>> cand;   // scratch (game thread only)
+        if (m.abandon_id > 0) skip.insert(m.abandon_id);
+        reg_nearest_n(sys, item, ps, &skip, PATH_PICK_M, PATH_CANDIDATES, cand);
         int best = 0;
         double best_score = 1e300;
         bool best_blocked = false;
         for (const auto& pr : cand)
         {
-            const RegRock& rk = t.rocks[pr.second];
+            const RegRock& rk = pr.second;
             double so[3], tc[3], tr = 0.0, dist = 0.0, bc[3], rr = 0.0;
             if (!standoff_of(sid, rk.id, ps, so, tc, tr)) continue;
             const bool blocked = seg_blocker(sys, ps, so, rk.id, path_clear_m(), true, dist, bc, rr, true, sid) != 0;
@@ -1586,7 +1584,7 @@ namespace
             {
                 g_path_slow_log_ms = now;
                 log_line(STR("PATH slow ship=") + std::to_wstring(sid) + STR(" ms=") + std::to_wstring(static_cast<long long>(ms)) +
-                         STR(" rocks=") + std::to_wstring(reg_st().tab.rocks.size()));
+                         STR(" rocks=") + std::to_wstring(reg_state().rocks));
             }
         }
     }
@@ -1636,7 +1634,7 @@ namespace
                 }
                 appr_done(sid, STR("mining"));
                 m.st = MS_MINE; m.t = 0.0; m.idle_t = 0.0; m.chk_t = 0.0;
-                m.rock_got = 0; m.abandon = nullptr;   // new rock: its own ore count (depletion rule), no rock abandoned yet
+                m.rock_got = 0; m.abandon = nullptr; m.abandon_id = 0;   // new rock: its own ore count (depletion rule), no rock abandoned yet
                 mine_fire(sid, true);
                 mset(sid, m, STR("mining rock ") + std::to_wstring(m.rock), STR("Mining ") + item_name(c.resource) + STR(" (rock ") + std::to_wstring(m.rock) + STR(")"));
                 return;
@@ -1664,13 +1662,13 @@ namespace
             // every rock in range is no-yield (skipped): no belt = HALT (not an error); with a belt, warp to the next sector with the ore
             if (!rock && all_rocks_skipped(rock_in_range(sid, m.anchor, item, rad) != nullptr, false))
             {
-                m.abandon = nullptr; m.col_rock = 0; g_sel_rocks.erase(sid);
+                m.abandon = nullptr; m.abandon_id = 0; m.col_rock = 0; g_sel_rocks.erase(sid);
                 if (noy_all_halt(c.belt)) { mine_stop_work(ship, sid); if (park_try(ship, sid, m, STR("no rocks"))) return; m.st = MS_HALT; mset(sid, m, STR("rocks give no ore")); return; }
                 if (belt_go(ship, sid, m, c, item, true) != 0) return;   // warp started, or HALT / go home (no sector left)
             }
             // approach_rock picks the nearest rock by itself (no skip lists): pin the rock rock_in_range chose (it honours the no-yield and hazard skips)
             if (rock && m.col_rock == 0) g_sel_rocks[sid] = rock_id_of(rock);   // a cargo-full return keeps its own pin (set above)
-            if (!rock) m.abandon = nullptr;   // kept while a rock is picked: path_guard retargets must not return to it (cleared at MS_MINE entry)
+            if (!rock) { m.abandon = nullptr; m.abandon_id = 0; }   // kept while a rock is picked: path_guard retargets must not return to it (cleared at MS_MINE entry)
             if (rock) m.idle_polls = 0;
             m.no_rock = !rock;
             if (!rock)
@@ -1768,7 +1766,7 @@ namespace
         const double idle_lim = idle_limit(c.idle_seconds, rock_alive);
         if (idle_lim > 0.0 && m.idle_t >= idle_lim)
         {
-            m.abandon = rock_actor_by_id(m.rock);   // the next seek must not pick this rock again at once
+            m.abandon = rock_actor_by_id(m.rock); m.abandon_id = m.abandon ? m.rock : 0;   // the next seek must not pick this rock again at once
             // no-yield: counted for the ship (noy_run) and for this rock; NOY_SKIP_VISITS visits in a row = the rock is skipped by the search
             ++m.noy_run;
             if (m.rock > 0 && noy_skip_now(++m.noy_visits[m.rock]))
@@ -2653,18 +2651,18 @@ namespace
     // WHAT: no rock blocks point p (m) of system sys: each registry rock within 1 km is tested with block_r_m (scale + path clearance, hazard extra).
     bool landing_clear(int sys, const double p[3])
     {
-        const RockReg& t = reg_st().tab;
+        static std::vector<RegRock> rocks;   // scratch (game thread only)
         const double lo[3] = {p[0] - 1000.0, p[1] - 1000.0, p[2] - 1000.0}, hi[3] = {p[0] + 1000.0, p[1] + 1000.0, p[2] + 1000.0};
         bool clear = true;
-        t.for_box(sys, lo, hi, [&](size_t i)
+        reg_box(sys, lo, hi, rocks);
+        for (const RegRock& rk : rocks)
         {
-            if (!clear) return;
-            const RegRock& rk = t.rocks[i];
-            if (!rk.alive || rk.sys != sys) return;
+            if (!clear) break;
+            if (!rk.alive || rk.sys != sys) continue;
             const double d[3] = {rk.c[0] - p[0], rk.c[1] - p[1], rk.c[2] - p[2]};
             const double clr = path_clear_m() + (g_hazard_rocks.count(rk.id) ? HAZARD_CLEAR_EXTRA_M : 0.0);
             if (point_blocked(std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]), reg_eff_rad(rk), clr)) clear = false;
-        });
+        }
         return clear;
     }
 
@@ -2694,7 +2692,8 @@ namespace
             double so[3], tc[3], tr = 0.0;
             if (!standoff_of(sid, mv.rock_id, ps, so, tc, tr)) return false;
             std::copy(so, so + 3, T);
-            if (const RegRock* rr = reg_st().tab.get(mv.rock_id)) dsys = rr->sys;
+            RegRock rr;
+            if (reg_get(mv.rock_id, rr)) dsys = rr.sys;
             phase = "rock";
         }
         else return false;
@@ -3313,13 +3312,15 @@ namespace
         if (m.pos_ok)   // registry: no game call per rock
         {
             const double p[3] = {m.pos[0] / MV_UU_PER_M, m.pos[1] / MV_UU_PER_M, m.pos[2] / MV_UU_PER_M};
-            const RockReg& t = reg_st().tab;
-            std::vector<size_t> hits;
-            t.within(m.sys, p, COMBAT_NEAR_M, hits);
-            for (size_t i : hits)
+            static std::vector<RegRock> rocks;   // scratch (game thread only)
+            const double lo[3] = {p[0] - COMBAT_NEAR_M, p[1] - COMBAT_NEAR_M, p[2] - COMBAT_NEAR_M};
+            const double hi[3] = {p[0] + COMBAT_NEAR_M, p[1] + COMBAT_NEAR_M, p[2] + COMBAT_NEAR_M};
+            reg_box(m.sys, lo, hi, rocks);
+            for (const RegRock& rk : rocks)
             {
-                const double d[3] = {t.rocks[i].c[0] - p[0], t.rocks[i].c[1] - p[1], t.rocks[i].c[2] - p[2]};
-                v.push_back({std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]), STR("rock ") + std::to_wstring(t.rocks[i].id)});
+                const double d[3] = {rk.c[0] - p[0], rk.c[1] - p[1], rk.c[2] - p[2]};
+                const double dd = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+                if (dd <= COMBAT_NEAR_M) v.push_back({dd, STR("rock ") + std::to_wstring(rk.id)});
             }
         }
         std::vector<UObject*> ships;
@@ -4096,7 +4097,7 @@ namespace
     void mining_tick(double dt)
     {
         // world guard: no ship or rock object is read while the world is lost or a save loads (registry world state, mb_registry.hpp)
-        const RegState& wst = reg_st();
+        const RegStateV wst = reg_state();
         if (!mining_world_ready(wst.world_ok, wst.world_wait))
         {
             if (!g_mine_world_paused) { g_mine_world_paused = true; log_line(STR("MINE paused: world not ready (save loading or world lost)")); }

@@ -262,9 +262,9 @@ namespace
         {
             auto it = g_mvs.find(sid);
             if (it == g_mvs.end() || !out_m) return 0;
-            const RegRock* r = reg_st().tab.get(it->second.rock_id);
-            if (!r) return 0;
-            *out_m = remain_dist_m(ship_m, r->c, reg_eff_rad(*r));
+            RegRock r;
+            if (!reg_get(it->second.rock_id, r)) return 0;
+            *out_m = remain_dist_m(ship_m, r.c, reg_eff_rad(r));
             return 1;
         }
         catch (...) { return 0; }

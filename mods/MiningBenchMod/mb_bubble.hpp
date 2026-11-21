@@ -11,7 +11,7 @@
 // ORDER: bubble_tick runs in cmd_tick BEFORE mining_tick, so a finished waypoint is flown again before the state machine reads the job.
 // OUTPUT (ShipControl): log 'BUBBLE brake ship= phase= rock= ... -> replan|waypoint|skip|nudge|resume', 'BUBBLE slow ship= ms='.
 //         Dev (mining): bubble_status:<ship> and bubble_sim:<ship>:<rock_id> (read-only), both write MiningBubble.txt (mb_devcmd.hpp dispatch).
-// DEPENDS ON (exact, include order): mb_registry.hpp (reg_st, RockReg, reg_eff_rad, reg_abs_m), mb_mining.hpp (MineSt, g_mine, g_bench_ids, standoff_of,
+// DEPENDS ON (exact, include order): mb_registry.hpp (reg_state, reg_get, reg_box, reg_nearest_n, reg_eff_rad, reg_abs_m), mb_mining.hpp (MineSt, g_mine, g_bench_ids, standoff_of,
 //          path_guard, path_give_up, rock_actor_by_id, item_c, dock_add_m, sw_phase, SwOre), mb_steer.hpp (g_mvs, move_start, mv_cancel),
 //          mb_logic.hpp (bubble_*).
 // USED BY: mb_testcmd.hpp (cmd_tick, bubble_tick), mb_devcmd.hpp (bubble_dev).
@@ -260,7 +260,6 @@ namespace
         UObject* ship = find_by_id(STR("DMSPlayerShipObject"), sid);
         ActFrame f;
         if (!alive(ship) || !act_frame(ship, f)) return STR("error: ship not found");
-        const RockReg& t = reg_st().tab;
         const double p[3] = {f.loc[0] / MV_UU_PER_M, f.loc[1] / MV_UU_PER_M, f.loc[2] / MV_UU_PER_M};
         const double cr = bubble_ship_r(sid);
         const SpeedMon sp = spd_get(sid);
@@ -302,11 +301,11 @@ namespace
             std::snprintf(buf, sizeof(buf), "blocker now: %s\r\n",
                           bid ? (std::to_string(bid) + " dist=" + std::to_string(d) + " rad=" + std::to_string(rad)).c_str() : "none");
             out += buf;
-            std::vector<std::pair<double, size_t>> cands;
-            t.nearest_n(sys, nullptr, p, nullptr, nullptr, 20000.0, 10, cands);
+            std::vector<std::pair<double, RegRock>> cands;
+            reg_nearest_n(sys, nullptr, p, nullptr, 20000.0, 10, cands);
             for (const auto& pr : cands)
             {
-                const RegRock& rk = t.rocks[pr.second];
+                const RegRock& rk = pr.second;
                 const double dv[3] = {rk.c[0] - p[0], rk.c[1] - p[1], rk.c[2] - p[2]};
                 const double cd = std::max(1e-9, pr.first);
                 const double cosb = (f.fw[0] * dv[0] + f.fw[1] * dv[1] + f.fw[2] * dv[2]) / cd;
@@ -321,25 +320,26 @@ namespace
         }
         else
         {
-            const RegRock* tr = t.get(rock);
-            if (!tr) return STR("error: rock not in registry");
-            const double bt[3] = {tr->c[0], tr->c[1], tr->c[2]};
+            RegRock tr;
+            if (!reg_get(rock, tr)) return STR("error: rock not in registry");
+            const double bt[3] = {tr.c[0], tr.c[1], tr.c[2]};
             struct Hit { double t; int id; double d; double rad; };
             std::vector<Hit> hits;
             const double lo[3] = {std::min(p[0], bt[0]) - PATH_RMAX_M, std::min(p[1], bt[1]) - PATH_RMAX_M, std::min(p[2], bt[2]) - PATH_RMAX_M};
             const double hi[3] = {std::max(p[0], bt[0]) + PATH_RMAX_M, std::max(p[1], bt[1]) + PATH_RMAX_M, std::max(p[2], bt[2]) + PATH_RMAX_M};
             const double ll = std::max(1e-12, bub_dist(p, bt) * bub_dist(p, bt));
-            t.for_box(sys, lo, hi, [&](size_t i)
+            std::vector<RegRock> box;
+            reg_box(sys, lo, hi, box);
+            for (const RegRock& rk : box)
             {
-                const RegRock& rk = t.rocks[i];
-                if (!rk.alive || rk.sys != sys || rk.id == rock) return;
+                if (!rk.alive || rk.sys != sys || rk.id == rock) continue;
                 const double rr = block_r_m(reg_eff_rad(rk), bubble_clear_m(cr, g_cfg.bubble_clearance_m));
                 double pd = 0.0;
-                if (!seg_sphere_blocks(p, bt, rk.c, rr, pd)) return;
+                if (!seg_sphere_blocks(p, bt, rk.c, rr, pd)) continue;
                 const double w[3] = {rk.c[0] - p[0], rk.c[1] - p[1], rk.c[2] - p[2]};
                 const double dd[3] = {bt[0] - p[0], bt[1] - p[1], bt[2] - p[2]};
                 hits.push_back({(w[0] * dd[0] + w[1] * dd[1] + w[2] * dd[2]) / ll, rk.id, pd, reg_eff_rad(rk)});
-            });
+            }
             std::sort(hits.begin(), hits.end(), [](const Hit& x, const Hit& y) { return x.t < y.t; });
             std::snprintf(buf, sizeof(buf), "sim ship=%d rock=%d speed=%.2f m/s phase=seek (straight flight to the rock) blockers=%zu\r\n", sid, rock, v, hits.size());
             out += buf;

@@ -2,9 +2,13 @@
 
 Current version: **0.3.2** (`mods/MiningBenchMod/mb_version.hpp`). A ship is a mining ship only with the Mining Bench block AND a mining laser (no laser = not in the Mining window list). 0.3.2 requires MSCore >= 0.8.15 (API 15); with an older MSCore it falls back to bench-only (no laser check).
 
+**Rock registry.** The table of every resource asteroid (seed from the save objects, disk cache, delete listener) lives in MSCore (API 16, MSCore >= 0.8.15, cache `Mods\MSCore
+ockreg\RockRegCache.bin`). The mod is a thin client (`mb_registry.hpp`, owner id 1 in the feed protocol) and needs MSCore >= 0.8.15 for it: 0.3.2 and newer REQUIRE MSCore >= 0.8.15: there is no bench-only fallback for the registry. With an older MSCore the mod logs `rock registry needs MSCore 0.8.15 (API 16)` once and mining waits. While MSCore rockreg is off or starting it logs `rock registry not ready (MSCore rockreg off or starting)` once, retries every call, and mining pauses until it answers. Both this mod and Fleet installed seed once, in MSCore. The old per-mod `MiningRegistryCache.bin` (in the mod dlls folder) is orphaned and safe to delete.
+
 **Ownership notice.** All game assets, textures, names, code, binaries and data belong to the game's developer and publisher. This is an unofficial fan mod; no ownership is claimed. Game-derived files in this repo are included only to build the mod (see `docs/ASSETS.md`). They are not covered by the MIT license.
 
-> **Build prerequisite.** `build.ps1` needs the RE-UE4SS source tree (MIT, not included). Clone https://github.com/UE4SS/RE-UE4SS to `build\RE-UE4SS` (init submodules) before building; for the asset packs also put retoc (MIT) in `toolsetoc\`. Without them the build fails.
+> **Build prerequisite.** `build.ps1` needs the RE-UE4SS source tree (MIT, not included). Clone https://github.com/UE4SS/RE-UE4SS to `build\RE-UE4SS` (init submodules) before building; for the asset packs also put retoc (MIT) in `tools
+etoc\`. Without them the build fails.
 
 ## License
 

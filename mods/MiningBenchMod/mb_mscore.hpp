@@ -37,6 +37,14 @@ namespace
     static_assert(sizeof(MsFilterRow) == 16, "MsFilterRow layout must match msc_api.hpp");
     static_assert(sizeof(MsSector) == 584, "MsSector layout must match msc_api.hpp");
 
+    // ---- API 16 rock registry (layout = MSCore msc_api.hpp): metres, frame = chunk * 2048 + loc_raw / 65536 ----
+    struct MsRegRock { int32_t id; int32_t sys; int32_t flags; int32_t pad; double c[3]; double rad_m; };   // flags bit0 alive, bit1 radius known
+    struct MsRegShip { int32_t sid; int32_t sys; int32_t has_seg; int32_t pad; double p[3]; double q[3]; };   // has_seg: q valid
+    struct MsRegState { int32_t world_ok; int32_t world_wait; int32_t seeding; int32_t near_done; int64_t rocks; int64_t alive; uint64_t version; };
+    static_assert(sizeof(MsRegRock) == 48, "MsRegRock layout must match msc_api.hpp");
+    static_assert(sizeof(MsRegShip) == 64, "MsRegShip layout must match msc_api.hpp");
+    static_assert(sizeof(MsRegState) == 40, "MsRegState layout must match msc_api.hpp");
+
     // WHAT: resolved MSCore entry points. h is the loaded module (nullptr = not loaded).
     struct MsApi
     {
@@ -75,6 +83,16 @@ namespace
         int (*world_paused)() = nullptr;
         int (*ship_mining_caps)(void*) = nullptr;               // API 15
         int (*presence_step)(int, int, int, int*) = nullptr;    // API 15
+        // API 16 rock registry: all optional, missing = registry unavailable (mb_registry.hpp logs once)
+        int (*rockreg_feed)(int, const MsRegShip*, int, const int*, int) = nullptr;
+        int (*rockreg_state)(MsRegState*) = nullptr;
+        int (*rockreg_get)(int, MsRegRock*) = nullptr;
+        int (*rockreg_box)(int, const double*, const double*, MsRegRock*, int) = nullptr;
+        int (*rockreg_seg)(int, const double*, const double*, double, MsRegRock*, int) = nullptr;
+        int (*rockreg_nearest_n)(int, void*, const double*, const int*, int, double, int, MsRegRock*, double*) = nullptr;
+        int (*rockreg_nearest_surface)(int, const double*, int, double, MsRegRock*, double*) = nullptr;
+        int (*rockreg_area_ready)(int, const double*) = nullptr;
+        int (*rockreg_report)(int, int, const double*, double, wchar_t*, int) = nullptr;
     };
     MsApi g_ms;
 
@@ -124,6 +142,18 @@ namespace
             m.world_paused = reinterpret_cast<int (*)()>(GetProcAddress(h, "MSCore_world_paused"));
             m.ship_mining_caps = reinterpret_cast<int (*)(void*)>(GetProcAddress(h, "MSCore_ship_mining_caps"));
             m.presence_step = reinterpret_cast<int (*)(int, int, int, int*)>(GetProcAddress(h, "MSCore_presence_step"));
+            if (m.api && m.api() >= 16)
+            {
+                m.rockreg_feed = reinterpret_cast<int (*)(int, const MsRegShip*, int, const int*, int)>(GetProcAddress(h, "MSCore_rockreg_feed"));
+                m.rockreg_state = reinterpret_cast<int (*)(MsRegState*)>(GetProcAddress(h, "MSCore_rockreg_state"));
+                m.rockreg_get = reinterpret_cast<int (*)(int, MsRegRock*)>(GetProcAddress(h, "MSCore_rockreg_get"));
+                m.rockreg_box = reinterpret_cast<int (*)(int, const double*, const double*, MsRegRock*, int)>(GetProcAddress(h, "MSCore_rockreg_box"));
+                m.rockreg_seg = reinterpret_cast<int (*)(int, const double*, const double*, double, MsRegRock*, int)>(GetProcAddress(h, "MSCore_rockreg_seg"));
+                m.rockreg_nearest_n = reinterpret_cast<int (*)(int, void*, const double*, const int*, int, double, int, MsRegRock*, double*)>(GetProcAddress(h, "MSCore_rockreg_nearest_n"));
+                m.rockreg_nearest_surface = reinterpret_cast<int (*)(int, const double*, int, double, MsRegRock*, double*)>(GetProcAddress(h, "MSCore_rockreg_nearest_surface"));
+                m.rockreg_area_ready = reinterpret_cast<int (*)(int, const double*)>(GetProcAddress(h, "MSCore_rockreg_area_ready"));
+                m.rockreg_report = reinterpret_cast<int (*)(int, int, const double*, double, wchar_t*, int)>(GetProcAddress(h, "MSCore_rockreg_report"));
+            }
         }
         const bool full = m.api && m.add_input && m.view_send && m.throttle && m.find_item && m.find_dock && m.new_order &&
                           m.update_order && m.delete_order && m.autopilot && m.skip_to && m.filter_send && m.filters_read &&
