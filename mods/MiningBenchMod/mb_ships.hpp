@@ -67,7 +67,7 @@ namespace
     // WHY: a destroyed ship's UObject can still be listed and readable (log 2026-11-04: ships kept showing in the bench and the selector), so the scan decides, not the object's alive().
     // WHY bench_prev: the scan is the only place that sees the list each time; the mining state is cleared by the caller (mine_set_bench -> mine_forget_ship).
     // It calls FindAllOf on every call, so the caller runs it on a timer, not every frame.
-    //       Laser gate: a ship with the bench is in the mining list while MSCore_presence_step accepts its read (bench_read: bench + MiningLaser). A ship the gate dropped goes to lost_laser_ids with its bench flag (only that list halts).
+    //       Laser gate: a ship with the bench is in the mining list while MSCore_presence_step accepts its read (bench_read: bench + MiningLaser). An unknown laser read (caps -1) accepts the bench alone (gate_accept HOLD), listed or not. A ship the gate dropped goes to lost_laser_ids with its bench flag (only that list halts).
     //       No laser check (MSCore export missing, load failed or module off): the released behaviour, the bench block alone.
     void scan_and_log(std::vector<std::pair<UObject*, int>>& bench_ships, std::vector<int>& dead_ids, std::vector<std::pair<int, bool>>& lost_laser_ids)
     {
@@ -103,7 +103,11 @@ namespace
             {
                 int caps = -1;
                 if (lavail == 0 && bench) { CapsCtx cc{ship, -1}; caps = seh_run(caps_read_fn, &cc) ? cc.caps : -1; }
-                if (laser_gate_mode(lavail == 0, caps) == LASER_FALLBACK_BENCH_ONLY)
+                // no bench = read 0 (absent): debounced by presence_step, so CHECK, never HOLD (HOLD accepts a bench ship)
+                LaserGateMode mode = LASER_CHECK;
+                if (lavail != 0) mode = LASER_FALLBACK_BENCH_ONLY;
+                else if (bench) mode = laser_gate_mode(true, caps);
+                if (mode == LASER_FALLBACK_BENCH_ONLY)
                 {
                     if (caps == -2) ms_laser_fallback_log(STR("module off"));
                     has = bench;   // released behaviour: the bench block alone, no laser state, no halt
@@ -113,7 +117,8 @@ namespace
                 {
                     const bool listed = g_laser_listed.count(id) > 0;
                     int bad = g_laser_bad[id];
-                    has = ms_presence_step(bad, listed ? 1 : 0, bench_read(bench, caps), &bad) == 1;
+                    const bool pres = ms_presence_step(bad, listed ? 1 : 0, bench_read(bench, caps), &bad) == 1;   // read -1 (HOLD) = state held
+                    has = gate_accept(bench, mode, listed, pres);
                     g_laser_bad[id] = bad;
                     if (has) g_laser_listed.insert(id);
                     else

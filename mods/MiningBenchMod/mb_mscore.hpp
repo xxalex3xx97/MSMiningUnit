@@ -224,16 +224,19 @@ namespace
         catch (...) { return false; }
     }
 
-    // WHAT: laser check availability (MSCore API 15), resolved once: 0 = available, 1 = MSCore load failed, 2 = export missing (MSCore older than 0.8.15).
-    // WHY: the per-ship path must not load or allocate; the first call decides and the result is cached. Game thread only.
+    // WHAT: laser check availability (MSCore API 15): 0 = available, 1 = MSCore load failed, 2 = export missing (MSCore older than 0.8.15).
+    // WHY: 0 and 2 are final and cached for the process. 1 is not cached: the load is retried at most every 10 s (MSCore may be installed later). Game thread only.
     int ms_laser_avail()
     {
-        static const int avail = []() {
-            std::wstring err;
-            if (!ms_load(err)) return 1;
-            return (g_ms.ship_mining_caps && g_ms.presence_step) ? 0 : 2;
-        }();
-        return avail;
+        static int cached = -1;
+        static ULONGLONG next_try = 0;
+        if (cached >= 0) return cached;
+        const ULONGLONG now = GetTickCount64();
+        if (next_try && now < next_try) return 1;
+        std::wstring err;
+        if (!ms_load(err)) { next_try = now + 10000; return 1; }
+        cached = (g_ms.ship_mining_caps && g_ms.presence_step) ? 0 : 2;
+        return cached;
     }
 
     // WHAT: the one 'laser check unavailable' line (why = 'load failed' / 'missing export' / 'module off'). Logged once per process.

@@ -2291,6 +2291,32 @@ static void t_laser_gate()
     CHECK(bench_read(true, 0) == 0);
     CHECK(bench_read(true, 1) == 1);
     CHECK(bench_read(true, 2) == 0);
+    // gate_accept(bench, mode, listed, presence_accepted): FALLBACK = bench; HOLD = bench (unknown accepted, listed or not); CHECK = presence
+    // bench, mode, listed, pres -> has
+    CHECK(gate_accept(false, LASER_FALLBACK_BENCH_ONLY, false, false) == false);
+    CHECK(gate_accept(false, LASER_FALLBACK_BENCH_ONLY, false, true) == false);
+    CHECK(gate_accept(false, LASER_FALLBACK_BENCH_ONLY, true, false) == false);
+    CHECK(gate_accept(false, LASER_FALLBACK_BENCH_ONLY, true, true) == false);
+    CHECK(gate_accept(true, LASER_FALLBACK_BENCH_ONLY, false, false) == true);
+    CHECK(gate_accept(true, LASER_FALLBACK_BENCH_ONLY, false, true) == true);
+    CHECK(gate_accept(true, LASER_FALLBACK_BENCH_ONLY, true, false) == true);
+    CHECK(gate_accept(true, LASER_FALLBACK_BENCH_ONLY, true, true) == true);
+    CHECK(gate_accept(false, LASER_HOLD, false, false) == false);
+    CHECK(gate_accept(false, LASER_HOLD, false, true) == false);
+    CHECK(gate_accept(false, LASER_HOLD, true, false) == false);
+    CHECK(gate_accept(false, LASER_HOLD, true, true) == false);
+    CHECK(gate_accept(true, LASER_HOLD, false, false) == true);    // never listed, unknown read: accepted as bench-only
+    CHECK(gate_accept(true, LASER_HOLD, false, true) == true);
+    CHECK(gate_accept(true, LASER_HOLD, true, false) == true);     // listed, unknown read: stays listed
+    CHECK(gate_accept(true, LASER_HOLD, true, true) == true);
+    CHECK(gate_accept(false, LASER_CHECK, false, false) == false);  // presence decides (debounce)
+    CHECK(gate_accept(false, LASER_CHECK, false, true) == true);    // listed, bench absent, still inside the debounce
+    CHECK(gate_accept(false, LASER_CHECK, true, false) == false);
+    CHECK(gate_accept(false, LASER_CHECK, true, true) == true);
+    CHECK(gate_accept(true, LASER_CHECK, false, false) == false);   // bench, no laser (read 0), never listed: rejected
+    CHECK(gate_accept(true, LASER_CHECK, false, true) == true);     // bench + laser (read 1)
+    CHECK(gate_accept(true, LASER_CHECK, true, false) == false);    // listed, no laser for 3 reads: dropped
+    CHECK(gate_accept(true, LASER_CHECK, true, true) == true);
 }
 
 int main()

@@ -684,6 +684,17 @@ namespace
         return LASER_CHECK;
     }
 
+    // WHAT: has (in the mining list) for one live ship. FALLBACK = bench alone. HOLD (caps unknown) = bench alone too: an unknown read accepts a bench ship, listed or not.
+    //       CHECK = presence_accepted (MSCore_presence_step debounce; also used for a bench-less read, which is 0 and debounced).
+    // WHY: a ship with a bench and an unreadable laser stays usable; a ship without a laser is still dropped by the debounce once it reads 0.
+    // NOTE: listed is not needed by any mode (kept in the signature for the scan's call shape).
+    inline bool gate_accept(bool bench, LaserGateMode mode, bool listed, bool presence_accepted)
+    {
+        (void)listed;
+        if (mode == LASER_FALLBACK_BENCH_ONLY || mode == LASER_HOLD) return bench;
+        return presence_accepted;
+    }
+
     // WHAT: presence read for MSCore_presence_step: no bench block = absent (0); else mining_read_from_caps.
     // WHY: a ship that loses the bench or the laser is absent for the debounce; one transient bench read of 0 does not drop it.
     inline int bench_read(bool bench, int caps)
