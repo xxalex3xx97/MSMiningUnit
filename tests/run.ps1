@@ -1,5 +1,5 @@
 # Run every unit/static check (no game needed). Usage: .\tests\run.ps1
-# Steps: test_logic.exe, run_compat.ps1, test_gen_paste.py, test_asset_refs.py, Lua syntax (luac -p).
+# Steps: test_logic.exe, run_compat.ps1, test_gen_paste.py, test_asset_refs.py, test_deps.py, Lua syntax (luac -p).
 # Exit code 0 = no FAIL (SKIP is allowed), non-zero = at least one step FAILED.
 $ErrorActionPreference = 'Continue'
 Set-Location (Split-Path -Parent $PSScriptRoot)
@@ -19,7 +19,7 @@ Write-Host "== test_logic" -ForegroundColor Cyan
 cmd /c "`"$bt\VC\Auxiliary\Build\vcvars64.bat`" >nul 2>nul && set" | ForEach-Object {
     if ($_ -match '^([^=]+)=(.*)$') { Set-Item "env:$($Matches[1])" $Matches[2] }
 }
-cl /nologo /EHsc /std:c++17 /W3 /I mods\MiningBenchMod /I mods\ShipControl tests\test_logic.cpp /Fe:tests\out\test_logic.exe /Fo:tests\out\
+cl /nologo /EHsc /std:c++17 /W3 /I mods\MiningBenchMod /I external\ShipControl tests\test_logic.cpp /Fe:tests\out\test_logic.exe /Fo:tests\out\
 if ($LASTEXITCODE -ne 0) {
     Add-Row 'test_logic' 'FAIL' 'compile failed'
 } else {
@@ -27,18 +27,6 @@ if ($LASTEXITCODE -ne 0) {
     $out | ForEach-Object { Write-Host $_ }
     $line = ($out | Where-Object { $_ -match '^test_logic: ' } | Select-Object -Last 1)
     if ($LASTEXITCODE -eq 0) { Add-Row 'test_logic' 'PASS' $line } else { Add-Row 'test_logic' 'FAIL' $line }
-}
-
-# ---- 1b. test_shipcontrol (ShipControl owner registry, sc_owner.hpp) ----
-Write-Host "== test_shipcontrol" -ForegroundColor Cyan
-cl /nologo /EHsc /std:c++17 /W3 /I mods\ShipControl tests\test_shipcontrol.cpp /Fe:tests\out\test_shipcontrol.exe /Fo:tests\out\
-if ($LASTEXITCODE -ne 0) {
-    Add-Row 'test_shipcontrol' 'FAIL' 'compile failed'
-} else {
-    $out = & .\tests\out\test_shipcontrol.exe 2>&1
-    $out | ForEach-Object { Write-Host $_ }
-    $line = ($out | Where-Object { $_ -match '^test_shipcontrol: ' } | Select-Object -Last 1)
-    if ($LASTEXITCODE -eq 0) { Add-Row 'test_shipcontrol' 'PASS' $line } else { Add-Row 'test_shipcontrol' 'FAIL' $line }
 }
 
 # ---- 2. compat checks (pattern + compat gate) ----
@@ -60,7 +48,7 @@ function Run-Py($step, $script) {
 }
 Run-Py 'test_gen_paste' 'tests\test_gen_paste.py'
 Run-Py 'test_asset_refs' 'tests\test_asset_refs.py'
-Run-Py 'test_abi' 'tests\test_abi.py'
+Run-Py 'test_deps' 'tests\test_deps.py'
 
 # ---- 4. Lua syntax (luac -p) ----
 Write-Host "== lua syntax" -ForegroundColor Cyan

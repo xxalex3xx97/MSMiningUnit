@@ -1,6 +1,6 @@
-# Build a mod DLL, optionally install into the game. Usage: .\build.ps1 [-Mod MiningBenchMod|ShipControl] [-Install]
+# Build a mod DLL, optionally install into the game. Usage: .\build.ps1 [-Mod MiningBenchMod] [-Install]
 param(
-    [ValidateSet('MiningBenchMod', 'ShipControl')][string]$Mod = 'MiningBenchMod',
+    [ValidateSet('MiningBenchMod')][string]$Mod = 'MiningBenchMod',
     [switch]$Install
 )
 $ErrorActionPreference = 'Continue'  # native tools write warnings to stderr; failures are checked via exit codes below
@@ -16,25 +16,17 @@ $utf8 = New-Object System.Text.UTF8Encoding $false
 $mirror = "$re\cppmods\$Mod"
 New-Item -ItemType Directory -Force $mirror | Out-Null
 Get-ChildItem "$src\mods\$Mod" -File | Where-Object { $_.Extension -in '.cpp', '.hpp', '.h', '.txt' } | Copy-Item -Destination $mirror -Force
-# MiningBenchMod calls ShipControl through its C ABI header (mb_shipctl.hpp includes sc_api.h)
+# MiningBenchMod calls ShipControl through its C ABI header (mb_shipctl.hpp includes sc_api.h).
+# ShipControl is the pinned submodule external\ShipControl (tag in deps.lock); its headers are copied here.
 if ($Mod -eq 'MiningBenchMod') {
-    Copy-Item "$src\mods\ShipControl\sc_api.h" -Destination $mirror -Force
-    Copy-Item "$src\mods\ShipControl\sc_logic_path.hpp" -Destination $mirror -Force   # mb_logic.hpp includes the path/warp geometry
-    Copy-Item "$src\mods\ShipControl\sc_logic_steer.hpp" -Destination $mirror -Force  # mb_logic.hpp includes the approach/low-power rules
-    Copy-Item "$src\mods\ShipControl\sc_logic_bubble.hpp" -Destination $mirror -Force  # mb_logic.hpp includes the bubble ladder rules (SC3-C)
-    Copy-Item "$src\mods\ShipControl\sc_flight_abi.h" -Destination $mirror -Force     # MsFlight ABI copy (SC6-D3a), mining reads flights through it
-}
-
-# ShipControl is not in the mirror's cppmods\CMakeLists.txt yet: add it once
-if ($Mod -eq 'ShipControl') {
-    $cm = "$re\cppmods\CMakeLists.txt"
-    $cmTxt = Get-Content $cm -Raw
-    if ($cmTxt -notmatch 'add_subdirectory\("ShipControl"\)') {
-        if ($cmTxt -notmatch 'add_subdirectory\("MiningBenchMod"\)') { throw "add_subdirectory(MiningBenchMod) not found in cppmods\CMakeLists.txt" }
-        $cmTxt = $cmTxt -replace '(add_subdirectory\("MiningBenchMod"\)\r?\n)', "`$1add_subdirectory(`"ShipControl`")`n"
-        [IO.File]::WriteAllText($cm, $cmTxt, $utf8)
-        "Added add_subdirectory(ShipControl) to cppmods\CMakeLists.txt"
+    foreach ($f in 'sc_api.h', 'sc_logic_path.hpp', 'sc_logic_steer.hpp', 'sc_logic_bubble.hpp', 'sc_flight_abi.h') {
+        if (-not (Test-Path "$src\external\ShipControl\$f")) { throw "external\ShipControl is not initialised: run git submodule update --init" }
     }
+    Copy-Item "$src\external\ShipControl\sc_api.h" -Destination $mirror -Force
+    Copy-Item "$src\external\ShipControl\sc_logic_path.hpp" -Destination $mirror -Force   # mb_logic.hpp includes the path/warp geometry
+    Copy-Item "$src\external\ShipControl\sc_logic_steer.hpp" -Destination $mirror -Force  # mb_logic.hpp includes the approach/low-power rules
+    Copy-Item "$src\external\ShipControl\sc_logic_bubble.hpp" -Destination $mirror -Force  # mb_logic.hpp includes the bubble ladder rules (SC3-C)
+    Copy-Item "$src\external\ShipControl\sc_flight_abi.h" -Destination $mirror -Force     # MsFlight ABI copy (SC6-D3a), mining reads flights through it
 }
 
 # load the VS environment into this session
@@ -66,7 +58,6 @@ if ($Install) {
     $ver = $Matches[1]
     $modDir = Split-Path $game -Parent
     [IO.File]::WriteAllText("$modDir\mscore.mod", "name=$Mod`nrepo=xxalex3xx97/$Mod`nversion=$ver`n", $utf8)
-    if ($Mod -eq 'ShipControl' -and -not (Test-Path "$modDir\enabled.txt")) { [IO.File]::WriteAllText("$modDir\enabled.txt", '', $utf8) }
     $files = @("Mods/$Mod/dlls/main.dll", "Mods/$Mod/mscore.mod")
     if (Test-Path "$modDir\enabled.txt") { $files += "Mods/$Mod/enabled.txt" }
     $ilDir = "$gameDir\Binaries\Win64\ue4ss\Mods\MSCore\installed"

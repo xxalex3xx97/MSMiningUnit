@@ -1,0 +1,6 @@
+shipcontrol_repo=xxalex3xx97/ShipControl
+shipcontrol_tag=v0.3.1
+shipcontrol_commit=ac0751f6944f09b8ac5a6251bb5412c2de485d01
+shipcontrol_version=0.3.1
+sc_api_level=4
+requires_min=xxalex3xx97/ShipControl@0.3.0

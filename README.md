@@ -14,7 +14,7 @@ MIT, see `LICENSE`. It covers our own code only.
 
 - Main Sequence Demo (Steam) and RE-UE4SS for the game (`Binaries\Win64\ue4ss`). RE-UE4SS (MIT) is fetched separately, not in this repo.
 - **MSCore**: separate repo at `<MSCore repo>`. `mods/MiningBenchMod/mb_mscore.hpp` must match its `msc_api.hpp` layout.
-- **MSCore 0.8.13** or newer (flight API 10) and **ShipControl 0.3.0** (API level 4, `mods/ShipControl/`, see `mods/ShipControl/README.md`). Mining needs both: every ship move, speed guard and bubble ladder runs in ShipControl. Without ShipControl API 4, Start and Collect refuse with `error: ShipControl not installed or too old (needs API 4); update MSCore Manager`, and no loop starts.
+- **MSCore 0.8.13** or newer (flight API 10) and **ShipControl 0.3.0** or newer (API level 4). ShipControl is its own repo, https://github.com/xxalex3xx97/ShipControl, pinned as the submodule `external/ShipControl` (tag in `deps.lock`). Clone with `git clone --recurse-submodules`, or run `git submodule update --init` in an existing checkout. Mining needs both: every ship move, speed guard and bubble ladder runs in ShipControl. Without ShipControl API 4, Start and Collect refuse with `error: ShipControl not installed or too old (needs API 4); update MSCore Manager`, and no loop starts.
 - retoc (MIT), fetched separately into `tools\retoc\`, only for the asset packs (`ue/MiningUnitUI/scripts/pack.ps1`, `mods/MiningUnitBlockPak`).
 - VS2022 BuildTools for the C++ build.
 

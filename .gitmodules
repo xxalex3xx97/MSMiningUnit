@@ -1,0 +1,3 @@
+[submodule "external/ShipControl"]
+	path = external/ShipControl
+	url = https://github.com/xxalex3xx97/ShipControl.git
