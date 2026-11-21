@@ -2277,6 +2277,22 @@ static void t_mining_read_from_caps()
     CHECK(mining_read_from_caps(3) == 1);
 }
 
+static void t_laser_gate()
+{
+    // laser gate mode: no export or module off = bench-only fallback; unknown read = hold; 0..3 = check
+    CHECK(laser_gate_mode(false, 1) == LASER_FALLBACK_BENCH_ONLY);
+    CHECK(laser_gate_mode(true, -2) == LASER_FALLBACK_BENCH_ONLY);
+    CHECK(laser_gate_mode(true, -1) == LASER_HOLD);
+    CHECK(laser_gate_mode(true, 0) == LASER_CHECK);
+    CHECK(laser_gate_mode(true, 3) == LASER_CHECK);
+    // presence read: no bench block = absent, else the caps mapping
+    CHECK(bench_read(false, 3) == 0);
+    CHECK(bench_read(true, -1) == -1);
+    CHECK(bench_read(true, 0) == 0);
+    CHECK(bench_read(true, 1) == 1);
+    CHECK(bench_read(true, 2) == 0);
+}
+
 int main()
 {
     const Case cases[] = {
@@ -2312,7 +2328,7 @@ int main()
         {"rock_depleted", t_rock_depleted},
         {"reg_table", t_reg_table}, {"reg_events", t_reg_events}, {"reg_world_track", t_reg_world_track}, {"reg_within_nearest", t_reg_within_nearest}, {"reg_surface_block", t_reg_surface_block_radius},
         {"ship_zone", t_ship_zone},
-        {"mining_read_from_caps", t_mining_read_from_caps},
+        {"mining_read_from_caps", t_mining_read_from_caps}, {"laser_gate", t_laser_gate},
         {"approach_throttle", t_approach_throttle}, {"bubble", t_bubble}, {"bubble_ladder", t_bubble_ladder}, {"bubble_scope", t_bubble_scope}, {"tune_geom", t_tune_geom}, {"flight_warp", t_flight_warp}, {"sweep_return_flee", t_sweep_return_flee}, {"path2_rules", t_path2_rules},
         {"reg_targeted_ore_budget", t_reg_targeted_ore_budget}, {"reg_bench", t_reg_bench}, {"reg_abs_m", t_reg_abs_m},
         {"box_probe_parse", t_box_probe_parse}, {"box_probe_uu_fwd", t_box_probe_uu_fwd}, {"reg_check_summary", t_reg_check_summary},

@@ -3793,7 +3793,13 @@ namespace
 
     // WHAT: bench list of this scan. dead: destroyed ships (state dropped). lost_laser: ships the laser gate just removed (halted, one log line each).
     //       Nothing else halts by list membership: a ship missing from one scan is not stopped.
-    void mine_set_bench(const std::vector<std::pair<UObject*, int>>& bench, const std::vector<int>& dead, const std::vector<int>& lost_laser)
+    // WHAT of the status text: the laser drop's halt reason. bench = the bench block was still there (only the laser was missing).
+    std::wstring laser_drop_text(bool bench)
+    {
+        return bench ? STR("no mining laser: removed from the mining list") : STR("no Mining Bench: removed from the mining list");
+    }
+
+    void mine_set_bench(const std::vector<std::pair<UObject*, int>>& bench, const std::vector<int>& dead, const std::vector<std::pair<int, bool>>& lost_laser)
     {
         for (int sid : dead) mine_forget_ship(sid);   // before the rebuild: a destroyed ship is in neither list below
         g_bench_ids.clear();
@@ -3809,7 +3815,13 @@ namespace
         std::vector<int> ids;
         for (const auto& p : bench) if (p.second > 0) ids.push_back(p.second);
         chunk_hold_keep_only(ids);   // a ship that left the bench drops its chunk hold
-        for (int sid : lost_laser) mine_halt_why(sid, STR("no mining laser: removed from the mining list"));
+        // a ship accepted again: its own laser-drop status text goes back to idle (other texts are left alone)
+        for (const auto& p : bench)
+        {
+            auto it = g_mine.find(p.second);
+            if (it != g_mine.end() && (it->second.result == laser_drop_text(true) || it->second.result == laser_drop_text(false))) it->second.result = STR("idle");
+        }
+        for (const auto& l : lost_laser) mine_halt_why(l.first, laser_drop_text(l.second));
     }
 
     // STOP ALL: hard stop, latch HALT and run=false; Start loop restarts.

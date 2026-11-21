@@ -67,13 +67,16 @@ namespace
     // WHY: a destroyed ship's UObject can still be listed and readable (log 2026-11-04: ships kept showing in the bench and the selector), so the scan decides, not the object's alive().
     // WHY bench_prev: the scan is the only place that sees the list each time; the mining state is cleared by the caller (mine_set_bench -> mine_forget_ship).
     // It calls FindAllOf on every call, so the caller runs it on a timer, not every frame.
-    //       Laser gate: a ship with the bench is in the mining list while MSCore_presence_step accepts its MSCore_ship_mining_caps read. A ship the gate dropped goes to lost_laser_ids (only that list halts).
-    void scan_and_log(std::vector<std::pair<UObject*, int>>& bench_ships, std::vector<int>& dead_ids, std::vector<int>& lost_laser_ids)
+    //       Laser gate: a ship with the bench is in the mining list while MSCore_presence_step accepts its read (bench_read: bench + MiningLaser). A ship the gate dropped goes to lost_laser_ids with its bench flag (only that list halts).
+    //       No laser check (MSCore export missing, load failed or module off): the released behaviour, the bench block alone.
+    void scan_and_log(std::vector<std::pair<UObject*, int>>& bench_ships, std::vector<int>& dead_ids, std::vector<std::pair<int, bool>>& lost_laser_ids)
     {
         std::vector<UObject*> ships;
         UObjectGlobals::FindAllOf(STR("DMSPlayerShipObject"), ships);
         std::string txt;
         std::set<int> seen, bench_now;
+        const int lavail = ms_laser_avail();   // 0 = check, else bench-only; resolved once
+        if (lavail) ms_laser_fallback_log(lavail == 1 ? STR("load failed") : STR("missing export"));
         for (UObject* ship : ships)
         {
             if (!ship) continue;
@@ -94,28 +97,37 @@ namespace
                 g_dead_n[id] = dead_scan_next(g_dead_n[id], hull0);
             }
             const bool dead = id > 0 && dead_confirmed(g_dead_n[id]);
-            // laser gate: only a live ship with a bench and id > 0 is read. id <= 0, dead or no bench = not accepted, state dropped (no halt: only a laser drop halts).
+            // laser gate: id > 0 and live only. id <= 0 = never accepted, no state. Dead = state erased. A bench == false read never erases state (it is absent, debounced).
             bool has = false;
-            if (id > 0 && bench && !dead)
+            if (id > 0 && !dead)
             {
-                CapsCtx cc{ship, -1};
-                const int caps = seh_run(caps_read_fn, &cc) ? cc.caps : -1;
-                const bool listed = g_laser_listed.count(id) > 0;
-                int bad = g_laser_bad[id];
-                has = ms_presence_step(bad, listed ? 1 : 0, mining_read_from_caps(caps), &bad) == 1;
-                g_laser_bad[id] = bad;
-                if (has) g_laser_listed.insert(id);
+                int caps = -1;
+                if (lavail == 0 && bench) { CapsCtx cc{ship, -1}; caps = seh_run(caps_read_fn, &cc) ? cc.caps : -1; }
+                if (laser_gate_mode(lavail == 0, caps) == LASER_FALLBACK_BENCH_ONLY)
+                {
+                    if (caps == -2) ms_laser_fallback_log(STR("module off"));
+                    has = bench;   // released behaviour: the bench block alone, no laser state, no halt
+                    g_laser_listed.erase(id); g_laser_bad.erase(id);
+                }
                 else
                 {
-                    g_laser_listed.erase(id);
-                    if (listed) lost_laser_ids.push_back(id);   // the caller logs the one drop line (mine_set_bench)
+                    const bool listed = g_laser_listed.count(id) > 0;
+                    int bad = g_laser_bad[id];
+                    has = ms_presence_step(bad, listed ? 1 : 0, bench_read(bench, caps), &bad) == 1;
+                    g_laser_bad[id] = bad;
+                    if (has) g_laser_listed.insert(id);
+                    else
+                    {
+                        g_laser_listed.erase(id);
+                        if (listed) lost_laser_ids.emplace_back(id, bench);   // the caller logs the one drop line (mine_set_bench)
+                    }
                 }
             }
-            else if (id > 0) { g_laser_listed.erase(id); g_laser_bad.erase(id); }
             if (id > 0) txt += std::to_string(id) + "|" + u8(name) + "|" + (has && !dead ? "1" : "0") + "\n";
             if (dead)
             {
                 if (g_dead_n[id] == SHIP_DEAD_SCANS) log_line(STR("DEAD signal ship=") + std::to_wstring(id) + STR(" hull Health 0 on ") + std::to_wstring(SHIP_DEAD_SCANS) + STR(" scans"));
+                g_laser_listed.erase(id); g_laser_bad.erase(id);   // dead-confirmed: state erased
                 dead_ids.push_back(id);
                 continue;
             }
@@ -146,6 +158,9 @@ namespace
             else bench_now.insert(id);
         }
         g_bench_prev = bench_now;
+        // laser state: erased only for ships not seen in this scan (dead-confirmed ones are erased above)
+        for (auto it = g_laser_listed.begin(); it != g_laser_listed.end();) it = seen.count(*it) ? std::next(it) : g_laser_listed.erase(it);
+        for (auto it = g_laser_bad.begin(); it != g_laser_bad.end();) it = seen.count(it->first) ? std::next(it) : g_laser_bad.erase(it);
         write_ships_file(txt);
         if (g_debug) Output::send<LogLevel::Normal>(STR("[MiningBenchMod] scan: ships={} with_bench={}\n"), ships.size(), bench_ships.size());
     }

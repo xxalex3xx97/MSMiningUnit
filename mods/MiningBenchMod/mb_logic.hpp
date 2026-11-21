@@ -673,6 +673,24 @@ namespace
         return (caps & 1) ? 1 : 0;
     }
 
+    // WHAT: laser gate mode per ship. FALLBACK_BENCH_ONLY = no MSCore laser check (export missing / load failed, or module off = caps -2): the released behaviour.
+    //       HOLD = caps unknown (-1): presence_step holds the state. CHECK = caps 0..3 read.
+    // WHY: a standalone mod must keep working with an older or disabled MSCore.
+    enum LaserGateMode { LASER_CHECK, LASER_HOLD, LASER_FALLBACK_BENCH_ONLY };
+    inline LaserGateMode laser_gate_mode(bool have_export, int caps)
+    {
+        if (!have_export || caps == -2) return LASER_FALLBACK_BENCH_ONLY;
+        if (caps == -1) return LASER_HOLD;
+        return LASER_CHECK;
+    }
+
+    // WHAT: presence read for MSCore_presence_step: no bench block = absent (0); else mining_read_from_caps.
+    // WHY: a ship that loses the bench or the laser is absent for the debounce; one transient bench read of 0 does not drop it.
+    inline int bench_read(bool bench, int caps)
+    {
+        return bench ? mining_read_from_caps(caps) : 0;
+    }
+
     // WHAT: TArray Num read from game memory, clamped to 0..100000 before it sizes a buffer.
     // WHY: a stale or wrong array count must not allocate or index past the array.
     constexpr int32_t TARRAY_NUM_MAX = 100000;

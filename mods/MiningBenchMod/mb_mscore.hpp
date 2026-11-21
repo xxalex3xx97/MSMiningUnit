@@ -224,31 +224,39 @@ namespace
         catch (...) { return false; }
     }
 
-    // WHAT: the mining laser gate exports (MSCore API 15). Missing export = gate off, logged once. Game thread only.
-    bool ms_laser_gate_ok()
+    // WHAT: laser check availability (MSCore API 15), resolved once: 0 = available, 1 = MSCore load failed, 2 = export missing (MSCore older than 0.8.15).
+    // WHY: the per-ship path must not load or allocate; the first call decides and the result is cached. Game thread only.
+    int ms_laser_avail()
     {
-        std::wstring why;
-        if (ms_load(why) && g_ms.ship_mining_caps && g_ms.presence_step) return true;
-        static bool warned = false;
-        if (!warned) { warned = true; log_line(STR("MSCore too old (needs 0.8.15): mining laser gate off")); }
-        return false;
+        static const int avail = []() {
+            std::wstring err;
+            if (!ms_load(err)) return 1;
+            return (g_ms.ship_mining_caps && g_ms.presence_step) ? 0 : 2;
+        }();
+        return avail;
     }
 
-    // WHAT: MSCore_ship_mining_caps of a ship: 0..3 bitmask (1 MiningLaser, 2 ItemScooper), -1 unknown, -2 module off. Missing export or exception = -1.
+    // WHAT: the one 'laser check unavailable' line (why = 'load failed' / 'missing export' / 'module off'). Logged once per process.
+    void ms_laser_fallback_log(const wchar_t* why)
+    {
+        static bool logged = false;
+        if (logged) return;
+        logged = true;
+        log_line(std::wstring(STR("MSCore laser check unavailable (")) + why + STR(": needs MSCore >= 0.8.15): bench-only"));
+    }
+
+    // WHAT: MSCore_ship_mining_caps of a ship: 0..3 bitmask (1 MiningLaser, 2 ItemScooper), -1 unknown, -2 module off.
+    // WHY: raw read, no try/catch: the caller checks ms_laser_avail() == 0 and reads under SEH (mb_ships caps_read_fn).
     int ms_mining_caps(UObject* ship)
     {
-        if (!ms_laser_gate_ok()) return -1;
-        try { return g_ms.ship_mining_caps(static_cast<void*>(ship)); }
-        catch (...) { return -1; }
+        return g_ms.ship_mining_caps(static_cast<void*>(ship));
     }
 
     // WHAT: MSCore_presence_step (pure debounce). Returns the accepted flag (1 / 0) and sets bad_out (may be null).
-    // Missing export = hold: the listed flag is returned unchanged and bad_n is kept.
+    // WHY: raw call, no try/catch; the caller checks ms_laser_avail() == 0 first.
     int ms_presence_step(int bad_n, int listed, int read, int* bad_out)
     {
-        if (!ms_laser_gate_ok()) { if (bad_out) *bad_out = bad_n; return listed ? 1 : 0; }
-        try { return g_ms.presence_step(bad_n, listed, read, bad_out); }
-        catch (...) { if (bad_out) *bad_out = bad_n; return listed ? 1 : 0; }
+        return g_ms.presence_step(bad_n, listed, read, bad_out);
     }
 
     // WHAT: MSCore_world_paused. true only when MSCore says paused (1). Missing export, -1, -2 or exception = false.
