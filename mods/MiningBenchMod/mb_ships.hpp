@@ -1,12 +1,13 @@
 // FILE: mods/MiningBenchMod/mb_ships.hpp
 // WHAT: bench-ship helpers: a log dedupe helper for skipped orders, the ships.txt writer, and the ship scan that logs bench ships.
 // WHY separate: ship-level maintenance and scanning form one unit, kept apart from the order, steering and command code.
-// DEPENDS ON: mb_common (g_skip, g_sig_ships_file, trim, get_dll_dir, write_atomic, log_line, u8), mb_config (g_cfg), mb_ue (count_bench, read_struct_int, obj_id, obj_display).
+// DEPENDS ON: mb_common (g_skip, g_sig_ships_file, trim, get_dll_dir, write_atomic, log_line, u8), mb_config (g_cfg), mb_ue (count_bench, read_struct_int, obj_id, obj_display), mb_weapons (weapon_array, weapon_match).
 // USED BY: mb_dockjob (skip), dllmain.cpp (scan_and_log).
 // GAME FACTS:
 //   VERIFIED (logs): the bench block of ship 41709 sits in Subobjects, with BuildingBlocks=0 (M1 scan).
 //   ASSUMPTION: a ship has the bench when count_bench finds it in BuildingBlocks or in Subobjects.
 #pragma once
+#include "mb_weapons.hpp"   // own dependency: the laser read uses weapon_array/weapon_match, so the include order does not matter
 
 namespace
 {
