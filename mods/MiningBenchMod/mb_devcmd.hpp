@@ -55,17 +55,20 @@ namespace
     {
         UObject* ship = find_by_id(STR("DMSPlayerShipObject"), sid);
         if (!alive(ship)) return STR("error: ship not found");
-        int32_t steps = 0, cur = -1;
-        if (!call_int(ship, STR("GetThrottleSteps"), steps)) return STR("error: GetThrottleSteps unreadable");
-        if (!get_int_prop(ship, STR("Throttle"), cur)) return STR("error: Throttle unreadable");
+        MsFlight sfl;
+        const int sfr = ms_flight_read(sid, FL_STATE, sfl);
+        if (sfr != 1 || !(sfl.flags & FF_STEPS)) return STR("error: GetThrottleSteps unreadable");
+        if (!(sfl.flags & FF_THROTTLE)) return STR("error: Throttle unreadable");
+        const int32_t steps = sfl.steps, cur = sfl.throttle;
         const int n = cmd == "thr_up" ? std::min(cur + 1, steps) : (cmd == "thr_down" ? std::max(cur - 1, 0) : 0);
-        const SpeedMon& sm = spd_of(sid);
+        const SpeedMon sm = spd_get(sid);
         if (sm.have && sm.lim > 0.0 && sm.v / sm.lim > MV_SPEED_ABORT)
         {
             zero_all(ship);
             return STR("error: speed above 1.1x limit, throttle zeroed");
         }
-        const bool wrote = set_int_prop(ship, STR("Throttle"), n);
+        std::wstring werr;
+        const bool wrote = ms_set_throttle(sid, n, werr);
         g_thr_chk = ThrCheck{true, sid, n};
         tlog(STR("thr cmd=") + widen(cmd) + STR(" Throttle was=") + std::to_wstring(cur) + STR(" steps=") + std::to_wstring(steps) +
              STR(" wrote=") + std::to_wstring(n) + STR(" ok=") + (wrote ? STR("1") : STR("0")));
@@ -78,10 +81,9 @@ namespace
     {
         if (!g_thr_chk.pending) return;
         g_thr_chk.pending = false;
-        UObject* ship = find_by_id(STR("DMSPlayerShipObject"), g_thr_chk.sid);
-        int32_t rb = -1;
-        const bool ok = alive(ship) && get_int_prop(ship, STR("Throttle"), rb);
-        tlog(STR("thr readback=") + (ok ? std::to_wstring(rb) : std::wstring(STR("n/a"))) + STR(" wrote=") + std::to_wstring(g_thr_chk.want));
+        MsFlight sfl;
+        const int sfr = ms_flight_read(g_thr_chk.sid, FL_STATE, sfl);
+        tlog(STR("thr readback=") + ms_throttle_text(sfr, sfl) + STR(" wrote=") + std::to_wstring(g_thr_chk.want));
     }
 
     // ---------------- Dev Menu Stations tab ----------------
@@ -131,7 +133,7 @@ namespace
     int stations_write()
     {
         std::vector<UObject*> v;
-        UObjectGlobals::FindAllOf(STR("StationObject"), v);
+        { const std::wstring scls = ms_cls("station"); if (!scls.empty()) UObjectGlobals::FindAllOf(scls.c_str(), v); }
         std::string out;
         int n = 0;
         for (UObject* o : v)
@@ -143,7 +145,7 @@ namespace
             std::wstring name = obj_display(o);
             if (name.empty()) name = cls;
             const int np = static_cast<int>(station_ids(o, STR("MachineIDs")).size() + station_ids(o, STR("ConstructionObjectIDs")).size());
-            const std::string row = station_row(id, u8(name), u8(cls), np);
+            const std::string row = station_row(id, u8(name), u8(cls), np, to_utf8(ms_cls("player_station")));
             out += row + "\n";
             ++n;
             log_line(STR("DEVSTATION row ") + widen(row));
@@ -244,7 +246,8 @@ namespace
     // WHY: user request 2026-11-14: remove machines for the refund, then use the game's self destruct instead of mass disassemble / item stashing.
     bool station_step()
     {
-        UObject* st = find_by_id(STR("StationObject"), g_sd.id);
+        const std::wstring scls = ms_cls("station");
+        UObject* st = scls.empty() ? nullptr : find_by_id(scls.c_str(), g_sd.id);
         if (!alive(st)) return true;
         const std::vector<int> machines = station_ids(st, STR("MachineIDs"));
         std::wstring err;
@@ -296,7 +299,8 @@ namespace
             g_sd.active = false;
             log_line(STR("DEVSTATION timeout station=") + std::to_wstring(g_sd.id) + STR(" still present after 60 s"));
             {
-                UObject* left = find_by_id(STR("StationObject"), g_sd.id);
+                const std::wstring lcls = ms_cls("station");
+                UObject* left = lcls.empty() ? nullptr : find_by_id(lcls.c_str(), g_sd.id);
                 const size_t n = alive(left) ? station_ids(left, STR("MachineIDs")).size() : 0;
                 station_result(g_sd.id, "error", STR("60 s: ") + std::to_wstring(n) + STR(" machines still stand - remove them by hand"));
             }
@@ -320,10 +324,12 @@ namespace
         const int id = parse_station_id(arg);
         if (id <= 0) return STR("error: usage dev_destroy_station:<id>");
         if (g_sd.active) return STR("error: a destroy is already running");
-        UObject* st = find_by_id(STR("StationObject"), id);
+        const std::wstring scls = ms_cls("station");
+        if (scls.empty()) return STR("error: MSCore too old (needs 0.8.10)");
+        UObject* st = find_by_id(scls.c_str(), id);
         if (!alive(st)) { station_result(id, "error", STR("no station with that id")); return STR("error: no station with id ") + std::to_wstring(id); }
         const std::wstring cls = st->GetClassPrivate()->GetName();
-        if (!station_destroyable(to_utf8(cls)))
+        if (!station_destroyable(to_utf8(cls), to_utf8(ms_cls("player_station"))))
         {
             log_line(STR("DEVSTATION refused station=") + std::to_wstring(id) + STR(" class=") + cls);
             station_result(id, "error", STR("refused: ") + cls + STR(" is not a player-built station"));
@@ -494,7 +500,7 @@ namespace
         probe_kv(s, STR("bDrifting"), prop_bool(ship, STR("bDrifting")));
         probe_kv(s, STR("GetModifiedMaxSpeed"), ok_mod ? std::to_wstring(lim_mod) + STR(" m/s=") + probe_f2(lim_mod / g_raw_per_m) : std::wstring(STR("n/a")));
         probe_kv(s, STR("GetMaxSpeed"), ok_lim ? std::to_wstring(lim) + STR(" m/s=") + probe_f2(lim / g_raw_per_m) : std::wstring(STR("n/a")));
-        probe_kv(s, STR("ship_speed"), probe_f2(spd_of(sid).v / g_raw_per_m) + STR(" m/s (sampler speed)"));
+        probe_kv(s, STR("ship_speed"), probe_f2(spd_get(sid).v / g_raw_per_m) + STR(" m/s (sampler speed)"));
         probe_kv(s, STR("actor_loc_uu"), hasf ? probe_v3(f.loc) : std::wstring(STR("n/a")));
         probe_kv(s, STR("MaxHealth"), prop_int(ship, STR("MaxHealth")));
         probe_kv(s, STR("Health"), prop_int(ship, STR("Health")));
@@ -772,7 +778,7 @@ namespace
             }
         int64_t dt_raw = 0;
         const bool ok_dt = pnum_prop(ship, STR("DistanceToTarget"), dt_raw);
-        return STR("t=") + probe_f2(t_s) + STR(" spd_mps=") + probe_f2(spd_of(sid).v / g_raw_per_m) +
+        return STR("t=") + probe_f2(t_s) + STR(" spd_mps=") + probe_f2(spd_get(sid).v / g_raw_per_m) +
                STR(" throttle=") + prop_int(ship, STR("Throttle")) + STR(" ap=") + prop_bool(ship, STR("bAutopilot")) +
                STR(" dist_tgt_m=") + (ok_dt ? probe_f2(dt_raw / g_raw_per_m) : std::wstring(STR("n/a"))) +
                STR(" impulse_in=") + pvec_text(ship, STR("ImpulseInput")) +
@@ -1354,7 +1360,7 @@ namespace
         auto* c = static_cast<PowerWatchCtx*>(p);
         bool lp = false;
         bool known = false;
-        lp = power_dead(c->ship, power_grid(c->ship), known);   // no power on the grid (flag fallback)
+        lp = power_dead(power_grid(c->ship), known);   // no power on the grid (flag fallback)
         std::wstring buf;
         for (UStruct* st = c->ship->GetClassPrivate(); st && st->GetName() != STR("Object"); st = st->GetSuperStruct())
             for (FProperty* pr : st->ForEachProperty())

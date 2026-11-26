@@ -77,6 +77,19 @@ namespace
                       u8(cls ? std::wstring(cls->GetName()) : std::wstring()) + "|" + u8(obj_display(o)) + "\n";
                 ++dock_rows;
             }
+            // DOCKDIAG: when the dock list changes, log what each dock object looks like (alive, reachable, outer), so a removed dock that
+            // lingers in the F4 list shows which flag tells it apart. Diagnostic only: docks.txt is unchanged.
+            if (dk != g_sig_dock_file)
+            {
+                for (UObject* o : v)
+                {
+                    if (!o) continue;
+                    UObject* out = o->GetOuterPrivate();
+                    log_line(STR("DOCKDIAG id=") + std::to_wstring(obj_id(o)) + STR(" name='") + dock_name(o) + STR("' obj=") + o->GetName() +
+                             STR(" alive=") + std::to_wstring(alive(o) ? 1 : 0) + STR(" unreachable=") + std::to_wstring(o->IsUnreachable() ? 1 : 0) +
+                             STR(" outer=") + (out ? out->GetName() : std::wstring(STR("(none)"))));
+                }
+            }
             bool wrote = false;
             if (dk != g_sig_dock_file)
             {

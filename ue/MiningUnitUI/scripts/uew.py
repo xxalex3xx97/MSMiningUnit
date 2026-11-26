@@ -158,3 +158,43 @@ def dyn_list(wbp, name, parent, row_wbp, add_btn=None, spacing=6.0, **slot_kw):
             move_last(parent, wbp, add_btn)
             slot(a, pad=(0, 4, 0, 0), h='Fill')
     return d
+
+
+def dock_group_header(w):
+    """collapsed group header strip Row_DGroup (name button + fold button) in Col_Root of WBP_NetDockCard; idempotent"""
+    if ELib.find_source_widget_by_name(w, 'Row_DGroup'):
+        return
+    r = add(w, U.HorizontalBox, 'Row_DGroup', 'Col_Root', var=False)
+    r.set_editor_property('visibility', U.SlateVisibility.COLLAPSED)
+    hb = add(w, U.Button, 'Btn_DGroupHdr', 'Row_DGroup', var=False)
+    hb.set_editor_property('background_color', lin('D9D9D9'))
+    slot(hb, fill=1.0, h='Fill', v='Fill')
+    text(w, 'Txt_DGroupName', 'Btn_DGroupHdr', size=18, color=lin('1A1A1A'), slot_kw=dict(pad=(12, 6, 12, 6), h='Left', v='Center'))
+    fb = add(w, U.Button, 'Btn_DGroupFold', 'Row_DGroup', var=False)
+    fb.set_editor_property('background_color', lin('D9D9D9'))
+    slot(fb, pad=(6, 0, 0, 0), v='Fill')
+    t = text(w, 'Txt_DGroupFold', 'Btn_DGroupFold', size=18, color=lin('1A1A1A'), slot_kw=dict(pad=(14, 6, 14, 6), h='Center', v='Center'))
+    t.set_editor_property('text', U.Text('v'))
+
+
+def item_group_header(w):
+    """collapsed group header strip Row_IGroup (name, fold, add '+' buttons) in Row_Root of WBP_ItemRow; idempotent"""
+    if ELib.find_source_widget_by_name(w, 'Row_IGroup'):
+        return
+    r = add(w, U.HorizontalBox, 'Row_IGroup', 'Row_Root', var=False)
+    r.set_editor_property('visibility', U.SlateVisibility.COLLAPSED)
+    slot(r, fill=1.0, h='Fill')
+    hb = add(w, U.Button, 'Btn_IGroupHdr', 'Row_IGroup', var=False)
+    hb.set_editor_property('background_color', lin('D9D9D9'))
+    slot(hb, fill=1.0, h='Fill', v='Fill')
+    text(w, 'Txt_IGroupName', 'Btn_IGroupHdr', size=18, color=lin('1A1A1A'), slot_kw=dict(pad=(12, 6, 12, 6), h='Left', v='Center'))
+    fb = add(w, U.Button, 'Btn_IGroupFold', 'Row_IGroup', var=False)
+    fb.set_editor_property('background_color', lin('D9D9D9'))
+    slot(fb, pad=(6, 0, 0, 0), v='Fill')
+    t = text(w, 'Txt_IGroupFold', 'Btn_IGroupFold', size=18, color=lin('1A1A1A'), slot_kw=dict(pad=(14, 6, 14, 6), h='Center', v='Center'))
+    t.set_editor_property('text', U.Text('v'))
+    ab = add(w, U.Button, 'Btn_IGroupAdd', 'Row_IGroup', var=False)
+    ab.set_editor_property('background_color', lin('D9D9D9'))
+    slot(ab, pad=(6, 0, 0, 0), v='Fill')
+    t = text(w, 'Txt_IGroupAdd', 'Btn_IGroupAdd', size=18, color=lin('1A1A1A'), slot_kw=dict(pad=(14, 6, 14, 6), h='Center', v='Center'))
+    t.set_editor_property('text', U.Text('+'))

@@ -561,11 +561,25 @@ def build_tree():
     hint = S(tb("Txt_AmountHint", "0 = unlimited (mine until cargo is full)", 13, color=GOLD), pad=(0, 0, 0, 6))
     page_items = page("Page_Items", [hint] + rows + [add])
     # Operation page: bordered cards (outline > body, gold title + 2px gold line). Layout-only widgets are Row_*/Lbl_*.
-    def card(key, title_name, title, kids, icons=()):
+    def card(key, title_name, title, kids, icons=(), lead=(), help_key=None, add_node=None):
         t = S(tb(title_name, title, 16, var=False, color=GOLD), pad=(0, 0, 0, 4))
-        if icons:   # header icons (Lua sets brushes)
-            ims = [S(wrap(N("Image", i, props=[("Brush", "(ImageSize=(X=24.000000,Y=24.000000),DrawAs=Image,TintColor=(SpecifiedColor=%s))" % WHITE_RAW), ("Visibility", "Hidden")]), 24, 24), pad=(8, 0, 0, 0), v="Center") for i in icons]
-            t = S(hrow("Row_CardHead" + key, [S(tb(title_name, title, 16, var=False, color=GOLD), v="Center")] + ims), pad=(0, 0, 0, 4), h="Fill")
+        if icons or lead or help_key:   # header: [lead icons][title][icons][spacer][?] (Lua sets brushes)
+            def img(i, p):
+                return S(wrap(N("Image", i, props=[("Brush", "(ImageSize=(X=24.000000,Y=24.000000),DrawAs=Image,TintColor=(SpecifiedColor=%s))" % WHITE_RAW), ("Visibility", "Hidden")]), 24, 24), pad=p, v="Center")
+            hk = [img(i, (0, 0, 8, 0)) for i in lead]
+            hk.append(S(tb(title_name, title, 16, var=False, color=GOLD), v="Center"))
+            hk += [img(i, (8, 0, 0, 0)) for i in icons]
+            if help_key:
+                hk.append(S(N("SizeBox", "Row_HelpSp" + key, var=False), fill=1))
+                if add_node is not None:
+                    hk.append(S(add_node, pad=(8, 0, 0, 0), v="Center"))
+                b = btn("Btn_DockHelp_" + help_key, "?", BTN, size=14, tname="Txt_DockHelp_" + help_key)
+                S(b.kids[0], pad=(0, 0, 0, 0), h="Center", v="Center")
+                hk.append(S(wrap(b, 32, 28), pad=(8, 0, 0, 0), v="Center"))
+                fb = btn("Btn_DockFold_" + help_key, "v", BTN, size=14, tname="Txt_DockFold_" + help_key)
+                S(fb.kids[0], pad=(0, 0, 0, 0), h="Center", v="Center")
+                hk.append(S(wrap(fb, 32, 28), pad=(6, 0, 0, 0), v="Center"))
+            t = S(hrow("Row_CardHead" + key, hk), pad=(0, 0, 0, 4), h="Fill")
         ln = S(wrap(N("Border", "Row_CardLine" + key, var=False, props=[("BrushColor", GOLD2)]), None, 2), pad=(0, 0, 0, 8), h="Fill")
         for k in kids:
             if not k.sp:
@@ -602,9 +616,9 @@ def build_tree():
             out.append(S(rw, pad=(0, 0, 0, 6), h="Fill"))
         return out
 
-    def dock_card(tag, key, ckey, title, icons=()):
-        add = S(wrap(btn("Btn_%sAdd%s" % (tag, "_" + key if key else ""), "Add dock", BTN, size=15), None, 40), pad=(0, 4, 0, 0), h="Fill")
-        c = card(ckey, "Lbl_Hdr" + ckey, title, dock_rows(tag, key) + [add], icons)
+    def dock_card(tag, key, ckey, title, icons=(), lead=()):
+        add = wrap(btn("Btn_%sAdd%s" % (tag, "_" + key if key else ""), "Add dock", BTN, size=15), None, 28)
+        c = card(ckey, "Lbl_Hdr" + ckey, title, dock_rows(tag, key), icons, lead, key or "RDock", add)
         c.name, c.var = "Pnl_%sCard%s" % (tag, "_" + key if key else ""), True
         c.props.append(("Visibility", "Collapsed"))
         return c
@@ -612,9 +626,21 @@ def build_tree():
     warn = tb("Txt_ShipWarn", "", 15, color=lin("F2D21E"))
     warn.props += [("AutoWrapText", "True"), ("Visibility", "Collapsed")]
     ship_kids = [warn,
-                 dock_card("RDock", "", "RDock", "Refuel docks (tried in order)", ["Img_RDockFuel" + f for f in FUELS])]
+                 dock_card("RDock", "", "RDock", "Refuel Docks (tried in order)", ["Img_RDockFuel" + f for f in FUELS])]
     for k in reversed(ORES):
-        ship_kids.append(dock_card("UDock", k, "UD" + k, "Unload docks: " + ("Water Ice" if k == "WaterIce" else k), ["Img_UDockOre_" + k]))
+        ship_kids.append(dock_card("UDock", k, "UD" + k, "%s Unload Dock" % ("Water Ice" if k == "WaterIce" else k), (), ["Img_UDockOre_" + k]))
+    # Misc card: LAST on Ship, Collapsed (Lua shows it). Same shell as an ore card, no rows; its Dyn_UDock_Misc list is added by build_lists.py (uew.dyn_list)
+    misc_add = wrap(btn("Btn_UDockAdd_Misc", "Add dock", BTN, size=15), None, 28)
+    misc = card("UDMisc", "Lbl_HdrUDMisc", "Misc Docks", [], help_key="Misc", add_node=misc_add)
+    misc.name, misc.var = "Pnl_UDockCard_Misc", True
+    misc.props.append(("Visibility", "Collapsed"))
+    ship_kids.append(misc)
+    # Parking card: after Misc, Collapsed (Lua shows it). Dyn_UDock_Park list is added by build_lists.py
+    park_add = wrap(btn("Btn_UDockAdd_Park", "Add dock", BTN, size=15), None, 28)
+    park = card("UDPark", "Lbl_HdrUDPark", "Parking Docks", [], help_key="Park", add_node=park_add)
+    park.name, park.var = "Pnl_UDockCard_Park", True
+    park.props.append(("Visibility", "Collapsed"))
+    ship_kids.append(park)
     page_ship = page("Page_Ship", ship_kids)
 
     c_mining = card("Mining","Lbl_HdrMining", "Mining", [
@@ -668,9 +694,20 @@ def build_tree():
     log_sb = S(N("ScrollBox", "Row_LogScroll", log_lines, props=[("ConsumeMouseWheel", "WhenScrollingPossible")]), fill=1, h="Fill", v="Fill")
     log_hint = S(tb("Txt_LogHint", "No log yet", 14, color=GOLD), pad=(0, 0, 0, 6))
     def log_card(f):
+        def fold(f):
+            if ART:
+                up = N("Image", "Lbl_LogFoldUp_%d" % f, var=False, props=[("Brush", icon_brush("Up", ARR, 20))])
+                dn = N("Image", "Lbl_LogFoldDn_%d" % f, var=False, props=[("Brush", icon_brush("Down", ARR, 20)), ("Visibility", "Collapsed")])
+            else:   # flat: text glyphs, no texture refs
+                up = tb("Lbl_LogFoldUp_%d" % f, "^", 16, var=False)
+                dn = N("TextBlock", "Lbl_LogFoldDn_%d" % f, var=False, props=[("Font", "(Size=16)"), ("Text", 'INVTEXT("v")'), ("Visibility", "Collapsed")])
+            ov = N("Overlay", "Row_LogFoldOv_%d" % f, [S(up, h="Center", v="Center"), S(dn, h="Center", v="Center")], var=False)
+            st = "(Normal=%s,Hovered=%s,Pressed=%s)" % (box_brush(lin("2E2E2E"), lin("1A1A1A")), box_brush(lin("3C3C3C"), lin("1A1A1A")), box_brush(lin("222222"), lin("1A1A1A")))
+            return wrap(N("Button", "Btn_LogFold_%d" % f, [ov], var=True, props=[("WidgetStyle", st)]), 28, 28)
         head = hrow("Row_LogCardHead_%d" % f, [
             S(tb("Txt_LogCardName_%d" % f, "", 16), pad=(0, 0, 10, 0), v="Center"),
-            S(tb("Txt_LogCardStatus_%d" % f, "", 14, color=lin("FFFFFF", 0.6)), v="Center")])
+            S(tb("Txt_LogCardStatus_%d" % f, "", 14, color=lin("FFFFFF", 0.6)), v="Center", fill=1),
+            S(fold(f), pad=(8, 0, 0, 0), v="Center")])
         rows = [S(N("TextBlock", "Txt_LogCard_%d_%d" % (f, r), props=[("Font", "(Size=13)"), ("Text", 'INVTEXT("")'), ("AutoWrapText", "True")]),
                   pad=(0, 1, 0, 1), h="Fill") for r in range(1, LOG_ROWS + 1)]
         v = vbox("Row_LogCardCol_%d" % f, [S(head, pad=(0, 0, 0, 4), h="Fill")] + rows)
@@ -678,7 +715,15 @@ def build_tree():
         return S(N("Border", "Pnl_LogCard_%d" % f, [S(v, h="Fill", v="Fill")],
                    props=[("BrushColor", lin("1A1A1A", 0.55)), ("Padding", pad(10, 8, 10, 8)), ("Visibility", "Collapsed")]),
                  pad=(0, 0, 12, 8), h="Fill")
-    log_all_sb = S(N("ScrollBox", "Row_LogAllScroll", [log_card(f) for f in range(1, FN + 1)], var=False, props=[("ConsumeMouseWheel", "WhenScrollingPossible")]), fill=1, h="Fill", v="Fill")
+    def log_grp(f):
+        hb = N("Button", "Btn_LogGrpHdr_%d" % f, [S(tb("Txt_LogGrpName_%d" % f, "", 18, color=DARK_TXT), pad=(12, 6, 12, 6), h="Left", v="Center")],
+               props=[("BackgroundColor", CMB_BG)])
+        fb = N("Button", "Btn_LogGrpFold_%d" % f, [S(tb("Txt_LogGrpFold_%d" % f, "v", 18, color=DARK_TXT), pad=(14, 6, 14, 6), h="Center", v="Center")],
+               props=[("BackgroundColor", CMB_BG)])
+        hr = hrow("Row_LogGrp_%d" % f, [S(hb, fill=1, h="Fill", v="Fill"), S(fb, pad=(6, 0, 0, 0), v="Fill")])
+        hr.props.append(("Visibility", "Collapsed"))
+        return S(hr, pad=(0, 0, 12, 8), h="Fill")
+    log_all_sb = S(N("ScrollBox", "Row_LogAllScroll", [x for f in range(1, FN + 1) for x in (log_grp(f), log_card(f))], var=False, props=[("ConsumeMouseWheel", "WhenScrollingPossible")]), fill=1, h="Fill", v="Fill")
     log_all = S(vbox("Pnl_LogAll", [log_all_sb]), fill=1, h="Fill", v="Fill")
     log_all.props.append(("Visibility", "Collapsed"))
     page_log = S(vbox("Pnl_PageLog", [log_hint, log_sb, log_all]), h="Fill", v="Fill")
@@ -728,7 +773,7 @@ def build_tree():
     def act(n, l, b=6):
         return S(wrap(btn(n, l, BTN, size=18, tname="Txt_" + n[4:]), None, 56), pad=(0, 0, 0, b), h="Fill")
     actions = vbox("Row_ActionsBody", [act("Btn_Dock", "Dock"), act("Btn_Undock", "Undock"),
-                                       act("Btn_Refuel", "Refuel"), act("Btn_Unload", "Unload"), act("Btn_Collect", "Collect ore", 0)])
+                                       act("Btn_Refuel", "Refuel"), act("Btn_Unload", "Unload"), act("Btn_Park", "Park"), act("Btn_Collect", "Collect ore", 0)])
     actions.var = False
     xb = S(wrap(btn("Btn_RemoteAll", "X", BTN, size=14, tname="Txt_RemoteAll"), 36), pad=(6, 0, 0, 0), h="Fill", v="Fill")
     fleet = vbox("Row_FleetBody", [S(tb("Lbl_RemoteControl", "Remote Control", 15, var=False), pad=(0, 0, 0, 6)),

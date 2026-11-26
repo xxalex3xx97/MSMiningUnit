@@ -2,7 +2,7 @@
 // WHAT: pure logic: config structs and INI value parsing (Config, apply_kv, eff_cfg, parse_distance, parse_items), command line
 //       parsing, and the small rule functions the mining loop, belt and fuel code use (no game objects).
 // WHY separate: these have no UE or Windows calls, so the unit tests (tests/test_logic.cpp) can compile and run them alone.
-// DEPENDS ON (exact): std headers only (algorithm, array, cctype, cmath, cstdint, cstdlib, iterator, map, set, string, utility, vector). No UE4SS, no Windows.h.
+// DEPENDS ON (exact): std headers only (algorithm, array, cctype, cmath, cstdint, cstdlib, iterator, map, set, string, utility, vector) and sc_logic_path.hpp (ShipControl, pure geometry). No UE4SS, no Windows.h.
 // USED BY: mb_common.hpp (includes this first), mb_config.hpp, mb_cmdstate.hpp, mb_belt.hpp, mb_mining.hpp, mb_dockjob.hpp, mb_testcmd.hpp, tests/test_logic.cpp
 // RULE: keep this file free of UE/Windows headers and STR(); use L"" literals.
 #pragma once
@@ -20,6 +20,10 @@
 #include <utility>
 #include <vector>
 
+#include "sc_logic_path.hpp"   // path/warp/hazard geometry (shared with ShipControl)
+#include "sc_logic_steer.hpp"  // approach Throttle, timeout, low-power cap and no-power rules (shared with ShipControl)
+#include "sc_logic_bubble.hpp" // bubble ladder rules (shared with ShipControl; moved in SC3-C)
+
 namespace
 {
     // WHAT: the fuels and ores the Operation tab can refuel / unload, one index per item.
@@ -28,6 +32,7 @@ namespace
     constexpr int N_ORE = 7;
     constexpr const char* FUEL_KEY[N_FUEL] = {"hydrogen", "warp", "deuterium"};
     constexpr const char* FUEL_ITEM[N_FUEL] = {"ITEM_HydrogenFuel", "ITEM_WarpFuel", "ITEM_EnrichedFuel"};
+    constexpr int FUEL_BIT[N_FUEL] = {1, 4, 2};   // tag mask bit per FUEL index: H=1 D=2 W=4
     constexpr const char* ORE_KEY[N_ORE] = {"titanium", "nickel", "cobalt", "iridium", "waterice", "silica", "graphite"};
     constexpr const char* ORE_ITEM[N_ORE] = {"ITEM_TitaniumOre", "ITEM_NickelOre", "ITEM_CobaltOre", "ITEM_IridiumOre", "ITEM_WaterIce", "ITEM_Silica", "ITEM_Graphite"};
 
@@ -101,8 +106,12 @@ namespace
         std::string refuel_dock_name = "";      // refuel_dock_id written as an in-game name
         // per ore: unload docks in list order (INI: unload_docks_<orekey>=id,id). Empty = this ore is not unloaded. Per-ship overridable.
         std::vector<int> ore_docks[N_ORE];
+        // misc docks (INI: unload_docks_misc=id,id). Receive non-ore cargo and ores with an empty list. Global only, merged with [MISC] tags.
+        std::vector<int> misc_docks;
         // refuel docks in list order (INI: refuel_docks=id,id). refuel_dock_id is tried first. Per-ship overridable.
         std::vector<int> refuel_docks;
+        // parking docks (INI: parking_docks=id,id). Merged with [PARKING] tags; never an unload/misc/refuel dock. Per-ship overridable.
+        std::vector<int> park_docks;
         // s: wait at the dock after the order list (global only). (INI: wait_seconds)
         int wait_seconds = 10;
         // per fuel: on / refuel threshold / amount (global only). (INI: fuel_<key>_on / _threshold / _amount)
@@ -196,6 +205,117 @@ namespace
             if (int d = dock_token(tok)) out.push_back(d);
         return out;
     }
+    // WHAT: tags in one dock name. [TITANIUM] etc (one ore per tag), [MISC], [AUTO-FILTER]. Square brackets, any case; spaces, _ and - inside the brackets are ignored ("[Water Ice]" = [WATERICE]).
+    // WHY: user rule 2026-11-18: a tagged dock is paired by name, no INI write. The Lua window (MiningUnitUI) reads the same result from DockTags.txt.
+    struct DockTag { int id = 0; std::vector<int> ores; bool misc = false; bool autof = false; bool park = false; bool refuel = false; int fuel = 0; };
+    std::vector<DockTag> g_dock_tags;   // docks that carry at least one tag; refreshed by dock_tags_refresh (mb_docktags.hpp)
+    std::string tag_norm(const std::string& s) { std::string o; for (unsigned char ch : s) if (ch != ' ' && ch != '_' && ch != '-' && ch != '\t') o += static_cast<char>(std::toupper(ch)); return o; }
+    DockTag dock_tag_parse(int id, const std::string& name) {
+        DockTag t; t.id = id; size_t p = 0;
+        while ((p = name.find('[', p)) != std::string::npos) {
+            const size_t e = name.find(']', p + 1);
+            if (e == std::string::npos) break;
+            const std::string w = tag_norm(name.substr(p + 1, e - p - 1));
+            const std::string wn = (w == "ICE") ? tag_norm("waterice") : w;
+            if (w == "MISC") t.misc = true;
+            else if (w == "PARKING") t.park = true;
+            else if (w == "AUTOFILTER") t.autof = true;
+            else if (w == "REFUEL") t.refuel = true;
+            else if (w == "HYDROGEN") t.fuel |= 1;
+            else if (w == "DEUTERIUM") t.fuel |= 2;
+            else if (w == "WARP") t.fuel |= 4;
+            else for (int i = 0; i < N_ORE; ++i)
+                if (wn == tag_norm(ORE_KEY[i]) && std::find(t.ores.begin(), t.ores.end(), i) == t.ores.end()) t.ores.push_back(i);
+            p = e + 1;
+        }
+        return t; }
+    // WHAT: a dock with 2+ ore tags is invalid (user rule 2026-11-19: one ore, one filter per dock). Clears its ore tags and [AUTO-FILTER] so it is never paired or filtered; returns true when it was invalid (caller logs once). [MISC] is untouched.
+    bool dock_tag_invalidate(DockTag& t) { if (t.ores.size() < 2) return false; t.ores.clear(); t.autof = false; return true; }
+    // WHAT: ship NAME tags -> ordered {ore index, amount} (amount 0 = until cargo full). [TITANIUM] [TITANIUM:200] [Titanium : 200]; ore words as dock tags; unknown words skipped; non-numeric/empty amount = 0 (tag kept); a repeated ore is dropped (first wins).
+    std::vector<std::pair<int, int>> ship_tags_parse(const std::string& name) {
+        std::vector<std::pair<int, int>> out; size_t p = 0;
+        while ((p = name.find('[', p)) != std::string::npos) {
+            const size_t e = name.find(']', p + 1);
+            if (e == std::string::npos) break;
+            const std::string body = name.substr(p + 1, e - p - 1);
+            const size_t c = body.find(':');
+            const std::string w = tag_norm(c == std::string::npos ? body : body.substr(0, c));
+            std::string a = c == std::string::npos ? std::string() : trim(body.substr(c + 1));
+            const int amt = (!a.empty() && a.find_first_not_of("0123456789") == std::string::npos) ? to_int(a, 0) : 0;
+            const std::string wn = (w == "ICE") ? tag_norm("waterice") : w;
+            for (int i = 0; i < N_ORE; ++i)
+                if (wn == tag_norm(ORE_KEY[i])) { bool dup = false; for (const auto& q : out) if (q.first == i) dup = true; if (!dup) out.push_back({i, amt}); break; }
+            p = e + 1; }
+        return out; }
+    // WHAT: ship display name per ship id (UTF-8), filled each scan by mine_set_bench; eff_cfg reads it for name tags.
+    std::map<int, std::string> g_ship_names;
+    // WHAT: "ITEM_NickelOre:100,ITEM_TitaniumOre:50" for a tag list ("" when empty). Same format as the INI items= key.
+    std::string ship_tags_items(const std::vector<std::pair<int, int>>& t) {
+        std::string s; for (const auto& q : t) s += (s.empty() ? "" : ",") + std::string(ORE_ITEM[q.first]) + ":" + std::to_string(q.second); return s; }
+    // WHAT: misc = [MISC]-tagged docks then manual misc picks; an ore with an empty list uses misc. Ore lists = tagged docks first (id order), then the manual picks not already there. A [MISC] dock is never an ore-tag dock.
+    void apply_dock_tags(Config& c) {
+        // [REFUEL] docks (not also [PARKING]) are refuel-only: never an ore/misc target
+        std::vector<int> rtag;
+        for (const DockTag& t : g_dock_tags) if (t.refuel && !t.park) rtag.push_back(t.id);
+        std::vector<int> misc;
+        for (const DockTag& t : g_dock_tags) if (t.misc) misc.push_back(t.id);
+        for (int d : c.misc_docks) if (std::find(misc.begin(), misc.end(), d) == misc.end()) misc.push_back(d);
+        // [PARKING] docks are never an unload/refuel/misc target: strip them from every list before the empty-list fallback
+        std::vector<int> park;
+        for (const DockTag& t : g_dock_tags) if (t.park) park.push_back(t.id);
+        for (int d : c.park_docks) if (std::find(park.begin(), park.end(), d) == park.end()) park.push_back(d);
+        c.park_docks = park;
+        auto strip = [&](std::vector<int>& v) { v.erase(std::remove_if(v.begin(), v.end(), [&](int d) { return std::find(park.begin(), park.end(), d) != park.end(); }), v.end()); };
+        auto stripR = [&](std::vector<int>& v) { v.erase(std::remove_if(v.begin(), v.end(), [&](int d) { return std::find(rtag.begin(), rtag.end(), d) != rtag.end(); }), v.end()); };
+        // refuel list = [REFUEL]-tagged docks first (id order), then manual picks; parking wins over refuel
+        std::vector<int> refuel;
+        for (const DockTag& t : g_dock_tags) if (t.refuel && std::find(park.begin(), park.end(), t.id) == park.end()) refuel.push_back(t.id);
+        for (int d : c.refuel_docks) if (std::find(refuel.begin(), refuel.end(), d) == refuel.end() && std::find(park.begin(), park.end(), d) == park.end()) refuel.push_back(d);
+        c.refuel_docks = refuel;
+        stripR(misc); strip(misc);
+        c.misc_docks = misc;
+        for (int i = 0; i < N_ORE; ++i) {
+            std::vector<int> out;
+            for (const DockTag& t : g_dock_tags) if (!t.misc && std::find(t.ores.begin(), t.ores.end(), i) != t.ores.end()) out.push_back(t.id);
+            for (int d : c.ore_docks[i]) if (std::find(out.begin(), out.end(), d) == out.end()) out.push_back(d);
+            stripR(out); strip(out);
+            if (out.empty()) out = misc;
+            c.ore_docks[i] = out; } }
+    // WHAT: {dock id, ore index} for every [AUTO-FILTER] dock (never [MISC]): its first ore tag, else the first ore (ore order) whose list in any of cfgs (RAW configs, no tags merged) holds the dock. No ore = no pair.
+    std::vector<std::pair<int, int>> autofilter_pairs(const std::vector<DockTag>& tags, const std::vector<Config>& cfgs) {
+        std::vector<std::pair<int, int>> out;
+        for (const DockTag& t : tags) {
+            if (!t.autof || t.misc || t.park || t.refuel) continue;
+            bool isPark = false; for (const Config& c : cfgs) if (std::find(c.park_docks.begin(), c.park_docks.end(), t.id) != c.park_docks.end()) isPark = true; if (isPark) continue;
+            // never a dock in a misc list
+            bool isMisc = false; for (const Config& c : cfgs) if (std::find(c.misc_docks.begin(), c.misc_docks.end(), t.id) != c.misc_docks.end()) isMisc = true; if (isMisc) continue;
+            int ore = t.ores.empty() ? -1 : t.ores[0];
+            for (int i = 0; ore < 0 && i < N_ORE; ++i)
+                for (const Config& c : cfgs)
+                    if (std::find(c.ore_docks[i].begin(), c.ore_docks[i].end(), t.id) != c.ore_docks[i].end()) { ore = i; break; }
+            if (ore >= 0) out.push_back({t.id, ore}); }
+        return out; }
+    // WHAT: ids of [PARKING] docks, in tag (id) order.
+    inline std::vector<int> park_ids(const std::vector<DockTag>& tags) { std::vector<int> o; for (const DockTag& t : tags) if (t.park) o.push_back(t.id); return o; }
+    // WHAT: refuel candidates that serve fuel mask `need` (a [REFUEL] dock with fuel tags serves only those; no fuel tag or untagged = all fuels). Nothing matches = cands unchanged.
+    // WHY: a dock tagged [HYDROGEN] must not be picked when deuterium is what the ship lacks.
+    inline std::vector<int> refuel_by_fuel(const std::vector<int>& cands, const std::vector<DockTag>& tags, int need) {
+        if (need == 0) return cands;
+        std::vector<int> o;
+        for (int d : cands) {
+            int mask = 0;
+            for (const DockTag& t : tags) if (t.id == d && t.refuel) mask = t.fuel;
+            if (mask == 0 || (mask & need) != 0) o.push_back(d); }
+        return o.empty() ? cands : o; }
+    // WHAT: parking ids nearest first (dist_m parallel to ids); dist < 0 (unknown) last; ties keep order. Sizes differ = unchanged.
+    inline std::vector<int> park_order(std::vector<int> ids, const std::vector<double>& dist_m) {
+        if (ids.size() != dist_m.size()) return ids;
+        std::vector<size_t> ix(ids.size()); for (size_t i = 0; i < ix.size(); ++i) ix[i] = i;
+        std::stable_sort(ix.begin(), ix.end(), [&](size_t a, size_t b) { const bool ua = dist_m[a] < 0, ub = dist_m[b] < 0; if (ua != ub) return ub; return !ua && dist_m[a] < dist_m[b]; });
+        std::vector<int> o; for (size_t i : ix) o.push_back(ids[i]); return o; }
+    // WHAT: should an idle ship park now? Needs a parking dock, no user stop, no error, and not already docked at one.
+    inline bool park_wanted(const std::vector<int>& ids, int docked_at, bool user_stop, bool err) {
+        return !ids.empty() && !user_stop && !err && std::find(ids.begin(), ids.end(), docked_at) == ids.end(); }
     // WHAT: current queue row per ship id (runtime only; 0 = first row). Advanced by item_advance, reset by mine_cmd start.
     std::map<int, int> g_item_idx;
     // WHAT: copies the keys present in kv into c. An empty value counts as missing and keeps c's value.
@@ -245,6 +365,8 @@ namespace
             auto it = kv.find(std::string("unload_docks_") + ORE_KEY[i]);
             if (it != kv.end()) c.ore_docks[i] = dock_list(it->second);
         }
+        { auto it = kv.find("unload_docks_misc"); if (it != kv.end()) c.misc_docks = dock_list(it->second); }
+        { auto it = kv.find("parking_docks"); if (it != kv.end()) c.park_docks = dock_list(it->second); }
         { auto it = kv.find("refuel_docks"); if (it != kv.end()) c.refuel_docks = dock_list(it->second); }
     }
     // WHAT: effective config for ship sid: g_cfg plus its [ship.<sid>] overrides.
@@ -254,6 +376,7 @@ namespace
         Config c = g_cfg;
         auto it = g_ship_kv.find(sid);
         if (it != g_ship_kv.end()) apply_kv(c, it->second, true);
+        { const auto nm = g_ship_names.find(sid); if (nm != g_ship_names.end()) { const auto tg = ship_tags_parse(nm->second); if (!tg.empty()) { c.items.clear(); for (const auto& q : tg) c.items.push_back({ORE_ITEM[q.first], q.second}); c.has_items = true; } } }   // name tags replace the INI queue (INI untouched)
         if (c.has_items)
         {
             if (c.items.empty()) { c.resource.clear(); c.amount = 0; }
@@ -266,6 +389,7 @@ namespace
                 c.amount = c.items[i].second;
             }
         }
+        apply_dock_tags(c);
         return c;
     }
     // WHAT: parses "<seq>|<ship>|<cmd>". false when any part is malformed: seq and ship must be digits, cmd must not be empty.
@@ -352,6 +476,8 @@ namespace
     // WHAT: far trip warp only inside one sector: both sector ids known (> 0) and equal.
     // WHY: a warp across sectors is not wanted; an unknown sector (0) on either side skips the warp (the ship flies as before).
     inline bool trip_same_sector(int ship_sec, int dock_sec) { return ship_sec > 0 && ship_sec == dock_sec; }
+    // WHAT: dt that counts toward an order-build timeout: 0 while paused (a paused sim processes no commands), else dt.
+    inline double ob_dt(double dt, bool paused) { return paused ? 0.0 : dt; }
     // WHAT: the two sectors conflict only when both are known and different. An unknown sector (0, open space outside the named sectors) never blocks a warp.
     // WHY: the rule is warp when the flight is longer than warp_trip_km; open space has no sector, so it must not refuse the warp.
     inline bool sectors_conflict(int a, int b) { return a > 0 && b > 0 && a != b; }
@@ -363,15 +489,6 @@ namespace
         if (now_m <= 0.0) return false;
         if (best_m < 0.0 || best_m - now_m >= step_m) { best_m = now_m; return true; }
         return false;
-    }
-
-    constexpr double WARP_SETTLE_MIN_S = 2.0, WARP_SETTLE_MAX_S = 30.0, WARP_ARRIVE_M = 1000.0;
-    // WHAT: far-trip warp settled (dock job stage 4): at least WARP_SETTLE_MIN_S, then the ship reads within WARP_ARRIVE_M of the dock (dock_dist_m >= 0) or WARP_SETTLE_MAX_S has passed.
-    // WHY: the dock order is issued only after the warp has landed (no order runs during the teleport).
-    inline bool warp_settle_done(double t, double dock_dist_m)
-    {
-        if (t < WARP_SETTLE_MIN_S) return false;
-        return (dock_dist_m >= 0.0 && dock_dist_m <= WARP_ARRIVE_M) || t >= WARP_SETTLE_MAX_S;
     }
 
     // ---------- far-trip warp for our flights (WARPFLIGHT) ----------
@@ -430,6 +547,18 @@ namespace
     bool fuel_low(const FuelCfg& f, int64_t have)
     {
         return have >= 0 && have < f.threshold;
+    }
+
+    // WHAT: fuel tag mask to refuel now: the low enabled fuels, else all enabled fuels (0 = none enabled).
+    // WHY: picks which [REFUEL] docks fit (see refuel_by_fuel).
+    inline int fuel_need_mask(const Config& c, const int64_t have[N_FUEL])
+    {
+        int low = 0, on = 0;
+        for (int i = 0; i < N_FUEL; ++i) {
+            if (!c.fuel[i].on) continue;
+            on |= FUEL_BIT[i];
+            if (fuel_low(c.fuel[i], have[i])) low |= FUEL_BIT[i]; }
+        return low ? low : on;
     }
 
     // WHAT: ore gained since the last sample: inv - last when it went up, else 0.
@@ -535,6 +664,44 @@ namespace
         return count >= need;
     }
 
+    // WHAT: maps MSCore_ship_mining_caps (API 15) to the presence read: caps < 0 (unknown, dead, module off, fault) = -1 unknown;
+    //       bit 1 (MiningLaser) set = 1 present; readable with no MiningLaser = 0 absent. ItemScooper-only (2) = 0.
+    // WHY: MSCore_presence_step takes read 1 / 0 / -1; the mod only maps the caps value to it.
+    inline int mining_read_from_caps(int caps)
+    {
+        if (caps < 0) return -1;
+        return (caps & 1) ? 1 : 0;
+    }
+
+    // WHAT: laser gate mode per ship. FALLBACK_BENCH_ONLY = no MSCore laser check (export missing / load failed, or module off = caps -2): the released behaviour.
+    //       HOLD = caps unknown (-1): presence_step holds the state. CHECK = caps 0..3 read.
+    // WHY: a standalone mod must keep working with an older or disabled MSCore.
+    enum LaserGateMode { LASER_CHECK, LASER_HOLD, LASER_FALLBACK_BENCH_ONLY };
+    inline LaserGateMode laser_gate_mode(bool have_export, int caps)
+    {
+        if (!have_export || caps == -2) return LASER_FALLBACK_BENCH_ONLY;
+        if (caps == -1) return LASER_HOLD;
+        return LASER_CHECK;
+    }
+
+    // WHAT: has (in the mining list) for one live ship. FALLBACK = bench alone. HOLD (caps unknown) = bench alone too: an unknown read accepts a bench ship, listed or not.
+    //       CHECK = presence_accepted (MSCore_presence_step debounce; also used for a bench-less read, which is 0 and debounced).
+    // WHY: a ship with a bench and an unreadable laser stays usable; a ship without a laser is still dropped by the debounce once it reads 0.
+    // NOTE: listed is not needed by any mode (kept in the signature for the scan's call shape).
+    inline bool gate_accept(bool bench, LaserGateMode mode, bool listed, bool presence_accepted)
+    {
+        (void)listed;
+        if (mode == LASER_FALLBACK_BENCH_ONLY || mode == LASER_HOLD) return bench;
+        return presence_accepted;
+    }
+
+    // WHAT: presence read for MSCore_presence_step: no bench block = absent (0); else mining_read_from_caps.
+    // WHY: a ship that loses the bench or the laser is absent for the debounce; one transient bench read of 0 does not drop it.
+    inline int bench_read(bool bench, int caps)
+    {
+        return bench ? mining_read_from_caps(caps) : 0;
+    }
+
     // WHAT: TArray Num read from game memory, clamped to 0..100000 before it sizes a buffer.
     // WHY: a stale or wrong array count must not allocate or index past the array.
     constexpr int32_t TARRAY_NUM_MAX = 100000;
@@ -568,6 +735,18 @@ namespace
     }
     // WHAT: hit with no attacker at all: no near hostile, no far hostile, IsShipInCombat false. Anything targeting the ship makes the hit an attack.
     inline bool hazard_flee_full(int hostile_near, int hostile_far, bool combat) { return hostile_near <= 0 && hostile_far <= 0 && !combat; }
+    constexpr double SAFETY_WAIT_S = 10.0;      // restart this long after the safety stop (s)
+    constexpr int SAFETY_MAX_N = 3;             // safety stops allowed per window
+    constexpr double SAFETY_WINDOW_S = 300.0;   // window (s)
+    // WHAT: a safety stop is allowed when fewer than SAFETY_MAX_N happened in the last SAFETY_WINDOW_S (hist = times of past stops, now = same clock).
+    inline bool safety_allowed(const std::vector<double>& hist, double now)
+    {
+        int n = 0;
+        for (double h : hist) if (now - h < SAFETY_WINDOW_S) ++n;
+        return n < SAFETY_MAX_N;
+    }
+    // WHAT: the other ships restart when waited >= SAFETY_WAIT_S (counted from the hit ship starting to flee).
+    inline bool safety_restart_due(double waited) { return waited >= SAFETY_WAIT_S; }
     constexpr double HAZARD_STUCK_MPS = 1.0;     // speed below this = not moving (m/s)
     constexpr size_t HAZARD_STUCK_N = 3;         // speed samples (1 s apart) below HAZARD_STUCK_MPS in a row = stuck
     // WHAT: last HAZARD_STUCK_N speed samples (oldest first) all below HAZARD_STUCK_MPS.
@@ -587,7 +766,6 @@ namespace
     }
     constexpr double HAZARD_MOVE_AFTER_S = 5.0;  // hull still dropping this long after the flee began: move away (no hold)
     constexpr double HAZARD_DROP_FRESH_S = 2.0;  // a hull drop this recent counts as "still dropping"
-    constexpr double HAZARD_RADIUS_M = 5000.0;   // move-away point: this far from the damage start (m); circling keeps the ship >= 2 km away
     constexpr double HAZARD_RETRY_S = 1.0;       // a refused or finished move-away is re-issued after this long (s)
     // WHAT: a fleeing ship with no holding spot yet (slot_ok false), not yet holding (hold_ph != 2), no move/dock job, and the retry wait over must start a move-away.
     inline bool flee_idle_move_due(bool slot_ok, int hold_ph, double hz_t, bool move_busy, bool dock_busy)
@@ -599,14 +777,6 @@ namespace
     {
         return flee_t >= HAZARD_MOVE_AFTER_S && drop_age < HAZARD_DROP_FRESH_S && !move_busy && !dock_busy;
     }
-    // WHAT: direction k of the move-away circle: base turned k * 90 degrees about Z (XY plane; z kept). k = 0 is base.
-    inline void hazard_dir(const double base[3], int k, double out[3])
-    {
-        const int q = ((k % 4) + 4) % 4;
-        double x = base[0], y = base[1];
-        for (int i = 0; i < q; ++i) { const double nx = -y; y = x; x = nx; }   // +90 degrees per step
-        out[0] = x; out[1] = y; out[2] = base[2];
-    }
 
     // ---------- shields: drop rule shared with hull ----------
     // WHAT: shield lost since the last sample. baseline < 0 or s < 0 (unreadable) = never a drop. A rise (regeneration) is never a drop.
@@ -614,6 +784,8 @@ namespace
     inline bool shield_dropped(int32_t baseline, int32_t s) { return s >= 0 && hull_dropped(baseline, s); }
     // WHAT: whole shield units from the GetShields double. Negative / NaN = -1 (unreadable). Floors, so regeneration never looks like a drop; clamps to INT32_MAX.
     inline int32_t shield_whole(double v) { if (!(v >= 0.0)) return -1; if (v > 2147483647.0) return 2147483647; return static_cast<int32_t>(v); }
+    // WHAT: whole shield units from the raw PNum Value (Q16 fixed point, 65536 = 1 unit). Negative raw = -1 (unreadable).
+    inline int32_t shield_from_raw(int64_t raw) { return shield_whole(static_cast<double>(raw) / 65536.0); }
     // WHAT: flee dock candidates. With cargo the cargo candidates stay; with empty cargo (no ore lists match) every ore dock list, then refuel docks, in order, no duplicates.
     inline std::vector<int> flee_fallback_docks(std::vector<int> cargo_cands,
             const std::vector<std::vector<int>>& ore_docks, const std::vector<int>& refuel)
@@ -638,7 +810,6 @@ namespace
     // ---------- clear-path check for approaches (segment ship -> stand-off point against rock spheres) ----------
     // Clearance of the path check is the config key path_clearance_m (Config, default 8 m). A rock blocks when its centre is closer than
     // block_r_m(rock radius, clearance) to the segment. The rock radius is scaled by ROCK_BLOCK_SCALE (rocks are not perfect spheres).
-    constexpr double ROCK_BLOCK_SCALE = 0.8;         // blocking radius = rock radius x this + clearance (registry data unchanged)
     constexpr double HAZARD_CLEAR_EXTRA_M = 100.0;   // hazard rocks: extra clearance on top of the path clearance (m)
     constexpr double PATH_BLOCK_PENALTY_M = 1500.0;  // retarget scoring: a candidate whose straight path is blocked is this many m farther away
     constexpr double SLOW_ZONE_M = 500.0;            // fast-sample range: a rock this close (surface, m) to a ship gets the fast hull/shield watch
@@ -648,36 +819,6 @@ namespace
     constexpr double APPR_CAP_S = 60.0;              // a target not mined within this many s of its first path event is skipped (s)
     constexpr double PATH_CHECK_S = 1.0;             // clear-path re-check period while an approach runs (s)
     constexpr double FAST_SAMPLE_S = 0.25;           // hull/shield sample period near rock (s); elsewhere 1 s
-    constexpr double APPROACH_RAMP_M = 500.0;        // approach: full Throttle beyond this distance to the stand-off point (m), linear ramp inside
-
-    // WHAT: approach Throttle step for the distance to the stand-off point (m). max_thr beyond APPROACH_RAMP_M; inside it linear down to 1
-    //       (ceil, so the last metres still move); 0 at or past the stand-off point. speed_mps is not used by the ramp (the caller brakes on it).
-    // WHY: full speed on the long leg, a smooth slow-down near the rock. Ramp is distance-only: no measured deceleration exists.
-    inline int approach_throttle(double dist_to_standoff_m, double speed_mps, int max_thr)
-    {
-        (void)speed_mps;
-        if (max_thr < 1 || dist_to_standoff_m <= 0.0) return 0;
-        if (dist_to_standoff_m >= APPROACH_RAMP_M) return max_thr;
-        return std::clamp(static_cast<int>(std::ceil(max_thr * dist_to_standoff_m / APPROACH_RAMP_M)), 1, max_thr);
-    }
-
-    // WHAT: a rock as the path check sees it: centre (m) and blocking radius (m) = rock radius + clearance.
-    struct PathRock { double c[3]; double r; };
-
-    // WHAT: segment a->b (m) blocks a sphere (c, r) when the sphere centre projects inside the segment (0..1) and its perpendicular
-    //       distance to the segment line is below r. out_d = that perpendicular distance. Tangent (distance == r) does not block.
-    // WHY: the rock is only a hazard when it lies between the ship and the stand-off point; a rock behind or past the end does not count.
-    inline bool seg_sphere_blocks(const double a[3], const double b[3], const double c[3], double r, double& out_d)
-    {
-        const double d[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
-        const double w[3] = {c[0] - a[0], c[1] - a[1], c[2] - a[2]};
-        const double l2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
-        if (l2 < 1e-12) { out_d = std::sqrt(w[0] * w[0] + w[1] * w[1] + w[2] * w[2]); return false; }
-        const double t = (w[0] * d[0] + w[1] * d[1] + w[2] * d[2]) / l2;
-        const double p[3] = {a[0] + d[0] * t, a[1] + d[1] * t, a[2] + d[2] * t};
-        out_d = std::sqrt((c[0] - p[0]) * (c[0] - p[0]) + (c[1] - p[1]) * (c[1] - p[1]) + (c[2] - p[2]) * (c[2] - p[2]));
-        return t >= 0.0 && t <= 1.0 && out_d < r;
-    }
 
     // WHAT: distance from point c to the SEGMENT a->b (clamped to the ends). Used by the bubble and path checks of the registry (the ship end counts).
     inline double seg_point_dist(const double a[3], const double b[3], const double c[3])
@@ -690,20 +831,60 @@ namespace
         return std::sqrt((c[0] - p[0]) * (c[0] - p[0]) + (c[1] - p[1]) * (c[1] - p[1]) + (c[2] - p[2]) * (c[2] - p[2]));
     }
 
-    // WHAT: index of the blocking rock nearest to a along a->b (smallest projection), -1 when none blocks. out_d = its perpendicular distance (m).
-    // WHY pointer + count: the caller keeps one reused scratch array (no copy of the rock list per check).
-    inline int path_first_blocker(const double a[3], const double b[3], const PathRock* rocks, size_t n, double& out_d)
+    // WHAT: BEAM_MARGIN_M = extra width (m) around a ship's hull that counts as inside a firing ship's laser; BEAM_CLEAR_S = how long the beam must be clear before the laser resumes (s).
+    // WHY: a ship crossing a mining beam is damaged by it (no attacker in the log); the firing ship holds fire while another ship is in the beam.
+    constexpr double BEAM_MARGIN_M = 8.0;
+    constexpr double BEAM_CLEAR_S = 1.0;
+
+    // WHAT: true when ship centre p is inside the beam a->b: distance to the segment < ship_r + BEAM_MARGIN_M (m).
+    // WHY: the segment is clamped to its ends, so the ship at the firing end and the rock end both count.
+    inline bool ship_in_beam(const double a[3], const double b[3], const double p[3], double ship_r) { return seg_point_dist(a, b, p) < ship_r + BEAM_MARGIN_M; }
+
+    // WHAT: next held state of one firing ship. hit -> held at once (clear timer reset). Not held -> stays released. Held -> released after BEAM_CLEAR_S clear.
+    // WHY: one clear tick must not flip the laser back on while the victim still crosses the beam.
+    inline bool beam_hold_next(bool held, bool hit, double& clear_t, double dt)
     {
-        int best = -1;
-        double best_t = 1e300;
-        for (size_t i = 0; i < n; ++i)
-        {
-            double d = 0.0;
-            if (!seg_sphere_blocks(a, b, rocks[i].c, rocks[i].r, d)) continue;
-            const double t = (rocks[i].c[0] - a[0]) * (b[0] - a[0]) + (rocks[i].c[1] - a[1]) * (b[1] - a[1]) + (rocks[i].c[2] - a[2]) * (b[2] - a[2]);
-            if (t < best_t) { best_t = t; best = static_cast<int>(i); out_d = d; }
-        }
-        return best;
+        if (hit) { clear_t = 0.0; return true; }
+        if (!held) return false;
+        clear_t += dt;
+        return clear_t < BEAM_CLEAR_S;
+    }
+
+    // WHAT: ship no-go sphere radius (m) = laser range; the same value is the beam hold distance (a bench ship within it holds the firing laser).
+    // WHY: a mining ship in MS_MINE blocks the other ships' paths like a rock; the laser reach and the sphere share one number.
+    constexpr double SHIP_ZONE_M = 300.0;
+    // WHAT: reg_geom radius for a ship sphere: block_r_m(SHIP_ZONE_RAD_M, clr) = SHIP_ZONE_M + clr.
+    // WHY: block_r_m scales the rock radius by ROCK_BLOCK_SCALE, so the ship radius is pre-divided by it.
+    constexpr double SHIP_ZONE_RAD_M = SHIP_ZONE_M / ROCK_BLOCK_SCALE;
+    // WHAT: a firing laser held this long (s) makes the ship give its rock up (shared zone deadlock breaker).
+    constexpr double BEAM_YIELD_S = 15.0;
+
+    // WHAT: true when centre a is closer than SHIP_ZONE_M (m) to centre c.
+    // WHY: inline sqrt, dist3 lives in mb_math.hpp which this pure file does not include.
+    inline bool in_ship_zone(const double a[3], const double c[3])
+    {
+        const double d[3] = {a[0] - c[0], a[1] - c[1], a[2] - c[2]};
+        return std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]) < SHIP_ZONE_M;
+    }
+
+    // WHAT: true when this ship must HOLD its laser for the other ship inside the zone: the other is not firing, or fired earlier (t, ms), or same t and lower sid.
+    // WHY: first ship to fire in a shared zone keeps firing; the other holds, with a fixed tiebreak so both never hold at once.
+    inline bool zone_hold_for(bool other_fires, uint64_t other_t, int other_sid, uint64_t my_t, int my_sid)
+    {
+        return !other_fires || other_t < my_t || (other_t == my_t && other_sid < my_sid);
+    }
+
+    // WHAT: true when the laser has been held for at least BEAM_YIELD_S (s).
+    inline bool beam_yield_due(double held_s) { return held_s >= BEAM_YIELD_S; }
+
+    // WHAT: true when the asker (a) is already inside the sphere (c, r) (m) and moving away from its centre (b-a . c-a <= 0): that sphere is ignored.
+    // WHY: a ship that starts inside another ship's zone must be able to leave; it must not be blocked by the sphere it is already in.
+    inline bool ship_blk_ignore(const double a[3], const double b[3], const double c[3], double r)
+    {
+        const double ab[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+        const double ac[3] = {c[0] - a[0], c[1] - a[1], c[2] - a[2]};
+        const double dd = std::sqrt((c[0] - a[0]) * (c[0] - a[0]) + (c[1] - a[1]) * (c[1] - a[1]) + (c[2] - a[2]) * (c[2] - a[2]));
+        return dd < r && (ab[0] * ac[0] + ab[1] * ac[1] + ab[2] * ac[2]) <= 0.0;
     }
 
     // ---------- path check cost limits (perf) ----------
@@ -738,31 +919,7 @@ namespace
     // WHAT: a ship's periodic clear-path check is due after PATH_WATCH_S of approach time.
     inline bool path_watch_due(double t) { return t >= PATH_WATCH_S; }
 
-    // ---------- bubble: reflex brake before a rock on the nose (mb_bubble.hpp) ----------
-    constexpr double BUBBLE_LOOK_MIN_M = 100.0;      // look-ahead never shorter than this (m)
-    constexpr double BUBBLE_LOOK_S = 4.0;            // look-ahead = speed x this (s), along the nose
-    constexpr double BUBBLE_BRAKE_V = 3.0;           // braking ends below this speed (m/s)
-    constexpr int BUBBLE_MAX_REPLAN = 2;             // replans per target before the target is given up
-    constexpr double BUBBLE_SHIP_R_M = 12.0;         // ship CollisionRadius when the game read fails (m)
-    constexpr double BUBBLE_SLOW_MS = 2.0;          // one ship's bubble pass over this many ms is slow ('BUBBLE slow')
-
-    // WHAT: look-ahead length (m) for speed_mps (m/s): speed x BUBBLE_LOOK_S, at least BUBBLE_LOOK_MIN_M.
-    inline double bubble_look_ahead(double speed_mps) { return std::max(BUBBLE_LOOK_MIN_M, std::max(0.0, speed_mps) * BUBBLE_LOOK_S); }
-    // WHAT: clearance (m) for a ship of collision radius ship_r (m) and bubble clearance clr (m, config bubble_clearance_m). The rock block radius is added by block_r_m.
-    inline double bubble_clear_m(double ship_r, double clr) { return ship_r + clr; }
-
     // ---------- blocking geometry and waypoint plan (stage tune) ----------
-    // WHAT: blocking radius (m) of a rock: its radius x ROCK_BLOCK_SCALE + clear_m (clearance, m).
-    inline double block_r_m(double rock_r, double clear_m) { return std::max(0.0, rock_r) * ROCK_BLOCK_SCALE + clear_m; }
-    // WHAT: waypoint candidate beside a blocker: point at distance off (m) from its centre c, perpendicular to the ship->target direction dir (unit),
-    //       on side (+1 / -1). The perpendicular is dir x Z (+Y when dir is along Z).
-    inline void side_point(const double c[3], const double dir[3], double off, int side, double out[3])
-    {
-        double u[3] = {dir[1], -dir[0], 0.0};
-        double n = std::sqrt(u[0] * u[0] + u[1] * u[1]);
-        if (n < 1e-9) { u[0] = 0.0; u[1] = 1.0; n = 1.0; }
-        for (int i = 0; i < 3; ++i) out[i] = c[i] + static_cast<double>(side) * u[i] / n * off;
-    }
     // WHAT: retarget score of a candidate rock: its distance (m) plus PATH_BLOCK_PENALTY_M when its straight path is blocked. Lower is better.
     inline double pick_score(double dist_m, bool blocked) { return dist_m + (blocked ? PATH_BLOCK_PENALTY_M : 0.0); }
     // WHAT: landing point candidate k (0..3) of a warp toward T (m) along unit dir (ship -> T): 0 = WARP_LAND_M short of T, 1 = 2 x WARP_LAND_M short,
@@ -778,70 +935,12 @@ namespace
     // WHAT: a point at dist (m) from a rock centre is inside the rock block radius (block_r_m(rad, clear)).
     inline bool point_blocked(double dist_m, double rad_m, double clear_m) { return dist_m < block_r_m(rad_m, clear_m); }
 
-    // WHAT: waypoint candidate k (0..3) beside a blocker: k 0 = +side at 1.0 x block radius, 1 = -side at 1.0x, 2 = +side at 1.6x, 3 = -side at 1.6x.
-    //       c = blocker centre (m), u = unit ship->target direction, br = blocker block radius (m). out = point (m).
-    inline void waypoint_candidate(int k, const double c[3], const double u[3], double br, double out[3])
-    {
-        const double factor = (k / 2) ? 1.6 : 1.0;
-        const int side = (k % 2) ? -1 : 1;
-        side_point(c, u, br * factor, side, out);
-    }
-    // WHAT: index of the first waypoint candidate whose two legs are clear (leg_clear[k] = ship->wp and wp->target both clear), -1 when none.
-    inline int waypoint_pick(const bool* leg_clear, int n)
-    {
-        for (int k = 0; k < n; ++k) if (leg_clear[k]) return k;
-        return -1;
-    }
     // WHAT: the approach of a target has run APPR_CAP_S since its first path event (first_ms, 0 = no event yet). now_ms in GetTickCount64 ms.
     inline bool appr_capped(uint64_t first_ms, uint64_t now_ms) { return first_ms != 0 && now_ms - first_ms >= static_cast<uint64_t>(APPR_CAP_S * 1000.0); }
 
-    // WHAT: bubble ladder action. NONE = nothing; BRAKE = hit seen, throttle cut (the log line names the next action); REPLAN = after braking,
-    //       path_guard against the target with the blocker skipped; RETARGET = after BUBBLE_MAX_REPLAN replans, the target is given up.
-    enum BubbleAct { BBA_NONE = 0, BBA_BRAKE = 1, BBA_REPLAN = 2, BBA_RETARGET = 3 };
-    // WHAT: ladder state of one ship. braking = throttle held at 0 until speed < BUBBLE_BRAKE_V. pending = action after the stop.
-    //       replans = replans done for rock. rock = the target the count belongs to (a new target starts at 0).
-    //       blk / blk_d = last blocker id and its distance to the nose line (m), kept for the replan and the log.
-    //       phase = flight phase of the last hit. wp = waypoints used in this flight. resume = a waypoint is flying; dst = the flight destination (m)
-    //       to fly again when the waypoint ends (WAYPOINT and ORE phases). why = last activation reason (status line only).
-    struct BubbleState { bool braking = false; int replans = 0; int pending = BBA_NONE; int rock = 0; int blk = 0; double blk_d = 0.0;
-                         int prev_id = 0; double prev_d = 0.0; int phase = 0; int wp = 0; bool resume = false; double dst[3] = {0, 0, 0}; int why = 4; };   // phase: BubblePhase, why: BubbleWhy (4 = BW_IDLE)
-    // WHAT: one ladder step. hit = a blocker lies in the bubble, speed_mps = current speed, rock = current target id.
-    //       Clear -> hit: BRAKE, pending = REPLAN, or RETARGET after BUBBLE_MAX_REPLAN replans. Braking -> speed < BUBBLE_BRAKE_V: returns pending
-    //       (REPLAN or RETARGET) once and counts it. Otherwise NONE.
-    // WHY: brake first, then replan, then give up: the ship never flies on at speed toward a rock.
-    inline BubbleAct bubble_step(BubbleState& s, bool hit, double speed_mps, int rock)
-    {
-        if (s.rock != rock) { s.rock = rock; s.replans = 0; s.braking = false; s.pending = BBA_NONE; }
-        if (!s.braking)
-        {
-            if (!hit) return BBA_NONE;
-            s.braking = true;
-            s.pending = s.replans < BUBBLE_MAX_REPLAN ? BBA_REPLAN : BBA_RETARGET;
-            return BBA_BRAKE;
-        }
-        if (speed_mps >= BUBBLE_BRAKE_V) return BBA_NONE;
-        const BubbleAct act = static_cast<BubbleAct>(s.pending);
-        s.braking = false;
-        s.pending = BBA_NONE;
-        if (act == BBA_REPLAN) ++s.replans; else s.replans = 0;
-        return act;
-    }
-
     // ---------- path2: replan gate, rock-lost counting, start grace, strikes, bubble closing ----------
-    constexpr uint64_t REPLAN_COOLDOWN_MS = 20000;   // one waypoint plan per target per this many ms
     constexpr uint64_t REPLAN_LOG_MS = 30000;        // 'PATH replan suppressed' at most this often
     constexpr double LOST_PROGRESS_M = 50.0;         // approach progress (m) that starts the rock-lost count again
-    constexpr double START_GRACE_M = 20.0;           // a blocker overlapping the ship start: ship radius + rock radius + this (m)
-    constexpr int STRIKE_MAX = 3;                    // same blocker on the same target this many times: the target is skipped
-    enum ReplanGate { RG_OK = 0, RG_WP_ACTIVE = 1, RG_COOLDOWN = 2 };
-    // WHAT: may path logic plan a waypoint now? wp_active: a waypoint flight of this ship runs (no new plan). Cooldown: the last waypoint plan was
-    //       for the same target less than REPLAN_COOLDOWN_MS ago. last_ms 0 = none yet.
-    inline ReplanGate replan_gate(bool wp_active, int tid, int last_tid, uint64_t last_ms, uint64_t now_ms)
-    {
-        if (wp_active) return RG_WP_ACTIVE;
-        if (last_tid == tid && last_ms != 0 && now_ms - last_ms < REPLAN_COOLDOWN_MS) return RG_COOLDOWN;
-        return RG_OK;
-    }
     // WHAT: rock-lost count after an approach result. Only a result 'rock lost' with the rock actor really gone counts; our own cancels
     //       (own_cancel) and a rock still there never count (they are free retries).
     inline int rock_lost_next(int n, bool result_rock_lost, bool rock_gone, bool own_cancel)
@@ -850,99 +949,9 @@ namespace
     }
     // WHAT: approach progress since the reference point is enough to start the rock-lost count again (moved_m > LOST_PROGRESS_M).
     inline bool lost_progress(double moved_m) { return moved_m > LOST_PROGRESS_M; }
-    // WHAT: start grace. A blocker whose centre is within ship radius + rock radius + START_GRACE_M of the ship start is ignored when the
-    //       ship moves away from it (away) or when the first 60 m of the segment are inside its block radius (first60_inside).
-    inline bool grace_ignore(double start_d, double ship_r, double rock_r, bool away, bool first60_inside)
-    {
-        return start_d < ship_r + rock_r + START_GRACE_M && (away || first60_inside);
-    }
-    // WHAT: the same blocker blocked the same target this many times: skip the target.
-    inline bool strikes_reached(int n) { return n >= STRIKE_MAX; }
-    // WHAT: bubble brake only for a blocker ahead (cos_ahead > 0) and closing. Closing: range to it fell since the last pass (same blocker),
-    //       or first sight while moving (speed > 0). Beside, behind or opening: no brake.
-    inline bool bubble_brake_ok(double cos_ahead, double dist_now, double dist_prev, bool same_prev, double speed_mps)
-    {
-        if (cos_ahead <= 0.0) return false;
-        if (!same_prev) return speed_mps > 0.0;
-        return dist_now < dist_prev - 0.01;
-    }
-
-    // ---------- bubble scope: which ships, which phase, which fix (stage 2b) ----------
-    constexpr int BUBBLE_MAX_WP = 2;                 // waypoints around a blocker per flight (waypoint and ore phases)
-    constexpr double BUBBLE_NUDGE_M = 100.0;         // mining drift nudge: move this far away from the rock (m)
+    // ---------- bubble ladder: moved to ShipControl sc_logic_bubble.hpp (SC3-C) ----------
     constexpr double BUBBLE_NEAR_MARGIN_M = 10.0;    // drift nudge when centre distance < ship radius + rock radius + this (m)
 
-    // WHAT: why the bubble does or does not act on a ship. ACTIVE = our steering (move job with thrust) or speed > BUBBLE_BRAKE_V with no game autopilot.
-    enum BubbleWhy { BW_ACTIVE = 0, BW_AUTOPILOT = 1, BW_DOCK_AUTOPILOT = 2, BW_TRAVEL = 3, BW_IDLE = 4 };
-    // WHAT: activation rule. The game autopilot (bAutopilot, bDockingAutopilot) and warp travel always win: the game has its own avoidance there.
-    //       thrust_job = an approach move job (our steering). Otherwise active only when moving faster than BUBBLE_BRAKE_V.
-    inline BubbleWhy bubble_why(bool autopilot, bool dock_autopilot, bool travelling, bool thrust_job, double speed_mps)
-    {
-        if (autopilot) return BW_AUTOPILOT;
-        if (dock_autopilot) return BW_DOCK_AUTOPILOT;
-        if (travelling) return BW_TRAVEL;
-        if (thrust_job || speed_mps > BUBBLE_BRAKE_V) return BW_ACTIVE;
-        return BW_IDLE;
-    }
-    inline const char* bubble_why_name(BubbleWhy w)
-    {
-        switch (w)
-        {
-        case BW_ACTIVE: return "active (our steering or moving)";
-        case BW_AUTOPILOT: return "inactive: game autopilot engaged (bAutopilot=1)";
-        case BW_DOCK_AUTOPILOT: return "inactive: game docking autopilot engaged (bDockingAutopilot=1)";
-        case BW_TRAVEL: return "inactive: travelling (warp)";
-        default: return "inactive: not moving (speed <= 3 m/s, no move job)";
-        }
-    }
-
-    // WHAT: flight phase the bubble protects. SEEK = rock approach (move job, target rock); WAYPOINT = point flight (waypoint, undock or return leg,
-    //       nudge); ORE = flight to floating ore; MINE = no job, moving (drift while mining or idle).
-    enum BubblePhase { BPH_NONE = 0, BPH_SEEK = 1, BPH_WAYPOINT = 2, BPH_ORE = 3, BPH_MINE = 4 };
-    // WHAT: phase of a ship from its move job flags. drift = no move job and moving.
-    inline BubblePhase bubble_phase(bool approach_job, bool pt_flight, bool ore_flight, bool drift)
-    {
-        if (approach_job && ore_flight) return BPH_ORE;
-        if (approach_job && pt_flight) return BPH_WAYPOINT;
-        if (approach_job) return BPH_SEEK;
-        if (drift) return BPH_MINE;
-        return BPH_NONE;
-    }
-    inline const char* bubble_phase_name(BubblePhase p)
-    {
-        switch (p)
-        {
-        case BPH_SEEK: return "seek";
-        case BPH_WAYPOINT: return "waypoint";
-        case BPH_ORE: return "ore";
-        case BPH_MINE: return "mine";
-        default: return "none";
-        }
-    }
-
-    // WHAT: the fix for the stop of one ladder event. SEEK: replan (path_guard) or skip (give up the target).
-    //       WAYPOINT / ORE: waypoint while wp_used < BUBBLE_MAX_WP, else skip. MINE: nudge when near a rock, else resume (brake only).
-    enum BubbleFix { BF_NONE = 0, BF_REPLAN = 1, BF_WAYPOINT = 2, BF_SKIP = 3, BF_NUDGE = 4, BF_RESUME = 5 };
-    inline BubbleFix bubble_fix(BubblePhase ph, int act, int wp_used, bool near_rock)
-    {
-        if (ph == BPH_MINE) return near_rock ? BF_NUDGE : BF_RESUME;
-        if (act == BBA_RETARGET) return BF_SKIP;
-        if (ph == BPH_SEEK) return BF_REPLAN;
-        if (ph == BPH_WAYPOINT || ph == BPH_ORE) return wp_used < BUBBLE_MAX_WP ? BF_WAYPOINT : BF_SKIP;
-        return BF_NONE;
-    }
-    inline const char* bubble_fix_name(BubbleFix f)
-    {
-        switch (f)
-        {
-        case BF_REPLAN: return "replan";
-        case BF_WAYPOINT: return "waypoint";
-        case BF_SKIP: return "skip";
-        case BF_NUDGE: return "nudge";
-        case BF_RESUME: return "resume";
-        default: return "none";
-        }
-    }
     // WHAT: a drifting ship is too near a rock: centre distance (m) below ship radius + rock radius + BUBBLE_NEAR_MARGIN_M.
     inline bool bubble_too_near(double centre_m, double ship_r, double rock_r) { return centre_m < ship_r + rock_r + BUBBLE_NEAR_MARGIN_M; }
 
@@ -954,27 +963,6 @@ namespace
         if (n < 1e-9) { d[0] = 1.0; d[1] = 0.0; d[2] = 0.0; }
         else for (double& x : d) x /= n;
         for (int i = 0; i < 3; ++i) out[i] = c[i] + d[i] * dist;
-    }
-
-    // WHAT: waypoint beside a blocker: the point at distance r from the blocker centre c, perpendicular to the path a->b, on the side of c away from the path.
-    //       When c lies on the path line, the side is perpendicular to the path and to +Z (fallback: perpendicular to the path and to +Y).
-    // WHY: the ship flies around the blocker, never through its zone; the path is re-checked at the waypoint.
-    inline void path_waypoint(const double a[3], const double b[3], const double c[3], double r, double out[3])
-    {
-        double u[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
-        double un = std::sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]);
-        if (un < 1e-9) { u[0] = 1.0; u[1] = 0.0; u[2] = 0.0; un = 1.0; }
-        for (double& x : u) x /= un;
-        const double t = (c[0] - a[0]) * u[0] + (c[1] - a[1]) * u[1] + (c[2] - a[2]) * u[2];
-        double n[3] = {c[0] - (a[0] + u[0] * t), c[1] - (a[1] + u[1] * t), c[2] - (a[2] + u[2] * t)};   // blocker minus its projection on the path line
-        double nn = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
-        if (nn < 1e-6)   // blocker on the path line: u x Z, else (u parallel to Z) the Y direction
-        {
-            n[0] = u[1]; n[1] = -u[0]; n[2] = 0.0;
-            nn = std::sqrt(n[0] * n[0] + n[1] * n[1]);
-            if (nn < 1e-6) { n[0] = 0.0; n[1] = 1.0; n[2] = 0.0; nn = 1.0; }
-        }
-        for (int i = 0; i < 3; ++i) out[i] = c[i] + n[i] / nn * r;
     }
 
     // WHAT: a rock is sampled at the fast period (FAST_SAMPLE_S) when its surface distance to the ship is within SLOW_ZONE_M.
@@ -1039,6 +1027,21 @@ namespace
         return out;
     }
 
+    // WHAT: ORE indices in cargo with NO unload dock list (they go to a misc dock when one exists).
+    std::vector<int> unload_misc_ores(const std::vector<bool>& in_cargo, const std::vector<bool>& has_docks)
+    {
+        std::vector<int> out;
+        for (size_t i = 0; i < in_cargo.size() && i < has_docks.size(); ++i)
+            if (in_cargo[i] && !has_docks[i]) out.push_back(static_cast<int>(i));
+        return out;
+    }
+
+    // WHAT: a trip uses the misc docks only when no ore dock is a candidate, misc docks exist, and something is left (no-dock ores or non-ore items). WHY: misc docks are the LAST docks in the unload order (user 2026-11-19).
+    bool unload_misc_trip(size_t ore_cands, size_t misc_ores, size_t other_items, bool has_misc)
+    {
+        return ore_cands == 0 && has_misc && (misc_ores + other_items) > 0;
+    }
+
     // WHAT: refuel stalled: items not all delivered, t >= wait_s, and the fuel cargo has not grown for idle_s (idle_s 0 = off).
     bool refuel_stalled(bool done, int idle_s, double t, int wait_s, double hold_idle)
     {
@@ -1051,15 +1054,15 @@ namespace
         return seq != last;
     }
 
-    // WHAT: Dev Menu Stations tab: a station is destroyable only if its class is the plain player class. INFERRED from legacy assets (NPC stations are BP_AllyStationObject_C, BP_AbandonedStationObject_01_C, BPO_TradingOutpost_01_C).
-    bool station_destroyable(const std::string& cls) { return cls == "BP_StationObject_C"; }
+    // WHAT: Dev Menu Stations tab: a station is destroyable only if its class is the MSCore player station class (logical "player_station"; empty = MSCore too old, nothing destroyable). INFERRED from legacy assets (NPC stations are BP_AllyStationObject_C, BP_AbandonedStationObject_01_C, BPO_TradingOutpost_01_C).
+    bool station_destroyable(const std::string& cls, const std::string& player_cls) { return !player_cls.empty() && cls == player_cls; }
 
     // WHAT: one DevStations.txt row: id|name|class|platforms|destroyable(1/0). '|', CR and LF in name/class become spaces.
-    std::string station_row(int id, std::string name, std::string cls, int platforms)
+    std::string station_row(int id, std::string name, std::string cls, int platforms, const std::string& player_cls)
     {
         for (char& c : name) if (c == '|' || c == '\r' || c == '\n') c = ' ';
         for (char& c : cls) if (c == '|' || c == '\r' || c == '\n') c = ' ';
-        return std::to_string(id) + "|" + name + "|" + cls + "|" + std::to_string(platforms) + "|" + (station_destroyable(cls) ? "1" : "0");
+        return std::to_string(id) + "|" + name + "|" + cls + "|" + std::to_string(platforms) + "|" + (station_destroyable(cls, player_cls) ? "1" : "0");
     }
 
     // WHAT: station id from the text after "dev_destroy_station:". Digits only, 1..9 chars, > 0. Else 0.
@@ -1073,7 +1076,7 @@ namespace
     // WHAT: a ship's wait reason, why a ship is at a dock, and the holder state of a dock user.
     // WHY: one shared queue per dock, FIFO by global ticket; no game objects here so the tests can run it.
     enum NetReason { NR_OK, NR_WAIT_BUSY, NR_WAIT_QUEUE, NR_WAIT_PARKED, NR_WAIT_FULL, NR_WAIT_UNMANAGED, NR_NOT_CONFIGURED, NR_DOCK_GONE, NR_NOTHING_TO_UNLOAD };
-    enum Purpose { P_NONE, P_UNLOAD, P_REFUEL, P_UNDOCK_TARGET, P_PICK, P_FLEE };
+    enum Purpose { P_NONE, P_UNLOAD, P_REFUEL, P_UNDOCK_TARGET, P_PICK, P_FLEE, P_PARK };
     enum HolderState { HS_WORKING, HS_PARKED };
 
     constexpr double NET_DWELL_S = 20.0;   // a working holder gets this long to unload before a waiter can send it away (s)
@@ -1489,6 +1492,9 @@ namespace
     constexpr int NOY_SKIP_VISITS = 3;
     inline bool noy_skip_now(int visits) { return visits >= NOY_SKIP_VISITS; }
 
+    // WHAT: another ship's rock pin counts as a claim only while that ship works (SEEK/MINE/COLLECT) and is not fleeing.
+    inline bool rock_claim_live(bool working_state, bool fleeing) { return working_state && !fleeing; }
+
     // WHAT: depleted rock: the rock gave ore on this visit (got_this_rock > 0), then no ore gained for DEPLETE_S with the laser on and the cargo not full.
     // WHY: a spent rock keeps its actor (HUD marker) for 30+ s; the ship sat on it. Before the first ore the no-yield watchdog still applies.
     constexpr double DEPLETE_S = 5.0;
@@ -1827,16 +1833,6 @@ namespace
     // WHY: dock -> seek -> low power -> dock would repeat forever when the dock does not clear the low power.
     inline bool lowpower_halt_at_dock(bool lp_trip, bool lp_due) { return lp_trip && lp_due; }
 
-    // WHAT: approach timeout (s): base, or base / max_frac in low power (max_frac = FlightModel MaxLowPowerSpeed, a fraction 0..1). Other max_frac -> base.
-    inline double approach_timeout_s(double base, bool lp, double max_frac)
-    {
-        if (!lp || max_frac <= 0.0 || max_frac >= 1.0) return base;
-        return base / max_frac;
-    }
-
-    // WHAT: Throttle step cap: min(cap, lp_thr) in low power when lp_thr > 0 (FlightModel LowPowerThrottle), else cap.
-    inline int lowpower_throttle_cap(int cap, bool lp, int lp_thr) { return (lp && lp_thr > 0) ? std::min(cap, lp_thr) : cap; }
-
     // WHAT: true when name holds one of the words (ASCII case-insensitive, words in lower case).
     inline bool name_has_word(const std::wstring& name, const wchar_t* const* words, size_t n)
     {
@@ -1892,8 +1888,6 @@ namespace
     constexpr uint64_t REACTOR_AUTO_RATE_MS = 30000;    // one write attempt per reactor per this many ms
     constexpr int REACTOR_AUTO_MAX = 3;                 // attempts per reactor before the give-up line (then no more attempts)
 
-    // WHAT: no power: the grid consumes (cons > 0), produces nothing (prod <= 0) and efficiency is 0. This is the lost state (grace LOWPOWER_GRACE_S).
-    inline bool power_no_power(double cons, double prod, double eff) { return cons > 0.0 && prod <= 0.0 && eff <= 0.0; }
     // WHAT: brown-out: the grid produces but efficiency is below POWER_BROWNOUT_EFF while it consumes. Log only, no action.
     inline bool power_brownout(double cons, double prod, double eff) { return cons > 0.0 && prod > 0.0 && eff < POWER_BROWNOUT_EFF; }
     // WHAT: brown-out log event: 0 = no change, 1 = started, 2 = ended. One line per change, never per sample.

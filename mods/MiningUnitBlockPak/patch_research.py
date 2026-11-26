@@ -1,8 +1,9 @@
 # ponytail: patch vanilla RSC_MiningLaser (ResearchTechnology) so it also unlocks BPO_MinerModuleBlock_C.
 # Usage: python -I patch_research.py <OUT_DIR>   (writes RSC_MiningLaser.uasset/.uexp into OUT_DIR)
 # Adds: 2 names (package path, class), 2 imports (Package, BlueprintGeneratedClass), 1 preload ref (end of the
-# SerializationBefore deps), 1 array element (8 bytes) at the end of the block array, array count 2 -> 3.
-# Header values are patched at fixed positions, each asserted against its vanilla value. verify() re-parses the output.
+# SerializationBefore deps), 1 array element (8 bytes) at the end of the block array, array count N -> N+1.
+# Layout values are parsed from the vanilla file, not hardcoded (Nov 2026 vanilla: icon T_MiningLaser2 is kept as is).
+# Header values are patched at fixed positions, each asserted against the parsed layout. verify() re-parses the output.
 import struct
 import sys
 import os
@@ -14,20 +15,23 @@ S = MODS_ROOT + '/legacy/MainSequence/Content/Data/Research/RSC_MiningLaser'
 PK = '/Game/Blueprints/BuildingBlocks/BPO_MinerModuleBlock'
 CL = 'BPO_MinerModuleBlock_C'
 
-# vanilla layout
-NN, NO, IC, IO, EO = 29, 276, 17, 1260, 1804      # name count/offset, import count/offset, export offset
-PLO, PLC, SB = 1908, 8, 6                         # preload offset/count, SerializationBefore count
-TAIL = 20                                         # zero bytes after the preload list
-VAN_HDR, VAN_SER, VAN_UEXP = 1960, 90, 94         # header size, export SerialSize, uexp length
-VAN_REFS = [-1, -2]                               # array refs (BPO_MiningLaserBlock_C, _B_C)
-VAN_PL = [-16, -17, -15, -13, -1, -2, -5, -14]    # vanilla preload list (6 SerializationBefore + 2 CreateBefore)
-ELEM = 8                                          # new array element size in bytes
-NEWREF = -(IC + 2)                                # -19 = class import index 18
-
 u32 = lambda b, q: struct.unpack_from('<i', b, q)[0]
 a = open(S + '.uasset', 'rb').read()
+B = 60 + u32(a, 52)  # NameCount offset: 56 + FolderName len @52 (incl NUL) + 4 PackageFlags. ML 96
 e = open(S + '.uexp', 'rb').read()
-assert len(a) == VAN_HDR and len(e) == VAN_UEXP and u32(a, 44) == VAN_HDR
+
+# vanilla layout (parsed)
+NN, NO, IC, IO, EO = u32(a, B), u32(a, B + 4), u32(a, B + 32), u32(a, B + 36), u32(a, B + 28)
+PLO, PLC = u32(a, B + 160), u32(a, B + 156)
+assert u32(a, B + 24) == 1
+SB = u32(a, EO + 84)                               # SerializationBefore count
+VAN_HDR = len(a)
+assert u32(a, 44) == VAN_HDR
+VAN_SER = struct.unpack_from('<q', a, EO + 28)[0]  # export SerialSize
+TAIL = len(a) - (PLO + 4 * PLC)
+VAN_PL = [u32(a, PLO + 4 * i) for i in range(PLC)]  # vanilla preload list
+NEWREF = -(IC + 2)                                 # class import index IC+1 (after package import IC)
+ELEM = 8                                           # new array element size: 80 0d 1e 03 + i32 ref
 
 
 def read_names(buf, n, p):
@@ -45,17 +49,16 @@ def fs(s):
 
 
 names, p = read_names(a, NN, NO)
-assert p == IO and IO + 32 * IC == EO and EO + 104 == PLO and len(a) == PLO + 4 * PLC + TAIL
+assert p == IO and IO + 32 * IC == EO and EO + 104 == PLO
 assert a[PLO + 4 * PLC:] == b'\0' * TAIL
 ix = names.index
+assert 'BlueprintGeneratedClass' in names and 'Package' in names   # reused from vanilla, not added
 
 newnames = fs(PK) + fs(CL)
 A = len(newnames)
 imp = struct.pack('<8i', ix('/Script/CoreUObject'), 0, ix('Package'), 0, 0, NN, 0, 0)
 imp += struct.pack('<8i', ix('/Script/Engine'), 0, ix('BlueprintGeneratedClass'), 0, -(IC + 1), NN + 1, 0, 0)
 P3 = PLO + 4 * SB                                  # end of SerializationBefore deps
-van_pl = [u32(a, PLO + 4 * i) for i in range(PLC)]
-assert van_pl == VAN_PL, van_pl
 ins = [(IO, A), (EO, len(imp)), (P3, 4)]
 
 
@@ -63,14 +66,14 @@ def sh(v):
     return v + sum(l for pos, l in ins if v >= pos)
 
 
-# header: fixed positions, asserted against vanilla values
-OFFS = {44: VAN_HDR, 108: IO, 124: EO, 132: IO, 140: PLO - 8, 148: PLO - 8, 156: PLO - 8,
-        232: PLO - 4, 236: VAN_HDR + VAN_SER, 256: PLO}
-CNT = {96: (NN, NN + 2), 128: (IC, IC + 2), 252: (PLC, PLC + 1)}
+# header: fixed positions, asserted against the parsed layout
+OFFS = {44: VAN_HDR, B + 12: IO, B + 28: EO, B + 36: IO, B + 44: PLO - 8, B + 52: PLO - 8, B + 60: PLO - 8,
+        B + 136: PLO - 4, B + 140: VAN_HDR + VAN_SER, B + 160: PLO}
+CNT = {B: (NN, NN + 2), B + 32: (IC, IC + 2), B + 156: (PLC, PLC + 1)}
 h = bytearray(a[:NO])
 for q, v in OFFS.items():
     assert u32(h, q) == v, (q, u32(h, q), v)
-    struct.pack_into('<i', h, q, sh(v) + (ELEM if q == 236 else 0))   # BulkDataStart = header + export size
+    struct.pack_into('<i', h, q, sh(v) + (ELEM if q == B + 140 else 0))   # BulkDataStart = header + export size
 for q, (v, nv) in CNT.items():
     assert u32(h, q) == v, (q, u32(h, q), v)
     struct.pack_into('<i', h, q, nv)
@@ -101,8 +104,8 @@ def parse_arr(buf):
     return c, refs, p
 
 
-c0, refs0, p0 = parse_arr(e)
-assert refs0 == VAN_REFS and len(e) - p0 == 8 and e[p0:p0 + 4] == b'\0\0\0\0'
+c0, VAN_REFS, p0 = parse_arr(e)
+assert len(e) == VAN_SER + 4 and e[p0:p0 + 4] == b'\0\0\0\0'
 u = bytearray(e[:p0] + b'\x80\x0d\x1e\x03' + struct.pack('<i', NEWREF) + e[p0:])
 struct.pack_into('<i', u, c0, len(VAN_REFS) + 1)
 u = bytes(u)
@@ -119,8 +122,9 @@ def verify(oa, oe):
 
     total = u32(oa, 44)
     chk('uasset length %d == TotalHeaderSize %d' % (len(oa), total), len(oa) == total)
-    nn, no, ic, io_ = u32(oa, 96), u32(oa, 100), u32(oa, 128), u32(oa, 132)
-    ec, eo, plc, plo = u32(oa, 120), u32(oa, 124), u32(oa, 252), u32(oa, 256)
+    Bo = 60 + u32(oa, 52)
+    nn, no, ic, io_ = u32(oa, Bo), u32(oa, Bo + 4), u32(oa, Bo + 32), u32(oa, Bo + 36)
+    ec, eo, plc, plo = u32(oa, Bo + 24), u32(oa, Bo + 28), u32(oa, Bo + 156), u32(oa, Bo + 160)
     chk('NameCount %d == %d' % (nn, NN + 2), nn == NN + 2)
     chk('NameOffset == %d' % NO, no == NO)
     chk('ExportCount 1', ec == 1)
@@ -128,7 +132,7 @@ def verify(oa, oe):
     chk('PreloadCount %d == %d' % (plc, PLC + 1), plc == PLC + 1)
     onames, p = read_names(oa, nn, no)
     chk('name table ends at ImportOffset (%d)' % io_, p == io_)
-    chk('SoftObjectPathsOffset == ImportOffset', u32(oa, 108) == io_)
+    chk('SoftObjectPathsOffset == ImportOffset', u32(oa, Bo + 12) == io_)
     chk('vanilla names kept', onames[:NN] == names and oa[NO:IO] == a[NO:IO])
     chk('name[%d] == %s' % (NN, PK), onames[NN] == PK)
     chk('name[%d] == %s' % (NN + 1, CL), onames[NN + 1] == CL)
@@ -136,8 +140,8 @@ def verify(oa, oe):
     chk('PreloadOffset == ExportOffset + 104', plo == eo + 104)
     chk('TotalHeaderSize == PreloadOffset + 4*PreloadCount + tail', total == plo + 4 * plc + TAIL)
     chk('tail zero bytes kept', oa[plo + 4 * plc:] == b'\0' * TAIL)
-    chk('Depends/SoftPkg/Searchable offsets == PreloadOffset-8', u32(oa, 140) == u32(oa, 148) == u32(oa, 156) == plo - 8)
-    chk('AssetRegistry offset == PreloadOffset-4', u32(oa, 232) == plo - 4)
+    chk('Depends/SoftPkg/Searchable offsets == PreloadOffset-8', u32(oa, Bo + 44) == u32(oa, Bo + 52) == u32(oa, Bo + 60) == plo - 8)
+    chk('AssetRegistry offset == PreloadOffset-4', u32(oa, Bo + 136) == plo - 4)
     chk('vanilla import bytes unchanged', oa[io_:io_ + 32 * IC] == a[IO:IO + 32 * IC])
     pkg = struct.unpack_from('<8i', oa, io_ + 32 * IC)
     cls = struct.unpack_from('<8i', oa, io_ + 32 * (IC + 1))
@@ -158,7 +162,7 @@ def verify(oa, oe):
     pref = [u32(oa, plo + 4 * i) for i in range(plc)]
     want = VAN_PL[:SB] + [NEWREF] + VAN_PL[SB:]
     chk('preload == %s' % want, pref == want)
-    bulk = u32(oa, 236)
+    bulk = u32(oa, Bo + 140)
     chk('BulkDataStart %d == TotalHeaderSize + SerialSize %d' % (bulk, total + ser), bulk == total + ser)
     chk('uexp length %d == SerialSize + 4 footer' % len(oe), len(oe) == ser + 4)
     c, refs, pe = parse_arr(oe)
@@ -178,7 +182,7 @@ def verify(oa, oe):
 os.makedirs(OUT, exist_ok=True)
 open(os.path.join(OUT, 'RSC_MiningLaser.uasset'), 'wb').write(out)
 open(os.path.join(OUT, 'RSC_MiningLaser.uexp'), 'wb').write(u)
-print('names+2 imports+2 preload+1 array 2->3')
+print('names+2 imports+2 preload+1 array %d->%d' % (len(VAN_REFS), len(VAN_REFS) + 1))
 print('uasset %d -> %d   uexp %d -> %d' % (len(a), len(out), len(e), len(u)))
 for fn in ['RSC_MiningLaser.uasset', 'RSC_MiningLaser.uexp']:
     print(hashlib.sha256(open(os.path.join(OUT, fn), 'rb').read()).hexdigest(), fn)

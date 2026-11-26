@@ -80,8 +80,10 @@ for r in range(1, ROW_N + 1):
     remove(main, 'Pnl_ItemRow_%d' % r)
 dyn_list(main, 'Dyn_Items', 'Row_Scroll_Page_Items', 'WBP_ItemRow', add_btn='Row_Sz_Btn_ItemAdd')
 ORES = ["Cobalt", "Graphite", "Iridium", "Nickel", "Silica", "Titanium", "WaterIce"]
-dyn_list(main, 'Dyn_RDock', 'Row_CardInnerRDock', 'WBP_DockRow', add_btn='Row_Sz_Btn_RDockAdd')
+dyn_list(main, 'Dyn_RDock', 'Row_CardInnerRDock', 'WBP_DockRow')
 for k in ORES:
-    dyn_list(main, 'Dyn_UDock_' + k, 'Row_CardInnerUD' + k, 'WBP_DockRow', add_btn='Row_Sz_Btn_UDockAdd_' + k)
+    dyn_list(main, 'Dyn_UDock_' + k, 'Row_CardInnerUD' + k, 'WBP_DockRow')
+dyn_list(main, 'Dyn_UDock_Misc', 'Row_CardInnerUDMisc', 'WBP_DockRow')
+dyn_list(main, 'Dyn_UDock_Park', 'Row_CardInnerUDPark', 'WBP_DockRow')
 save(main)
 print('LISTS built')

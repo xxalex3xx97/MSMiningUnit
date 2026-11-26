@@ -1,7 +1,7 @@
 // FILE: mods/MiningBenchMod/dllmain.cpp
 // WHAT: UE4SS C++ mod entry point. Includes the mb_*.hpp parts in order, hooks the engine tick, runs the ship scan every log_interval_seconds, and exports start_mod / uninstall_mod.
 // WHY separate: UE4SS needs start_mod and uninstall_mod in the DLL entry file; everything else lives in headers so it can be read in pieces.
-// DEPENDS ON (exact, include order matters): mb_version.hpp, mb_common.hpp, mb_pattern.hpp, mb_compat.hpp, mb_config.hpp, mb_ue.hpp, mb_mscore.hpp, mb_math.hpp, mb_docks.hpp, mb_ships.hpp, mb_weapons.hpp, mb_orders.hpp, mb_filters.hpp, mb_cmdstate.hpp, mb_rocks.hpp, mb_registry.hpp, mb_steer.hpp, mb_dockjob.hpp, mb_pin.hpp, mb_warp.hpp, mb_warpreal.hpp, mb_belt.hpp, mb_mining.hpp, mb_natives.hpp, mb_chunkhold.hpp, mb_devcmd.hpp, mb_testcmd.hpp, mb_compat_run.hpp
+// DEPENDS ON (exact, include order matters): mb_version.hpp, mb_common.hpp, mb_pattern.hpp, mb_compat.hpp, mb_config.hpp, mb_ue.hpp, mb_mscore.hpp, mb_math.hpp, mb_docks.hpp, mb_ships.hpp, mb_weapons.hpp, mb_orders.hpp, mb_filters.hpp, mb_cmdstate.hpp, mb_rocks.hpp, mb_registry.hpp, mb_steer.hpp, mb_dockjob.hpp, mb_pin.hpp, mb_warp.hpp, mb_warpreal.hpp, mb_belt.hpp, mb_mining.hpp, mb_shipctl.hpp, mb_chunkhold.hpp, mb_devcmd.hpp, mb_testcmd.hpp, mb_compat_run.hpp
 // USED BY: the UE4SS loader (mods.txt line "MiningBenchMod : 1"), which calls start_mod and uninstall_mod.
 // GAME FACTS: the engine tick hook (UE4SS RegisterEngineTickPostCallback) fires every frame with dt in seconds. Crash history (brief Update 21): a Lua reload (Ctrl+R) with this DLL loaded crashed inside the tick hook, so restart the game fully after any change.
 #include "mb_version.hpp"
@@ -14,6 +14,7 @@
 #include "mb_mscore.hpp"
 #include "mb_math.hpp"
 #include "mb_docks.hpp"
+#include "mb_docktags.hpp"
 #include "mb_ships.hpp"
 #include "mb_weapons.hpp"
 #include "mb_orders.hpp"
@@ -21,6 +22,7 @@
 #include "mb_cmdstate.hpp"
 #include "mb_rocks.hpp"
 #include "mb_registry.hpp"
+#include "mb_shipctl.hpp"
 #include "mb_steer.hpp"
 #include "mb_net.hpp"
 #include "mb_dockjob.hpp"
@@ -30,7 +32,6 @@
 #include "mb_belt.hpp"
 #include "mb_mining.hpp"
 #include "mb_bubble.hpp"
-#include "mb_natives.hpp"
 #include "mb_chunkhold.hpp"
 #include "mb_devcmd.hpp"
 #include "mb_testcmd.hpp"
@@ -48,9 +49,12 @@ namespace
         if (!g_cfg.enabled) return;
         std::vector<std::pair<UObject*, int>> bench;
         std::vector<int> dead;
-        scan_and_log(bench, dead);
-        mine_set_bench(bench, dead);
+        std::vector<std::pair<int, bool>> lost_laser;   // (ship id, bench block still present)
+        scan_and_log(bench, dead, lost_laser);
+        mine_set_bench(bench, dead, lost_laser);
         write_lists();
+        dock_tags_refresh();
+        ship_tags_write();
         if (bench.empty()) return;
         for (auto& [ship, id] : bench)
         {
@@ -95,6 +99,7 @@ public:
         log_line(widen(std::string("MiningBenchMod v") + kVersion));
         std::wstring ms_err;
         ms_load(ms_err);   // logs MSCORE loaded / load failed once; each call site retries if it failed
+        sc_load();         // logs SHIPCTL loaded / load failed once; Start retries (throttled)
         mb_wd::start(get_dll_dir().wstring());   // freeze watchdog thread (INI watchdog=0 idles it)
     }
 
@@ -109,6 +114,8 @@ public:
         try { pin_hook_release(); } catch (...) {}
         try { rock_listener_release(); } catch (...) {}
         try { chunk_hold_release_all(); } catch (...) {}   // no chunk hold outlives the mod (failures are logged in mb_chunkhold.hpp)
+        try { sc_host_clear(); } catch (...) {}            // no ShipControl callback into this mod outlives it
+        try { sc_release_all(); } catch (...) {}           // no ShipControl claim outlives the mod
     }
 
     // WHAT: runs once Unreal is up. Reloads the config, sets up the Test-tab command bus (cmd_init), and registers the engine tick hook once.

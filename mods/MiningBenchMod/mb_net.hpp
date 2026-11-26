@@ -50,7 +50,9 @@ namespace
     std::string net_ship_label(int sid) { const std::string n = net_name(g_net_ship_names, sid); return n.empty() ? std::to_string(sid) : n; }
     std::set<int> g_flee_dock;            // fleeing ships holding near the dock: their dock pick queues like a normal one (P_UNLOAD) and docks on the grant
     std::set<int> g_flee_pick;           // ships whose dock trip is a hull flee (purpose P_FLEE until the job starts)
-    std::map<int, std::string> g_dock_after_undock;   // ship -> dock command to start when its undock (first step) ends ok
+    std::set<int> g_park_pick;           // ships whose dock trip is a park trip (dock list = parking docks, nothing unloaded)
+    std::set<int> g_park_raw;            // ships whose job_start is a queue-wait park: first free parking dock, NO net_pick
+    std::map<int, std::string> g_dock_after_undock;  // ship -> dock command to start when its undock (first step) ends ok
 
     // WHAT: dock id the ship is docked at, 0 = not docked. Table occupancy first (net_tick: DockID or Dock object), then the ship's own DockID / Dock.
     // WHY: ship_docked() needs both props and read false for docked ships (live log 16:03): one source is not enough.
@@ -105,6 +107,7 @@ namespace
         case P_UNDOCK_TARGET: return "undock";
         case P_PICK: return "pick";
         case P_FLEE: return "flee";
+        case P_PARK: return "park";
         default: return "none";
         }
     }
@@ -119,6 +122,7 @@ namespace
         case P_UNDOCK_TARGET: return "Undock";
         case P_PICK: return "Pick";
         case P_FLEE: return "Flee";
+        case P_PARK: return "Park";
         default: return "Dock";
         }
     }

@@ -1,5 +1,5 @@
 # Run every unit/static check (no game needed). Usage: .\tests\run.ps1
-# Steps: test_logic.exe, run_compat.ps1, test_gen_paste.py, test_asset_refs.py, Lua syntax (luac -p).
+# Steps: test_logic.exe, run_compat.ps1, test_gen_paste.py, test_asset_refs.py, test_deps.py, Lua syntax (luac -p).
 # Exit code 0 = no FAIL (SKIP is allowed), non-zero = at least one step FAILED.
 $ErrorActionPreference = 'Continue'
 Set-Location (Split-Path -Parent $PSScriptRoot)
@@ -19,7 +19,7 @@ Write-Host "== test_logic" -ForegroundColor Cyan
 cmd /c "`"$bt\VC\Auxiliary\Build\vcvars64.bat`" >nul 2>nul && set" | ForEach-Object {
     if ($_ -match '^([^=]+)=(.*)$') { Set-Item "env:$($Matches[1])" $Matches[2] }
 }
-cl /nologo /EHsc /std:c++17 /W3 /I mods\MiningBenchMod tests\test_logic.cpp /Fe:tests\out\test_logic.exe /Fo:tests\out\
+cl /nologo /EHsc /std:c++17 /W3 /I mods\MiningBenchMod /I external\ShipControl tests\test_logic.cpp /Fe:tests\out\test_logic.exe /Fo:tests\out\
 if ($LASTEXITCODE -ne 0) {
     Add-Row 'test_logic' 'FAIL' 'compile failed'
 } else {
@@ -48,6 +48,7 @@ function Run-Py($step, $script) {
 }
 Run-Py 'test_gen_paste' 'tests\test_gen_paste.py'
 Run-Py 'test_asset_refs' 'tests\test_asset_refs.py'
+Run-Py 'test_deps' 'tests\test_deps.py'
 
 # ---- 4. Lua syntax (luac -p) ----
 Write-Host "== lua syntax" -ForegroundColor Cyan

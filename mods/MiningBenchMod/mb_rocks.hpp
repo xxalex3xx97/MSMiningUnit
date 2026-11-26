@@ -8,9 +8,9 @@
 //          rock_id_of, rock_sel in mb_devcmd.hpp), dllmain.cpp (include only).
 // GAME FACTS (fact = taken from earlier in-game checks; ASSUMPTION = from code/notes, not re-checked; UNVERIFIED = not confirmed):
 //   - Rock list = DMSPlayerController.ScannableHUDMarkers, the game's own V-scan list. Entries are rock actors
-//     (BP_GenericResourceAsteroid_C : DMSActorBase).
+//     (class "asteroid_actor" : DMSActorBase).
 //   - Ore = BPI_HUDMarkerActor.GetScanItem(Item) on each actor. Id = DMSActorBase.ObjectId = save object id
-//     (SmallResourceAsteroidObject). Radius = GetRadius() on that save object, raw units.
+//     (class "asteroid"). Radius = GetRadius() on that save object, raw units.
 //   - Distance = K2_GetActorLocation world difference / 100 (uu -> m). fact: 100 uu = 1 m (verified from weapon actors, earlier).
 //   - Save-object Location is chunk-relative: NOT used for distances.
 //   - Ship frame = ship object 'Actor' property: K2_GetActorLocation, GetActorForwardVector / RightVector / UpVector.
@@ -44,7 +44,7 @@ namespace
     // ---------------- rock actors: the game's V-scan list (controller ScannableHUDMarkers) ----------------
     // WHY: the game's own V-scan and distances use the asteroid ACTORS listed in ScannableHUDMarkers. Distance = actor world
     // position difference (K2_GetActorLocation, uu: 100 uu = 1 m), i.e. the game's own math.
-    // Ore = BPI_HUDMarkerActor::GetScanItem (read once per actor). Id = DMSActorBase.ObjectId = the SmallResourceAsteroidObject id.
+    // Ore = BPI_HUDMarkerActor::GetScanItem (read once per actor). Id = DMSActorBase.ObjectId = the class "asteroid" id.
     // The save-object Location is chunk-relative, so the list/pick/aim below never use it for distances.
 
     // CRASH FIX: rock actors are streamed in and out by the game. Pointers we cache across ticks (target of a move job, rock_sel,
@@ -60,7 +60,7 @@ namespace
 
     // FALLBACK: the HUD list is the player's own scan list. An AI ship far from the player can see no rock in it while rock actors
     // are loaded in its sector. A belt seek with no rock in range requests the fallback; rock_list_refresh then adds the actors of
-    // class BP_GenericResourceAsteroid_C from FindAllOf (not in the HUD list). FindAllOf runs at most every ROCK_FALLBACK_S_MS.
+    // class class "asteroid_actor" from FindAllOf (not in the HUD list). FindAllOf runs at most every ROCK_FALLBACK_S_MS.
     constexpr ULONGLONG ROCK_FALLBACK_WANT_MS = 6000;   // a request lasts this long (seek re-requests on each rock check)
     constexpr ULONGLONG ROCK_FALLBACK_S_MS = 60000;     // FindAllOf refresh period (ms); destroyed rocks leave the shared list at once via the delete listener, so a pass only finds NEW rocks
     constexpr ULONGLONG ROCK_FALLBACK_REQ_MS = 10000;   // a miner that found nothing may trigger an extra pass, at most this often (ms)
@@ -184,7 +184,7 @@ namespace
     // WHY: a depleted rock is never chosen again (rock search, approach, retarget, save-data rocks), even as the only rock.
     std::set<int> g_depleted_rocks;
 
-    // WHAT: ObjectId -> SmallResourceAsteroidObject (save object, source of GetRadius). Rebuilt on every list refresh.
+    // WHAT: ObjectId -> class "asteroid" (save object, source of GetRadius). Rebuilt on every list refresh.
     std::map<int, UObject*> g_save_by_id;
 
     // WHAT: GetTickCount64() in ms at the last list refresh (0 = never).
@@ -212,7 +212,7 @@ namespace
         return item_kind(it->second);
     }
 
-    // WHAT: GetRadius() of a save object (SmallResourceAsteroidObject), raw units. 0 when the call fails.
+    // WHAT: GetRadius() of a save object (class "asteroid"), raw units. 0 when the call fails.
     // WHY: surface distance = centre distance - radius; the stop rule uses surface distance.
     double rock_radius(UObject* o)
     {
@@ -278,9 +278,6 @@ namespace
         g_rock_listener = nullptr;   // not deleted: the engine may be iterating its listener list right now; a tiny one-off leak at exit is safe
     }
 
-    // WHAT: registry hook (mb_registry.hpp, included later): the drained dead actors. Clears the registry actor handles.
-    void reg_on_dead(const std::unordered_set<const void*>& dead);
-
     // WHAT: removes every destroyed actor (queued by RockDeleteListener) from the shared rock containers. First call registers the listener.
     void rock_drain_dead()
     {
@@ -298,7 +295,6 @@ namespace
             g_rock_item.erase(a); g_rock_loc.erase(a);
             if (auto it = g_rock_id.find(a); it != g_rock_id.end()) { if (it->second > 0) g_rock_by_id.erase(it->second); g_rock_id.erase(it); }
         }
-        reg_on_dead(dead);
     }
 
     // WHAT: adds rock actor a to the refresh being built (list, items, ids, by_id). Ore and id are reused from the previous refresh
@@ -325,7 +321,7 @@ namespace
         list.push_back(a);
     }
 
-    // WHAT: adds the FindAllOf(BP_GenericResourceAsteroid_C) actors to the refresh being built while a fallback request is recent.
+    // WHAT: adds the FindAllOf(class "asteroid_actor") actors to the refresh being built while a fallback request is recent.
     //       FindAllOf runs at most every ROCK_FALLBACK_S_MS; between passes the last pass's live actors are reused.
     // WHY: an AI ship far from the player sees its belt rocks in the world but not in the player's HUD list.
     void rock_fallback_merge(std::vector<UObject*>& list, std::map<UObject*, UObject*>& items, std::map<UObject*, int>& ids, std::map<int, UObject*>& by_id)
@@ -339,7 +335,7 @@ namespace
             g_rock_fb_pass_ms = now;
             g_fb_req = false;
             std::vector<UObject*> found;
-            UObjectGlobals::FindAllOf(STR("BP_GenericResourceAsteroid_C"), found);
+            { const std::wstring rcls = ms_cls("asteroid_actor"); if (!rcls.empty()) UObjectGlobals::FindAllOf(rcls.c_str(), found); }
             g_fb_list.clear();
             g_fb_set.clear();
             for (UObject* a : found) if (alive(a)) { g_fb_list.push_back(a); g_fb_set.insert(a); }
@@ -399,7 +395,7 @@ namespace
         g_rock_by_id.swap(by_id);
         for (auto it = g_rock_loc.begin(); it != g_rock_loc.end();) { if (!g_rock_item.count(it->first)) it = g_rock_loc.erase(it); else ++it; }
         // 5. save objects for radius: g_save_by_id keeps only the ids of the listed rocks. The full FindAllOf over every
-        //    SmallResourceAsteroidObject (tens of thousands) runs only when a listed rock has no live entry (it was the CPU spike every pass).
+        //    class "asteroid" (tens of thousands) runs only when a listed rock has no live entry (it was the CPU spike every pass).
         static std::set<int> save_miss;   // ids a walk could not find: not searched again until the set is cleared below
         if (save_miss.size() > 2000) save_miss.clear();
         bool missing = false;
@@ -414,7 +410,7 @@ namespace
             for (auto& kv : g_rock_id) want.insert(kv.second);
             g_save_by_id.clear();
             std::vector<UObject*> saves;
-            UObjectGlobals::FindAllOf(STR("SmallResourceAsteroidObject"), saves);
+            { const std::wstring acls = ms_cls("asteroid"); if (!acls.empty()) UObjectGlobals::FindAllOf(acls.c_str(), saves); }
             for (UObject* o : saves) if (alive(o)) { const int sid_ = obj_id(o); if (want.count(sid_)) g_save_by_id[sid_] = o; }
             for (int w : want) if (!g_save_by_id.count(w)) save_miss.insert(w);
         }
@@ -446,15 +442,117 @@ namespace
     // WHY: the game's distances and aim axes come from the actor. The ship object's own Location is chunk-relative.
     struct ActFrame { double loc[3] = {0, 0, 0}, fw[3] = {1, 0, 0}, R[3] = {0, 1, 0}, U[3] = {0, 0, 1}; };
 
-    // WHAT: fill f with the ship actor frame. false when the actor or one of its vector calls is unreadable.
+    // WHAT: why the last act_frame() call failed (empty = it succeeded). Names the step that failed.
+    // WHY: "ship actor unreadable" alone did not say whether the Actor prop, the alive check or which vector call broke.
+    std::wstring g_af_why;
+
+    bool get_chunk(UObject* o, int64_t c[3]);   // mb_warp.hpp (same unnamed namespace, included later)
+
+    // WHAT: object-to-actor axis calibration. ok = learned from one ship that had an actor; qmode / ax as in qcal_pick.
+    // WHY: needed so the object-based frame (act_frame_obj) points the same way as the actor frame. Default ax = +X, +Y, +Z.
+    struct QCal { bool ok = false; int qmode = 0; int ax[3] = {0, 2, 4}; };
+    QCal g_qcal;
+
+    // WHAT: chunk size in m for the object frame (same value as DOCK_CHUNK_M in mb_mining.hpp, which is included later).
+    // WHY: world loc = chunk * AF_CHUNK_M + local Location / g_raw_per_m.
+    constexpr double AF_CHUNK_M = 2048.0;
+
+    // WHAT: ship OBJECT world position (uu) = (chunk * 2048 + local Location / g_raw_per_m) * 100. false when chunk or Location is unreadable.
+    // WHY: the object has no actor; its Location is chunk-relative (rocks banner). UNVERIFIED frame: act_calib_learn logs locdiff to check it.
+    bool obj_loc_uu(UObject* ship, double out[3])
+    {
+        int64_t ch[3];
+        double raw[3];
+        if (!get_chunk(ship, ch) || !get_loc(ship, raw)) return false;
+        for (int i = 0; i < 3; ++i) out[i] = (static_cast<double>(ch[i]) * AF_CHUNK_M + raw[i] / g_raw_per_m) * MV_UU_PER_M;
+        return true;
+    }
+
+    // WHAT: fill f from the ship OBJECT (no actor): loc from obj_loc_uu, axes from Quat through the calibrated map.
+    // WHY: a far ship has no actor but still needs an aim frame. Fails with g_af_why set when chunk / loc / Quat or the calibration is missing.
+    bool act_frame_obj(UObject* ship, ActFrame& f)
+    {
+        double q[4];
+        if (!obj_loc_uu(ship, f.loc) || !quat4(ship, q)) { g_af_why = STR("obj fallback: chunk/loc/Quat unreadable"); return false; }
+        if (!g_qcal.ok) { g_af_why = STR("axes not calibrated (needs one ship with an actor)"); return false; }
+        qcal_apply(q, g_qcal.qmode, g_qcal.ax, f.fw, f.R, f.U);
+        g_af_why.clear();
+        return true;
+    }
+
+    // WHAT: when the actor frame is good, learn the object-to-actor axis map from this ship (logs when it changes) and, once per ship id, the object-vs-actor location gap.
+    // WHY: the object frame is only as good as this check. locdiff near 0 = the chunk/loc frame is right.
+    void act_calib_learn(UObject* ship, const ActFrame& f)
+    {
+        double q[4];
+        if (!g_qcal.ok && quat4(ship, q))   // learned once: no per-tick Quat lookup, no flip-flop between ships
+        {
+            int qm = 0, ax[3] = {0, 2, 4};
+            if (qcal_pick(q, f.fw, f.R, f.U, qm, ax) && (!g_qcal.ok || qm != g_qcal.qmode || !std::equal(ax, ax + 3, g_qcal.ax)))
+            {
+                g_qcal.ok = true; g_qcal.qmode = qm; std::copy(ax, ax + 3, g_qcal.ax);
+                log_line(STR("ACTFRAME calibrated qmode=") + std::to_wstring(qm) + STR(" ax=") + std::to_wstring(ax[0]) + STR(",") +
+                         std::to_wstring(ax[1]) + STR(",") + std::to_wstring(ax[2]));
+            }
+        }
+        const int32_t sid = obj_id(ship);   // ship id = the "ID" property (as everywhere else)
+        static std::set<int32_t> logged;
+        if (!logged.insert(sid).second) return;
+        double ol[3];
+        if (!obj_loc_uu(ship, ol)) return;
+        const double d[3] = {ol[0] - f.loc[0], ol[1] - f.loc[1], ol[2] - f.loc[2]};
+        log_line(STR("ACTFRAME locdiff ship=") + std::to_wstring(sid) + STR(" uu=") + std::to_wstring(norm3(d)));
+    }
+
+    // WHAT: fill f with the ship actor frame. If the actor is null or dead, falls back to the ship object frame (act_frame_obj).
+    //       false when the actor and the fallback are both unreadable (g_af_why names both steps).
     // WHY: all aim maths (aim_calc, act_aim, speed monitor) start from this one frame.
     bool act_frame(UObject* ship, ActFrame& f)
     {
+        auto from_obj = [&](const std::wstring& actor_why) {
+            if (act_frame_obj(ship, f)) return true;
+            g_af_why = actor_why + STR(" | ") + g_af_why;
+            return false;
+        };
         UObject* sa = obj_prop(ship, STR("Actor"));
-        if (!alive(sa)) return false;
+        if (!sa)
+        {
+            FProperty* ap = ship ? ship->GetPropertyByNameInChain(STR("Actor")) : nullptr;
+            const std::wstring actor_why = STR("Actor ") + std::wstring(!ap ? STR("prop missing") : prop_is(ship, STR("Actor"), STR("ObjectProperty")) ? STR("value null") : STR("not ObjectProperty")) +
+                       STR(" class=") + (ship && ship->GetClassPrivate() ? ship->GetClassPrivate()->GetName() : std::wstring(STR("?")));
+            return from_obj(actor_why);
+        }
+        if (!alive(sa)) return from_obj(STR("Actor not alive"));
         std::wstring why;
-        return actor_vec_call(sa, STR("K2_GetActorLocation"), f.loc, why) && actor_vec_call(sa, STR("GetActorForwardVector"), f.fw, why) &&
-               actor_vec_call(sa, STR("GetActorRightVector"), f.R, why) && actor_vec_call(sa, STR("GetActorUpVector"), f.U, why);
+        auto step = [&](const TCHAR* fn, double* out) {
+            if (actor_vec_call(sa, fn, out, why)) return true;
+            g_af_why = std::wstring(fn) + STR(": ") + why;
+            return false;
+        };
+        if (!step(STR("K2_GetActorLocation"), f.loc) || !step(STR("GetActorForwardVector"), f.fw) ||
+            !step(STR("GetActorRightVector"), f.R) || !step(STR("GetActorUpVector"), f.U)) return false;
+        g_af_why.clear();
+        act_calib_learn(ship, f);
+        return true;
+    }
+
+    // WHAT: appends the act_frame failure reason (if any) to the "ship actor unreadable" text.
+    std::wstring act_fail_text()
+    {
+        std::wstring s = STR("ship actor unreadable");
+        if (!g_af_why.empty()) s += STR(" (") + g_af_why + STR(")");
+        return s;
+    }
+
+    // WHAT: logs one "act_frame fail" line per ship id (first failure only).
+    // WHY: shows the step that failed without flooding the log every tick.
+    void act_fail_log_once(int sid, const std::wstring& chunk = std::wstring())
+    {
+        static std::set<int> logged;
+        if (!logged.insert(sid).second) return;
+        std::wstring line = STR("MINE ship=") + std::to_wstring(sid) + STR(" act_frame fail: ") + g_af_why;
+        if (!chunk.empty()) line += STR(" chunk=") + chunk;
+        log_line(line);
     }
 
     // WHAT: aim numbers of one rock against the ship frame.
@@ -483,9 +581,9 @@ namespace
         return true;
     }
 
-    // WHAT: fill r with the aim numbers of rock actor 'rock' against frame f. false when the rock is not live or the vector is unreadable.
+    // WHAT: world location (uu) of rock actor 'rock' into out (cached per actor in g_rock_loc). false when the rock is not live or unreadable.
     // WHY: the rock location is read only after actor_ok(), so a freed actor is never touched.
-    bool act_aim(const ActFrame& f, UObject* rock, ActAim& r)
+    bool rock_loc_uu(UObject* rock, double out[3])
     {
         if (!actor_ok(rock)) return false;
         auto lc = g_rock_loc.find(rock);
@@ -496,7 +594,16 @@ namespace
             if (!actor_vec_call(rock, STR("K2_GetActorLocation"), l.p, why)) return false;
             lc = g_rock_loc.emplace(rock, l).first;
         }
-        return act_aim_pt(f, lc->second.p, r);
+        std::copy(lc->second.p, lc->second.p + 3, out);
+        return true;
+    }
+
+    // WHAT: fill r with the aim numbers of rock actor 'rock' against frame f. false when the rock is not live or the vector is unreadable.
+    bool act_aim(const ActFrame& f, UObject* rock, ActAim& r)
+    {
+        double p[3] = {0, 0, 0};
+        if (!rock_loc_uu(rock, p)) return false;
+        return act_aim_pt(f, p, r);
     }
 
     // WHAT: nearest rock actor whose ore == item, by game distance. out = its aim numbers. nullptr when none.
@@ -556,7 +663,7 @@ namespace
         UObject* item = find_item(eff_cfg(sid).resource, why);
         if (!alive(item)) return nullptr;
         ActFrame f;
-        if (!act_frame(ship, f)) { why = STR("ship actor unreadable"); return nullptr; }
+        if (!act_frame(ship, f)) { act_fail_log_once(sid); why = act_fail_text(); return nullptr; }
         ActAim r;
         return nearest_item_actor(sid, f, item, r);
     }

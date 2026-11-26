@@ -6,8 +6,8 @@
 //             call_int, set_int_prop, get_int_prop), mb_docks.hpp (find_item), mb_weapons.hpp (set_all_firing,
 //             fire_input), mb_orders.hpp (order_by_id, dist_target_m, set_autopilot), mb_cmdstate.hpp (g_cmd, g_cmd_*_acc, CMD_*),
 //             mb_rocks.hpp (rock_list_ensure, act_frame, act_aim, nearest_item_actor, pick_rock, rock_actor_by_id, rock_id_of,
-//             rock_kind, actor_ok, g_sel_rock), mb_steer.hpp (move_start, move_tick, spd_update,
-//             g_mv, MoveJob, view_zero, zero_all, g_spd, g_last_err, MV_SPEED_ABORT), mb_dockjob.hpp (job_start, jobs_tick, g_jobs,
+//             rock_kind, actor_ok, g_sel_rock), mb_steer.hpp (move_start, move_tick, spd_update_sc,
+//             g_mv, MoveJob, zero_all, g_last_err, MV_SPEED_ABORT), mb_dockjob.hpp (job_start, jobs_tick, g_jobs,
 //             g_undock_state), mb_mining.hpp (mining_tick, mine_halt: M3 loop).
 // USED BY: dllmain.cpp (cmd_init at load, cmd_tick from the engine tick hook). The Lua Test tab writes MiningCmd.txt
 //          (no status file is read any more).
@@ -21,6 +21,7 @@
 namespace
 {
     // WHAT: dispatch one command line to its handler and return the result text ("ok ..." / "waiting" / "error: ...").
+    //       park -> park_btn (mb_mining.hpp): Park button, button trip to a parking dock.
     //       Steps: 1 dock_mining, dock_refuel, undock -> job_start (multi-step, result set later by the job).
     //       2 thr_up, thr_down, thr_zero -> thr_cmd. 3 rock_sel ... -> rock_sel. 4 face_rock, approach_rock -> move_start (multi-step).
     //       5 laser_on/off, tractor_on/off: SetFiring on every instance of the class (set_all_firing) plus the fire group input
@@ -34,7 +35,7 @@ namespace
     std::wstring run_cmd(int seq, int sid, const std::string& cmd)
     {
         // dock pick is cleared by stop, loop start/stop and the all-ship commands
-        if (cmd == "stop_all" || cmd == "mine_start" || cmd == "mine_stop") g_dock_pick.erase(sid);
+        if (cmd == "stop_all" || cmd == "mine_start" || cmd == "mine_stop") { g_dock_pick.erase(sid); g_park_pick.erase(sid); }
         if (cmd == "mine_start_all" || cmd == "mine_stop_all") g_dock_pick.clear();
         // 0. Start all / Stop all (sid 0): every bench ship, before any ship lookup
         if (cmd == "mine_start_all" || cmd == "mine_stop_all") return mine_cmd_all(cmd == "mine_start_all");
@@ -62,6 +63,14 @@ namespace
             bm.unl_prev = -1; bm.unl_undock = false;
             trip_begin(bship, sid, bm, STR("button"), "");
             return STR("ok");
+        }
+        if (cmd == "park")
+        {
+            UObject* pship = find_by_id(STR("DMSPlayerShipObject"), sid);
+            if (!alive(pship)) return STR("error: ship not found");
+            if (!g_mine.count(sid)) return STR("error: not a bench ship");
+            g_dock_pick.erase(sid);
+            return park_btn(pship, sid);
         }
         // 1. dock and undock jobs
         if (cmd == "dock_mining" || cmd == "dock_refuel" || cmd == "dock_auto" || cmd == "undock")
@@ -106,8 +115,8 @@ namespace
         {
             mine_halt(sid);
             net_leave_slot(sid);             // queue place and dock reservation go (mb_net.hpp)
-            g_unl_ores.erase(sid);
-            g_dock_pick.erase(sid);     // a Dock picker choice is for the next job only
+            g_unl_ores.erase(sid); g_unl_misc.erase(sid);
+            g_dock_pick.erase(sid); g_park_pick.erase(sid);     // a Dock picker choice is for the next job only
             UObject* ship = find_by_id(STR("DMSPlayerShipObject"), sid);
             if (!alive(ship)) return STR("error: ship not found");
             int f1 = 0, f2 = 0;
@@ -198,7 +207,7 @@ namespace
     void registry_frame(double dt)
     {
         static std::map<int, std::pair<ULONGLONG, int>> sys_cache;   // sid -> (GetTickCount64 of the read, sys)
-        std::vector<RegShip> ships;
+        std::vector<MsRegShip> ships;
         std::vector<int> targets;
         const ULONGLONG now = GetTickCount64();
         for (const auto& kv : g_mine)
@@ -207,7 +216,7 @@ namespace
             auto& c = sys_cache[kv.first];
             if (c.first == 0 || now - c.first >= REG_SYS_MS) { UObject* sh = find_by_id(STR("DMSPlayerShipObject"), kv.first); c = {now, sh ? sys_id(sh) : 0}; }
             if (c.second <= 0) continue;
-            RegShip r;
+            MsRegShip r{};
             r.sid = kv.first;
             r.sys = c.second;
             for (int k = 0; k < 3; ++k) r.p[k] = kv.second.anchor[k] / MV_UU_PER_M;
@@ -215,17 +224,17 @@ namespace
             if (kv.second.rock > 0) targets.push_back(kv.second.rock);
         }
         for (const auto& kv : g_mvs) if (kv.second.rock_id > 0) targets.push_back(kv.second.rock_id);
-        // approach segments: ship -> target rock centre (radius reads first, see reg_radius_stage)
-        for (RegShip& r : ships)
+        // approach segments: ship -> target rock centre (MSCore reads their radii first)
+        for (MsRegShip& r : ships)
         {
             auto mv = g_mvs.find(r.sid);
             if (mv == g_mvs.end() || mv->second.kind != "approach_rock" || mv->second.rock_id <= 0) continue;
-            const RegRock* tr = reg_st().tab.get(mv->second.rock_id);
-            if (!tr) continue;
-            r.has_seg = true;
-            std::copy(tr->c, tr->c + 3, r.q);
+            RegRock tr;
+            if (!reg_get(mv->second.rock_id, tr)) continue;
+            r.has_seg = 1;
+            std::copy(tr.c, tr.c + 3, r.q);
         }
-        registry_tick(dt, ships, targets);
+        reg_feed(REG_OWNER, ships, targets);
     }
 
     // WHAT: engine tick driver for the Test tab. Steps: 1 bump the actor_ok() frame (set rebuilt once per tick).
@@ -257,7 +266,7 @@ namespace
             set_last_step(STR("thr_check"));
             thr_check();
             set_last_step(STR("spd_update"));
-            spd_update(step);
+            spd_update_sc(step);
             set_last_step(STR("pin_hook_ensure"));
             pin_hook_ensure();   // retried until the AddInputCommand hook is armed (MapPin id, mb_pin.hpp)
             set_last_step(STR("cmd_poll"));
@@ -279,6 +288,8 @@ namespace
             probe_power_tick(step);   // MiningProbePower.txt watch (probe_power_watch), idle unless a watch runs
             set_last_step(STR("bubble_tick"));   // bubble reflex for every manual move (mb_bubble.hpp): before the state machines, so a flown waypoint resumes first
             bubble_tick(step);
+            set_last_step(STR("beam_tick"));   // laser hold while another bench ship is in a mining beam (mb_bubble.hpp)
+            beam_tick(step);
             set_last_step(STR("mining_tick"));   // per-ship labels are set inside (mine ship=N state)
             mining_tick(step);
             set_last_step(STR("registry_frame"));   // rock registry (mb_registry.hpp): one updater per 0.25 s

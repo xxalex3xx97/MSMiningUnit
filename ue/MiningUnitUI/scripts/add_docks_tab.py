@@ -2,6 +2,7 @@
 purpose | since | queue = Dyn_Queue of WBP_NetQueueRow in a ScrollBox capped at 3 rows), Btn_TabDocks + Txt_TabDocks (after the Log tab),
 Pnl_PageDocks (PageSwitcher index 4) with the column header Row_DocksHdr, a gold line, ScrollBox Row_DocksScroll and the Dyn_Docks list.
 Idempotent: every part is skipped when it exists (the row WBPs are built only when missing; header/dyn_list are re-applied each run).
+The card also has a collapsed Row_DGroup header strip (Btn_DGroupHdr name + Btn_DGroupFold), added by dock_group_header (uew.py).
 Lua fills the rows (wbp_loader.lua, docksPaint). The old WBP_NetDockRow / Txt_DocksHdr / Sz_DocksLine stay in the assets, unused (collapsed).
 Run: UnrealEditor-Cmd <uproject> -ExecutePythonScript=<this file> -unattended -nullrhi (editor closed). Not run by the build."""
 import sys, os
@@ -78,6 +79,7 @@ if not U.EditorAssetLibrary.does_asset_exist(ASSETS + '/WBP_NetDockCard'):
     dq = dyn_box(w, 'Dyn_Queue', 'Box_DQueue', 'WBP_NetQueueRow', spacing=2.0)
     slot(dq, h='Fill')
     text(w, 'Txt_DQueueMore', 'Box_DQueue', size=13, color=lin('F2D21E'), var=False, slot_kw=dict(pad=(22, 2, 0, 0), h='Left'))
+    dock_group_header(w)
     save(w)
 main = U.load_asset(ASSETS + '/WBP_MiningUnit')
 

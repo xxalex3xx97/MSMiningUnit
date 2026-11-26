@@ -5,6 +5,14 @@
 local TAG = "[MiningUnitUI] "
 local SRC = debug.getinfo(1, "S").source:match("^@(.*[/\\])")  -- this script's dir (Mods/MiningUnitUI/Scripts/)
 local W = dofile((SRC or "ue4ss/Mods/MiningUnitUI/Scripts/") .. "wbp_loader.lua")
+-- window names live in MSCore (mscore_wbp widgets contract). Old/missing MSCore: those features are off, nothing crashes.
+local SRCF = ((SRC or ""):gsub("\\", "/"))
+package.path = SRCF .. "../../MSCore/Scripts/?.lua;" .. package.path
+local okW, WBP = pcall(require, "mscore_wbp")
+if not (okW and type(WBP) == "table" and type(WBP.widget) == "function") then
+  WBP = nil
+  print(TAG .. "MSCore too old (needs 0.8.9): fleet ship icons and window-name filter are off\n")
+end
 
 local function ok(o) if o == nil or type(o) ~= "userdata" then return false end local s, v = pcall(function() return o:IsValid() end) return s and v == true end
 local function nm(o) if not ok(o) then return "?" end local s, v = pcall(function() return o:GetFName():ToString() end) return s and v or "?" end
@@ -33,6 +41,7 @@ local HOOK = "/Script/UMG.Widget:ForceLayoutPrepass"
 -- (the hook is still registered, so no second RegisterHook is made).
 local hookIds, hookOff, hookOpens = nil, nil, 0
 local function onPrepass(self)
+    if next(BTN) == nil then return end   -- no window buttons: leave at once (the hook stays registered for the session)
     local okn, key = pcall(function() return self:get():GetFullName() end)
     local fn = okn and BTN[key]
     if fn then pcall(ExecuteInGameThread, function() pcall(fn) end) end
@@ -57,15 +66,19 @@ local function onClick(btn, fn)
 end
 local function clearClicks()
     BTN = {}
-    if hookIds and not hookOff then
-        hookOff = true
-        pcall(ExecuteWithDelay, 100, function() pcall(ExecuteInGameThread, hookRemove) end)
-    end
+    -- WHY no UnregisterHook: registering and removing a hook on the same game function from several Lua states (this mod and the dev menu) crashed the game
+    -- (UE4SS access violation in a later tick, seen 2026-11-19). The hook stays registered once made; onPrepass returns at once while BTN is empty.
 end
-W.bind({ onClick = onClick, clear = clearClicks })
+W.bind({ onClick = onClick, clear = clearClicks, wbp = WBP })
 
 -- block interact: the game opens its own widget for BPO_MiningMod_C; hide it and open ours for that ship
-RegisterHook("/Script/MainSequence.DMSPlayerController:ToggleWidget", function() end, function(self, a1, a2, a3, a4, a5)
+-- a renamed/removed game function must not kill the keybinds below: log one line and go on (ponytail: no MSCore.hook here, this mod has no MSCore Lua state)
+local function safeHook(name, path, pre, post)
+  local okh, err = pcall(RegisterHook, path, pre, post)
+  if not okh then print(TAG .. "hook " .. name .. " off: " .. tostring(err) .. "\n") end
+  return okh
+end
+safeHook("block_interact", "/Script/MainSequence.DMSPlayerController:ToggleWidget", function() end, function(self, a1, a2, a3, a4, a5)
     pcall(function()
       local ctl = unw(self)
       local args = { unw(a1), unw(a2), unw(a3), unw(a4), unw(a5) }
@@ -74,8 +87,8 @@ RegisterHook("/Script/MainSequence.DMSPlayerController:ToggleWidget", function()
       for i = 1, 5 do
         local x = args[i]
         if ok(x) then
-          local c, n = cn(x), nm(x)
-          if not widget and c:sub(-2) == "_C" and c ~= "WidgetBlueprintGeneratedClass" and n:find("^WBP_") then widget = x end
+          local c = cn(x)
+          if not widget and WBP and WBP.is_window(x) then widget = x end
           if not machine and c:find("^BPO_") then machine = x end
         end
       end
@@ -107,5 +120,47 @@ pcall(function()
     if W.isOpen() then pcall(ExecuteInGameThread, W.fKey) end
   end)
 end)
+
+-- [AUTO-FILTER] applier. MiningBenchMod C++ writes DockFilter.txt "<dock id>|<ITEM_x>" (docks tagged [AUTO-FILTER] + an ore, never [MISC]).
+-- Each (dock, item) pair is applied ONCE via MSCore factory_native.set_dock_filter(id, slot, item, 0) on every slot (overrides the old filter); a changed ore applies again.
+-- ponytail: the slot count is unknown here (BPO_Dock 2, BPO_Dock_2 8): tries slots 0..7 and stops at the first refusal. Ask MSCore for the slot count and drop the cap.
+local DF = { done = {}, logged = {}, mscore = nil, warned = false }
+local DF_SLOTS = 8
+local function dfApply()
+  local fh = io.open(W.DATA .. "DockFilter.txt", "r")
+  if not fh then return end
+  local want = {}
+  for line in fh:lines() do
+    local id, item = line:match("^%s*(%d+)|(%S+)%s*$")
+    if id then want[id] = item end
+  end
+  fh:close()
+  for id in pairs(DF.done) do if not want[id] then DF.done[id] = nil end end
+  local pending = false
+  for id, item in pairs(want) do if DF.done[id] ~= item then pending = true end end
+  if not pending then return end
+  if DF.mscore == nil then
+    local okM, MS = pcall(require, "mscore")
+    DF.mscore = (okM and type(MS) == "table") and MS or false
+  end
+  local FN = DF.mscore and DF.mscore.factory_native
+  if not (FN and FN.set_dock_filter) then
+    if not DF.warned then DF.warned = true; print(TAG .. "MSCore too old (needs 0.8.8): [AUTO-FILTER] docks are not filtered\n") end
+    return
+  end
+  for id, item in pairs(want) do
+    if DF.done[id] ~= item then
+      local n, why = 0, nil
+      for ix = 0, DF_SLOTS - 1 do
+        local okc, r, err = pcall(FN.set_dock_filter, tonumber(id), ix, item, 0)
+        if okc and r then n = n + 1 else why = tostring(okc and err or r); break end
+      end
+      if n > 0 then DF.done[id] = item end
+      local key = id .. "|" .. item .. "|" .. n
+      if not DF.logged[key] then DF.logged[key] = true; print(TAG .. "auto-filter dock=" .. id .. " item=" .. item .. " slots set=" .. n .. (why and (" stopped: " .. why) or "") .. "\n") end
+    end
+  end
+end
+pcall(LoopAsync, 5000, function() pcall(ExecuteInGameThread, function() pcall(dfApply) end) return false end)
 
 print(TAG .. "loaded. F4 = fleet window, block interact = Mining Unit window\n")

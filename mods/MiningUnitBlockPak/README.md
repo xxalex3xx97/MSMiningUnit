@@ -1,6 +1,6 @@
 # MiningUnitBlockPak (Main Sequence Demo cloned building blocks)
 
-Build steps (offline, Windows, run from this folder):
+Build steps (offline, Windows, run from this folder). Vanilla source = `MS_VANILLA_ROOT` (dir holding `legacy\`, e.g. the new Nov 13 extract) for clone.js; `MS_MODS_ROOT` for the patch scripts. Defaults = `F:\MSDemoMods`.
 
 1. `node clone.js`: writes src\ blocks and machine from legacy vanilla assets.
    - BPO_MiningBenchBlock (old bench, must stay byte-identical for old saves)

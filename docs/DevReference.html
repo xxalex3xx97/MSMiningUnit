@@ -60,7 +60,7 @@ a{color:var(--ac)}
 <tr><td>Mod loader</td><td>RE-UE4SS (experimental/zDEV, built at <code>cdbc0b66</code>), C++ mod <code>MiningBenchMod</code> + Lua mod <code>SandboxMenu</code></td></tr>
 <tr><td>Asset tooling</td><td>retoc (IoStore &harr; legacy, master build), FModel, UAssetGUI, UE 5.7.4 project <code>ue\MiningUnitUI</code> for the mod's UMG window</td></tr>
 <tr><td>RE tooling</td><td>Ghidra 12.2 + JDK 25 (portable, <code>&lt;ghidra dir&gt;</code>), custom headless scripts <code>&lt;ghidra work dir&gt;\scripts\Lean.java</code> (full auto-analysis OOMs at 28 GB, so import with <code>-noanalysis</code>)</td></tr>
-<tr><td>Mod version</td><td>0.3.1 (<code>mb_version.hpp</code>), branch <code>refactor/clean-code</code></td></tr>
+<tr><td>Mod version</td><td>0.3.2 (<code>mb_version.hpp</code>; mining ship = bench AND MiningLaser; requires MSCore &gt;= 0.8.15 (API 15), older MSCore falls back to bench-only, no laser check), source branch <code>main</code> (protected). ShipControl 0.3.0 (API 4), see <a href="#shipcontrol">ShipControl</a></td></tr>
 </table>
 
 <h3 id="arch-diagram">Big picture</h3>
@@ -369,7 +369,7 @@ ship tick: if JumpAnimProgress &gt; 0: JumpAnimProgress++; UpdateJumpChargeProgr
 <ul>
 <li><b>Rock list</b> = <code>DMSPlayerController.ScannableHUDMarkers</code> (V-scan). Cached and refreshed every 5-10 s: looping <code>FindAllOf</code> or reflecting every rock each second freezes the game. Cached actor pointers can be freed by streaming &rarr; validate with <code>actor_ok()</code> before touching.</li>
 <li><b>Fallback list</b> (<code>rock_fallback_merge</code>): <code>FindAllOf(BP_GenericResourceAsteroid_C)</code> when a belt seek requested it (6 s window, at most every 5 s). Residual risk: pointers reused up to 5 s can be freed.</li>
-<li><b>Approach</b> (<code>mb_steer.hpp</code>): <code>face_rock</code> then <code>approach_rock</code>; throttle steps 1..10 by remaining distance, brake, stop when surface distance reaches <code>mining_distance</code>. Per-ship <code>g_mvs</code> (move jobs), <code>g_spds</code> (speed monitors), <code>g_sel_rocks</code>. Speed safety abort <code>MV_SPEED_ABORT</code>. Rock contention between ships is allowed; a lost rock = free retry.</li>
+<li><b>Approach</b>: <code>face_rock</code> then <code>approach_rock</code>, run by ShipControl (<a href="#sc-move">move jobs</a>): throttle steps by remaining distance, brake, stop when surface distance reaches <code>mining_distance</code>. <code>mb_steer.hpp</code> starts the job and keeps a shadow record per ship (<code>g_mvs</code>) and <code>g_sel_rocks</code>. Speed abort: ShipControl's guard (<code>SC_SPEED_ABORT</code> 1.1), the job ends with <code>error: ABORT speed v/lim=..</code>. Rock contention between ships is allowed; a lost rock = free retry.</li>
 <li><b>Weapons</b> (<code>mb_weapons.hpp</code>): <code>set_all_firing</code>, <code>fire_input(group)</code>, <code>class_firing</code>. Laser primary, scooper secondary.</li>
 <li><b>Loop</b> (<code>mb_mining.hpp</code>): see state machine below. Row logic: each queue row <code>ITEM:n</code> = target ore mined (<code>got</code> counter), <code>n=0</code> unlimited (until cargo full). Dock only on cargo full or fuel low. Cargo % excludes fuel slots.</li>
 <li><b>Mining Unit</b>: our own block + actor <code>BP_MiningMod</code> ("Press F to Use Mining Unit") opens the UMG window <code>WBP_MiningUnit</code>. A cloned building block ("MiningBench") is produced by <code>mods/MiningUnitBlockPak</code> (<code>clone.js</code>, <code>patch_registry.py</code>).</li>
@@ -416,7 +416,9 @@ ship tick: if JumpAnimProgress &gt; 0: JumpAnimProgress++; UpdateJumpChargeProgr
 
 <!-- ============ MOD ============ -->
 <h2 id="mod">MiningBenchMod (C++ UE4SS mod)</h2>
-<p>Header-only split, one responsibility per file, each starting with a banner (WHAT / WHY / DEPENDS ON / USED BY / GAME FACTS). No game SDK headers: every field and function is found by reflection name. Include order (dependency order): <code>mb_version, mb_common, mb_config, mb_ue, mb_math, mb_docks, mb_ships, mb_weapons, mb_orders, mb_filters, mb_cmdstate, mb_rocks, mb_steer, mb_net, mb_dockjob, mb_pin, mb_warp, mb_warpreal, mb_belt, mb_mining, mb_chunkhold, mb_testcmd</code>; <code>dllmain.cpp</code> is only the entry point and the tick glue.</p>
+<p><b>Needs ShipControl 0.3.0 (API 4) and MSCore 0.8.15 (API 16, rock registry).</b> Every ship move, the speed guard and the bubble ladder run in ShipControl. Without it, Start and Collect refuse (see <a href="#sc-policy">ShipControl fail-closed policy</a>). The rock registry lives in MSCore (API 16: seed, cache <code>Mods\MSCore
+ockreg\RockRegCache.bin</code>, radius reads; the old per-mod <code>MiningRegistryCache.bin</code> is orphaned and safe to delete); <code>mb_registry.hpp</code> is a thin client (owner id 1, feed every 0.25 s). The mining side keeps the mining facts: docks, jobs, cargo and the beam hold.</p>
+<p>Header-only split, one responsibility per file, each starting with a banner (WHAT / WHY / DEPENDS ON / USED BY / GAME FACTS). No game SDK headers: every field and function is found by reflection name. Include order (dependency order, <code>dllmain.cpp</code>): <code>mb_version, mb_common, mb_wd_logic, mb_pattern, mb_compat, mb_config, mb_ue, mb_mscore, mb_math, mb_docks, mb_docktags, mb_ships, mb_weapons, mb_orders, mb_filters, mb_cmdstate, mb_rocks, mb_registry, mb_shipctl, mb_steer, mb_net, mb_dockjob, mb_pin, mb_warp, mb_warpreal, mb_belt, mb_mining, mb_bubble, mb_chunkhold, mb_devcmd, mb_testcmd, mb_watchdog, mb_compat_run</code>; <code>dllmain.cpp</code> is only the entry point and the tick glue.</p>
 
 <h3 id="files">Source map</h3>
 <table>
@@ -433,13 +435,15 @@ ship tick: if JumpAnimProgress &gt; 0: JumpAnimProgress++; UpdateJumpChargeProgr
 <tr><td><code>mb_filters.hpp</code></td><td>214</td><td>logistic filters <code>pf_*</code></td></tr>
 <tr><td><code>mb_cmdstate.hpp</code></td><td>112</td><td>command poller state, <code>DockJob</code>, MiningCmd.txt reader</td></tr>
 <tr><td><code>mb_rocks.hpp</code></td><td>511</td><td>rock list, aim frame, picking</td></tr>
-<tr><td><code>mb_steer.hpp</code></td><td>622</td><td>steering, speed monitor, move jobs</td></tr>
+<tr><td><code>mb_shipctl.hpp</code></td><td>387</td><td>loads ShipControl (<code>sc_api.h</code>), claims / releases ships for owner <code>mining</code>, SC_watch / SC_zero / move / bubble wrappers, host callbacks setup, <code>SC_NEED_TEXT</code></td></tr>
+<tr><td><code>mb_steer.hpp</code></td><td>533</td><td>move job start / finish / tick (dual wrapper: the job runs in ShipControl), speed monitor readers (<code>spd_update_sc</code>, <code>spd_get</code>), <code>zero_all</code> / <code>zero_all_dual</code>, ShipControl host callbacks (<code>sc_host_*</code>). Steering, aim and speed sampling moved to ShipControl</td></tr>
 <tr><td><code>mb_dockjob.hpp</code></td><td>457</td><td>dock/undock jobs, occupancy</td></tr>
 <tr><td><code>mb_pin.hpp</code></td><td>64</td><td>map pin hook</td></tr>
 <tr><td><code>mb_warp.hpp</code></td><td>499</td><td>instant warp, arrival math, jump cost</td></tr>
 <tr><td><code>mb_warpreal.hpp</code></td><td>359</td><td>real warp (variant e)</td></tr>
 <tr><td><code>mb_belt.hpp</code></td><td>263</td><td>sector read, belt target, <code>Sectors.txt</code></td></tr>
 <tr><td><code>mb_mining.hpp</code></td><td>1102</td><td>the mining loop state machine + status files</td></tr>
+<tr><td><code>mb_bubble.hpp</code></td><td>453</td><td>mining's answers to the ShipControl bubble ladder (<code>sc_host_first_blocker</code>, <code>sc_host_bubble_profile</code>, <code>sc_host_on_bubble</code>, <code>sc_host_near_rock</code>), <code>beam_tick</code> (laser hold), <code>bubble_status</code> / <code>bubble_sim</code> dev commands. Holds no bubble state</td></tr>
 <tr><td><code>mb_chunkhold.hpp</code></td><td>496</td><td>far-chunk streaming</td></tr>
 <tr><td><code>mb_testcmd.hpp</code></td><td>1163</td><td>command poller + dispatcher (<code>run_cmd</code>)</td></tr>
 </table>
@@ -525,6 +529,67 @@ ship tick: if JumpAnimProgress &gt; 0: JumpAnimProgress++; UpdateJumpChargeProgr
 </pre>
 <p>Constants: <code>MINE_BELT_EMPTY_S</code>, <code>MINE_FLEE_GRACE_S</code>, <code>MINE_DOCK_RETRIES=10</code>, <code>MINE_DOCK_RETRY_WAIT_S=30</code>, <code>MINE_DIAG_PERIOD_S=120</code> (removed diags). Hop-bug fix: <code>empty_t</code> was reset every MS_OFF&rarr;CHECK pass (committed, b06dfdb).</p>
 
+<h4>mb_shipctl.hpp <small>ShipControl wrappers (fail closed: no ShipControl = no move, no speed guard, no bubble)</small></h4>
+<table>
+<tr><th>Function</th><th>Does</th></tr>
+<tr><td><code>sc_load()</code></td><td><code>LoadLibraryW</code> of <code>ue4ss\Mods\ShipControl\dlls\main.dll</code> (sibling of this mod), binds the exports, fills the ScHost by API level (<code>sc_host_size()</code>), <code>SC_set_host</code> once. Retry at most every 10 s. Logs <code>SHIPCTL loaded</code> / <code>SHIPCTL load failed</code> once</td></tr>
+<tr><td><code>sc_claim_ship(sid, why*)</code> / <code>sc_release_ship(sid)</code></td><td>claim / release for owner <code>mining</code>; the held set is <code>g_sc_held</code></td></tr>
+<tr><td><code>sc_sync(sid, active)</code></td><td>per tick from <code>mining_tick</code>: when the loop is not active, <code>mv_cancel</code> then release</td></tr>
+<tr><td><code>sc_release_all()</code>, <code>sc_host_clear()</code></td><td>mod unload: <code>SC_release_all("mining")</code>, then the callbacks are cleared (zeroed ScHost of the same size)</td></tr>
+<tr><td><code>sc_speed_block()</code>, <code>sc_speed_tune()</code>, <code>sc_watch_ship(sid, on)</code>, <code>sc_tick_speed(dt)</code>, <code>sc_speed_read(sid, out)</code>, <code>sc_speed_zero(sid)</code></td><td>speed exports. <code>sc_speed_block()</code> returns null when usable (loaded, API &gt;= 2, caps bit 2)</td></tr>
+<tr><td><code>sc_move_block()</code>, <code>sc_move_ready(sid)</code></td><td>caps bit 4 (move jobs). Ready = claimed and watched; the first call watches the ship (<code>SC_watch</code>)</td></tr>
+<tr><td><code>sc_move_start</code>, <code>sc_move_cancel</code>, <code>sc_move_status</code>, <code>sc_tick_frame</code></td><td>move exports, try/catch wrappers</td></tr>
+<tr><td><code>sc_bubble_block()</code>, <code>sc_bub_on_ship(sid)</code>, <code>sc_tick_bubble(dt)</code>, <code>sc_bubble_status(sid, out)</code></td><td>bubble ladder: caps bit 8 and API 4; <code>sc_bub_on_ship</code> = ladder usable, speed guard on, claimed</td></tr>
+<tr><td><code>sc_policy_ok()</code></td><td>the gate of Start, Collect and move jobs: loaded, move, bubble and speed usable. Refuses with <code>SC_NEED_TEXT</code></td></tr>
+</table>
+
+<h4>mb_steer.hpp <small>move job wrappers, speed readers, host callbacks</small></h4>
+<table>
+<tr><th>Function</th><th>Does</th></tr>
+<tr><td><code>move_start(sid, cmd, seq, target, pt, ore_pt)</code></td><td>face_rock / approach_rock start. Refuses when ShipControl is not usable (<code>error: </code> + <code>SC_NEED_TEXT</code>). Picks the rock (or point / floating ore), builds <code>ScMoveReq</code> (mode 0 rock, 1 point, 2 ore), <code>sc_move_start</code>. Returns <code>waiting</code> or the error text. The legacy steps are gone (SC6-D2)</td></tr>
+<tr><td><code>mv_active(sid)</code>, <code>mv_active_sc(sid)</code></td><td>job record exists / job runs in ShipControl (<code>sc_on</code>)</td></tr>
+<tr><td><code>mv_cancel(sid)</code></td><td><code>SC_move_cancel</code> (aim offset stopped, no zero, no callback), erase the record</td></tr>
+<tr><td><code>mv_finish(sid, res)</code></td><td>erase the record, <code>sc_move_cancel</code> (no-op after ShipControl ended it), <code>zero_all_dual</code>, <code>seq=.. result:</code> trace, <code>g_cmd.result</code></td></tr>
+<tr><td><code>move_tick(dt)</code></td><td>every engine tick: <code>sc_tick_frame(dt)</code> for the ShipControl jobs, then <code>sc_mv_sync</code>. -1 ends them with <code>error: MSCore flight unavailable</code></td></tr>
+<tr><td><code>sc_mv_sync(sid)</code></td><td>copies phase, warp wait, heading error, Throttle step and ore point from <code>SC_move_status</code> into the record; the command ship's error goes to <code>g_last_err</code></td></tr>
+<tr><td><code>sc_host_tlog</code>, <code>sc_host_move_done</code>, <code>sc_host_warp_begin</code>, <code>sc_host_remain</code>, <code>sc_host_target_ok</code>, <code>sc_host_ore_loc</code></td><td>ShipControl callbacks: trace line; job end (<code>mv_finish</code>); far-trip warp (<code>move_warp_begin</code> for the job being started, <code>g_sc_start_mv</code>); surface distance to the registry rock; rock actor alive; ore actor location (<code>K2_GetActorLocation</code>)</td></tr>
+<tr><td><code>spd_ids()</code></td><td>ships that need the speed guard: command ship, move-job ships, dock-job ships</td></tr>
+<tr><td><code>spd_update_sc(dt)</code></td><td>every 0.25 s (cmd_tick): watch set = <code>spd_ids()</code> (<code>SC_watch</code>), <code>SC_tick_speed</code>, the mode line (<code>SHIPCTL speed:</code>), and the fresh aborts: <code>mv_finish(sid, "error: ABORT speed v/lim=..")</code></td></tr>
+<tr><td><code>spd_get(sid)</code></td><td><code>SC_speed</code> reading as a <code>SpeedMon</code> by value; <code>have = 0</code> when not watched or ShipControl off</td></tr>
+<tr><td><code>zero_all(ship)</code></td><td><code>MSCore_ship_zero</code> (<code>ms_zero_ship</code>); fallback Throttle = 0 and <code>rot_zero</code></td></tr>
+<tr><td><code>zero_all_dual(ship)</code></td><td><code>SC_zero</code> (owner mining) while ShipControl does the speed guard, else <code>zero_all</code></td></tr>
+<tr><td><code>view_send(cid, yaw, pitch, err)</code></td><td><code>MSCore_view_send</code> wrapper; still used by the real warp aim (<code>wr_e_aim</code>) and dev commands</td></tr>
+<tr><td><code>pilot_console_of(sid, how, count)</code></td><td>PilotConsoleObject by ShipID, then ParentID. The move job no longer calls it (ShipControl asks <code>MSCore_ship_console</code>)</td></tr>
+<tr><td><code>power_grid(ship)</code>, <code>power_dead(g, known)</code></td><td><code>FL_POWER</code> read through MSCore and the no-power test. Used by the power monitor (<code>power_track</code>, mb_mining.hpp) and dev probes. The approach low-power rule is in ShipControl</td></tr>
+<tr><td><code>reactors_of(ship)</code></td><td>reads <code>Reactors</code> by name (still in mining, see Gotchas)</td></tr>
+</table>
+
+<h4>mb_bubble.hpp <small>mining side of the ShipControl bubble ladder</small></h4>
+<table>
+<tr><th>Function</th><th>Does</th></tr>
+<tr><td><code>bubble_tick(dt)</code></td><td><code>sc_tick_bubble(dt)</code> when ShipControl runs the ladder (caps bit 8, speed guard on). Runs before <code>beam_tick</code> and <code>mining_tick</code></td></tr>
+<tr><td><code>sc_host_first_blocker(sid, sys, phase, rock, p, b, clear_m, out)</code></td><td>registry query on the segment p..b (<code>reg_area_seeded</code>, <code>bubble_skip_id</code>, <code>seg_blocker</code>); fills the blocker distance, radius, centre, <code>geom_ok</code> and <code>rock_r</code> (<code>reg_geom</code>)</td></tr>
+<tr><td><code>sc_host_bubble_profile(sid, out)</code></td><td>mining's side of one pass: active (SEEK, MINE, COLLECT, SWEEP and not SW_WARP), thrust, point / ore flags, job flags, target rock, flight destination (<code>flight_dst</code>). 0 = not a ShipControl ship (its ladder state is erased)</td></tr>
+<tr><td><code>sc_host_on_bubble(sid, ev)</code></td><td>kind 3 FLY: <code>mv_cancel</code>, <code>zero_all_dual</code>, <code>move_start(approach_rock, point)</code>. kind 1 REPLAN: <code>bub_do_replan</code>. kind 2 SKIP: <code>bub_do_skip</code></td></tr>
+<tr><td><code>sc_host_near_rock(sid, p, r, c, rad)</code></td><td>1 when the nearest rock is too near the ship (<code>bubble_too_near</code>); centre and radius out</td></tr>
+<tr><td><code>bub_do_replan(sid, ship, m, blk)</code></td><td>REPLAN fix: the blocker is left out of the target choice for this visit (<code>g_path_skip</code>), then <code>path_guard</code> against the target (SEEK only)</td></tr>
+<tr><td><code>bub_do_skip(sid, ship, m, phase, blk, blk_d)</code></td><td>SKIP fix: SEEK gives the target up (<code>path_give_up</code>); waypoint / ore cancels the flight (a SWEEP ore is marked unreachable, the sweep phase changes)</td></tr>
+<tr><td><code>bub_ladder(sid, ...)</code></td><td>ladder state for the status line, from <code>SC_bubble_status</code>; zeros when ShipControl does not run the ship</td></tr>
+<tr><td><code>beam_tick(dt)</code></td><td>laser hold: a firing ship's laser is held off while another bench ship is inside its beam (<code>ship_in_beam</code>, 300 m zone, <code>zone_hold_for</code>); yields the rock after <code>BEAM_YIELD_S</code>. Logs <code>BEAM hold / resume / yield</code>, <code>SHIPBLOCK add / remove</code></td></tr>
+<tr><td><code>bubble_dev(cmd)</code></td><td><code>bubble_status:&lt;ship&gt;</code>, <code>bubble_sim:&lt;ship&gt;:&lt;rock&gt;</code>: read only, writes <code>MiningBubble.txt</code></td></tr>
+</table>
+
+<h4>Moved to ShipControl <small>removed from mining (SC2b, SC3, SC6-D2)</small></h4>
+<table>
+<tr><th>Removed from mining</th><th>Now in ShipControl</th></tr>
+<tr><td>speed sampler <code>spd_sample</code>, speed monitor <code>g_spds</code>, abort decision</td><td><code>speed_sample</code>, <code>speed_judge</code>, <code>speed_tick</code> (sc_speed.hpp). Mining reads them through <code>SC_speed</code></td></tr>
+<tr><td><code>move_job_fn</code>, <code>move_aim_step</code>, <code>view_aim_drive</code>, <code>warp_wait_step</code>, the legacy steps of <code>move_start</code></td><td><code>step_job</code> (sc_move.hpp) with <code>phase1_decide</code>, <code>approach_step</code>, <code>view_offset</code> (sc_logic_steer.hpp) and <code>warp_settle_done</code> (sc_logic_path.hpp)</td></tr>
+<tr><td>move aim math <code>aim_calc*</code>, <code>pt_rloc</code></td><td><code>aim_pt</code>, <code>pt_rloc_calc</code>, <code>frame_from_flight</code>, <code>sc_calib_learn</code> (sc_frame.hpp). Mining keeps <code>act_frame</code>, <code>act_aim</code>, <code>act_aim_pt</code> (mb_rocks.hpp) for the rock picker, sweep and probes</td></tr>
+<tr><td>bubble ladder <code>bubble_one</code>, <code>bub_exec</code>, bubble state, <code>bubble_braking</code></td><td><code>bubble_one</code>, <code>bubble_exec</code>, <code>bub_pass_fn</code> (sc_bubble_run.hpp); <code>g_bub</code> (sc_bubble.hpp); <code>bubble_step</code>, <code>bubble_gate</code>, <code>bubble_plan</code> (sc_logic_bubble.hpp)</td></tr>
+<tr><td>low power <code>lp_flag</code>, <code>lp_limits</code>, <code>lp_state</code>, the approach timeout and Throttle cap</td><td><code>lp_state_from</code>, <code>approach_timeout_s</code>, <code>lowpower_throttle_cap</code>, <code>power_no_power</code> (sc_logic_steer.hpp); the <code>FL_POWER</code> read through MSCore_ship_flight</td></tr>
+<tr><td>pilot console lookup and Throttle / rotation writes of the job</td><td><code>MSCore_ship_console</code>, <code>MSCore_ship_set_throttle</code>, <code>MSCore_ship_zero</code>, <code>MSCore_view_send</code> (through ShipControl)</td></tr>
+</table>
+
 <h3 id="cmdbus">Command bus (Lua &rarr; C++)</h3>
 <p>The Lua UI writes <code>MiningCmd.txt</code> (next to the DLL): one line <code>&lt;seq&gt;|&lt;ship_id&gt;|&lt;cmd&gt;</code>. <code>cmd_poll</code> runs a line once when <code>seq</code> is greater than the last executed seq. <b>Gotcha:</b> every writer must use the same seq scale: the UI uses <code>os.time()*1000</code>; the Dev Menu used <code>os.time()</code> and its commands were refused as old (fixed, restart the game to reseed from the file).</p>
 <table>
@@ -535,7 +600,7 @@ ship tick: if JumpAnimProgress &gt; 0: JumpAnimProgress++; UpdateJumpChargeProgr
 <tr><td><code>warp_belt</code>, <code>warp_sector:&lt;id|pinned&gt;</code>, <code>warp_cur:&lt;id|pinned&gt;</code>, <code>warp_by_name:&lt;name&gt;</code></td><td>warps (cur = ship the player pilots, real warp since 6g)</td></tr>
 <tr><td><code>thr_up / thr_down / thr_zero</code></td><td>throttle tests</td></tr>
 <tr><td><code>chunkhold:release_all</code></td><td>Dev Menu "Release all chunk holds"</td></tr>
-<tr><td><code>debug_on / debug_off</code></td><td>widen the log keep-list</td></tr>
+<tr><td><code>debug_on / debug_off</code></td><td>log every line (no keep-list filter) until <code>debug_off</code>; see <a href="#logging">Logging</a></td></tr>
 </table>
 <p>There are also face_rock / approach_rock / laser / tractor / rock selection test commands from the Test tab.</p>
 
@@ -571,7 +636,311 @@ ship tick: if JumpAnimProgress &gt; 0: JumpAnimProgress++; UpdateJumpChargeProgr
 </table>
 
 <h3 id="logging">Logging</h3>
-<p><code>log_line()</code> drops everything except lines containing a <b>keep-list word</b> unless debug is on. Current keep words include <code>warpreal, fuelwarp, fuelchk, sweep, chunkhold, ...</code>. <b>Gotcha:</b> a log line without a keep word is silently dropped unless the Debug log switch is on. Add the word when adding a log tag. Logs go to <code>UE4SS.log</code>.</p>
+<p><code>log_line()</code> (mb_common.hpp) writes a line only when debug is on, or when the lower-cased line contains one of these keep words (substring match, <code>sector </code> and <code>reg </code> keep their trailing space):</p>
+<div class="sig">error, fail, warn, exception, halt, stopped, loaded, mining loop, going to, dock retry, mine weapons, warpsector, sector , fuelchk, fuelwarp, jumpcost, warpcur, warpreal, chunkhold, devstation, sweep, fault, compat, combat, attack, reg , dockdiag</div>
+<p><b>Gotcha:</b> a line without a keep word is silently dropped unless debug is on. This applies to <code>tlog</code> lines too (prefix <code>test cmd: </code> has no keep word): a success result such as <code>result: ok ...</code> is dropped, <code>result: error: ...</code> is kept. Add the word when adding a log tag. Logs go to <code>UE4SS.log</code>.</p>
+<p><b>Debug switch</b>: <code>debug_on</code> / <code>debug_off</code> (dev commands, mb_devcmd.hpp). Send them through the command file: <code>&lt;epoch ms&gt;|&lt;ship id&gt;|debug_on</code>. The seq must be above the last one (the Lua UI uses <code>os.time()*1000</code>). Runtime only: off after every start.</p>
+<p><b>Lines to look for</b> (MiningBenchMod side; the ShipControl side is under <a href="#sc-logs">ShipControl log lines</a>): <code>SHIPCTL loaded</code>, <code>SHIPCTL load failed</code> (kept). <code>SHIPCTL claim ship=N owner=mining</code>, <code>SHIPCTL claim refused</code>, <code>SHIPCTL release</code>, <code>SHIPCTL speed: using ShipControl</code>, <code>BEAM hold / resume / yield</code>, <code>SHIPBLOCK add / remove</code> (need debug). A refusal shows in the UI and in the result line <code>seq=.. result: error: ShipControl not installed or too old ..</code> (kept).</p>
+
+<!-- ============ SHIPCONTROL ============ -->
+<h2 id="shipcontrol">ShipControl (separate mod)</h2>
+<p>Ship control for other mods: the owner registry (one behaviour per ship), the speed guard, the move jobs (face or approach a rock, a fixed point or floating ore) and the bubble ladder (brake, replan, waypoint, skip, nudge, resume when a rock is on the nose). MiningBenchMod is the first user. ShipControl reads and writes game state only through MSCore (its code holds no game class or property names, apart from one error text) (see <a href="#mscore-api">MSCore native API used by mods</a>). Statements below are from the source; the in-game state is under <a href="#open">Open questions</a>.</p>
+<table>
+<tr><th>Item</th><th>Value</th></tr>
+<tr><td>Version</td><td>0.3.1 (<code>sc_version.hpp</code>, now in the submodule <code>external/ShipControl</code>, repo <code>xxalex3xx97/ShipControl</code>), API level 4 (<code>SC_API_LEVEL</code> in <code>sc_api.h</code>, <code>SC_api()</code> returns 4)</td></tr>
+<tr><td>Release repo</td><td><code>xxalex3xx97/ShipControl</code> (public). ShipControl 0.3.0 released 2026-11-20, before MiningBenchMod 0.3.0 (vault log)</td></tr>
+<tr><td>Source</td><td>Own repo <code>xxalex3xx97/ShipControl</code>, pinned in this repo as submodule <code>external/ShipControl</code> (tag in <code>deps.lock</code>). Files: <code>sc_api.h</code> (the C ABI, the contract), <code>dllmain.cpp</code> (entry point, exports, owner registry glue), <code>sc_owner.hpp</code>, <code>sc_speed.hpp</code>, <code>sc_move.hpp</code>, <code>sc_bubble*.hpp</code> (engines), <code>sc_logic_*.hpp</code> (pure rules), <code>sc_frame.hpp</code>, <code>sc_mscore.hpp</code>, <code>sc_flight_abi.h</code> (MsFlight copy), <code>CMakeLists.txt</code> (one target: <code>dllmain.cpp</code>)</td></tr>
+<tr><td>Runtime needs</td><td>MSCore 0.8.13 (flight API 10), loaded from <code>..\..\MSCore\dlls\main.dll</code> relative to ShipControl's own <code>dlls</code> folder. Without it the owner registry still works; speed, move and bubble refuse</td></tr>
+<tr><td>Load</td><td>UE4SS C++ mod: <code>start_mod</code> / <code>uninstall_mod</code>; <code>enabled.txt</code> enables it. Load line: <code>[ShipControl] ShipControl v0.3.0 loaded (SC0 owner registry)</code> (the text still says SC0)</td></tr>
+</table>
+
+<h3 id="sc-split">Division of labour</h3>
+<ul>
+<li><b>Mining decides</b>: which rock or point, the dock, start and stop, the rock registry, the dock queue, path checks (<code>path_guard</code>), the laser hold, cargo and orders. Today the only owner is <code>mining</code>.</li>
+<li><b>ShipControl moves</b>: builds one move job per ship from one MSCore flight snapshot per tick, steps the Throttle and the aim offset, ends the job with a result text, runs the speed guard and the bubble ladder.</li>
+<li><b>MSCore holds all game names</b>. ShipControl calls <code>MSCore_ship_flight</code>, <code>MSCore_ship_set_throttle</code>, <code>MSCore_ship_zero</code>, <code>MSCore_ship_console</code>, <code>MSCore_view_send</code>.</li>
+</ul>
+
+<h3 id="sc-api">API levels</h3>
+<table>
+<tr><th>Level</th><th>Adds</th><th>Needs at runtime</th></tr>
+<tr><td>1</td><td>owner registry: <code>SC_api, SC_caps, SC_kill, SC_claim, SC_owner, SC_release, SC_release_all</code></td><td>nothing</td></tr>
+<tr><td>2</td><td>speed monitor: <code>SC_set_host, SC_set_tune, SC_watch, SC_tick_speed, SC_speed, SC_zero</code>. ScHost 24 bytes</td><td>MSCore API &gt;= 10 (0.8.13)</td></tr>
+<tr><td>3</td><td>move jobs: <code>SC_move_start, SC_move_cancel, SC_move_active, SC_move_status, SC_tick_frame</code>. ScHost 80 bytes</td><td>MSCore flight</td></tr>
+<tr><td>4</td><td>bubble ladder: <code>SC_tick_bubble, SC_bubble_status</code>. ScHost 112 bytes (4 more callbacks)</td><td>MSCore flight</td></tr>
+</table>
+<p>Append only: an export or a field is never changed or reordered. A level 2 or 3 caller keeps working against a newer DLL.</p>
+
+<h3 id="sc-exports">Exports</h3>
+<p>Every export returns <code>int</code>. Where an export can refuse, the reason goes to <code>wchar_t* err, int errlen</code>. Each export catches its own exceptions: a failure is a return code, never a throw. The kill switch is described below.</p>
+<table>
+<tr><th>Export</th><th>Signature</th><th>Returns</th></tr>
+<tr><td><code>SC_api</code></td><td><code>int SC_api(void)</code></td><td>API level (4)</td></tr>
+<tr><td><code>SC_caps</code></td><td><code>int SC_caps(void)</code></td><td>capability bits, see below</td></tr>
+<tr><td><code>SC_kill</code></td><td><code>int SC_kill(int on, wchar_t* err, int errlen)</code></td><td>1 ok, 0 failed</td></tr>
+<tr><td><code>SC_claim</code></td><td><code>int SC_claim(const wchar_t* owner, int ship, wchar_t* err, int errlen)</code></td><td>1 owned now (free or same owner), 0 refused (err: <code>owned by X</code>)</td></tr>
+<tr><td><code>SC_owner</code></td><td><code>int SC_owner(int ship, wchar_t* out, int outlen)</code></td><td>1 owned (name copied), 0 free or failed</td></tr>
+<tr><td><code>SC_release</code></td><td><code>int SC_release(const wchar_t* owner, int ship, wchar_t* err, int errlen)</code></td><td>1 released or was free, 0 refused (another owner)</td></tr>
+<tr><td><code>SC_release_all</code></td><td><code>int SC_release_all(const wchar_t* owner, wchar_t* err, int errlen)</code></td><td>number released, -1 failed</td></tr>
+<tr><td><code>SC_set_host</code></td><td><code>int SC_set_host(const ScHost* host)</code></td><td>1 ok, 0 refused (size or killed)</td></tr>
+<tr><td><code>SC_set_tune</code></td><td><code>int SC_set_tune(const ScTune* tune)</code></td><td>1 ok, 0 refused (size or killed)</td></tr>
+<tr><td><code>SC_watch</code></td><td><code>int SC_watch(const char* owner, int sid, int on)</code></td><td>1 ok, 0 refused (other owner, MSCore too old, killed)</td></tr>
+<tr><td><code>SC_tick_speed</code></td><td><code>int SC_tick_speed(double dt)</code></td><td>&gt;= 0 fresh aborts this step, -1 MSCore unusable or killed</td></tr>
+<tr><td><code>SC_speed</code></td><td><code>int SC_speed(int sid, ScSpeed* out)</code></td><td>1 ok, 0 not watched or failed</td></tr>
+<tr><td><code>SC_zero</code></td><td><code>int SC_zero(const char* owner, int sid)</code></td><td>1 zeroed, 0 refused or failed</td></tr>
+<tr><td><code>SC_move_start</code></td><td><code>int SC_move_start(const char* owner, int sid, ScMoveReq* req, wchar_t* err, int errlen)</code></td><td>1 started (<code>req-&gt;out_cid</code>, <code>out_steps</code> set), 0 refused (err = <code>error: ...</code>)</td></tr>
+<tr><td><code>SC_move_cancel</code></td><td><code>int SC_move_cancel(const char* owner, int sid)</code></td><td>1 cancelled or none, 0 other owner or killed</td></tr>
+<tr><td><code>SC_move_active</code></td><td><code>int SC_move_active(int sid)</code></td><td>1 job runs, 0 none</td></tr>
+<tr><td><code>SC_move_status</code></td><td><code>int SC_move_status(int sid, ScMoveStatus* out)</code></td><td>1 ok (active 0 when no job), 0 refused</td></tr>
+<tr><td><code>SC_tick_frame</code></td><td><code>int SC_tick_frame(double dt)</code></td><td>&gt;= 0 jobs stepped, -1 killed or MSCore unusable (every job ended first)</td></tr>
+<tr><td><code>SC_tick_bubble</code></td><td><code>int SC_tick_bubble(double dt)</code></td><td>&gt;= 0 ships passed, -1 killed or MSCore unusable (nothing written)</td></tr>
+<tr><td><code>SC_bubble_status</code></td><td><code>int SC_bubble_status(int sid, ScBubbleStatus* out)</code></td><td>1 ok (have 0 when no state), 0 refused</td></tr>
+</table>
+
+<h3 id="sc-caps">Capability bits (SC_caps)</h3>
+<table>
+<tr><th>Bit</th><th>Value</th><th>Meaning</th></tr>
+<tr><td>0</td><td>1</td><td>owner registry</td></tr>
+<tr><td>1</td><td>2</td><td>speed monitor (MSCore usable)</td></tr>
+<tr><td>2</td><td>4</td><td>move jobs (API 3)</td></tr>
+<tr><td>3</td><td>8</td><td>bubble ladder (API 4)</td></tr>
+</table>
+<p><code>SC_caps()</code> is <code>1 | (MSCore flight loads ? 2|4|8 : 0)</code>: bits 1 to 3 come from one MSCore check and are set or cleared together. A caller checks the bit it needs; a caller that sees a bit clear must not use that feature. <code>SC_caps</code> is not refused by the kill switch.</p>
+
+<h3 id="sc-owner">Owner registry</h3>
+<ul>
+<li>One owner per ship. <code>SC_claim</code>: free or same owner = 1; another owner = 0 with <code>owned by X</code>. <code>SC_release</code> frees a ship only for its holder (a free ship is 1).</li>
+<li><code>SC_zero</code>, <code>SC_watch</code> (on = 1) and <code>SC_move_start</code> check the owner: free or the same owner only. A refused move start returns <code>error: ship owned by X</code>.</li>
+<li>Owner names: claim, release and release_all take a <code>wchar_t</code> owner that must be ASCII, 1 to 127 characters. The <code>char*</code> owners (watch, zero, move) must be non-empty.</li>
+<li><code>SC_release</code> also drops that owner's move job on the ship (no callback; aim offset zeroed, ship zeroed when MSCore is up) and the ladder state of the ship. <code>SC_release_all</code> does the same for every ship of the owner and drops ladder states of ships left with no owner.</li>
+<li>Per-ship state (speed monitor, move job, ladder state) is keyed by the caller's ship id.</li>
+</ul>
+
+<h3 id="sc-host">ScHost (SC_set_host)</h3>
+<p>The caller's table of callbacks. Accepted sizes: <code>24</code> (API 2), <code>80</code> (API 3) and <code>sizeof(ScHost)</code> = <code>112</code> (API 4). Any other size is refused. <code>SC_set_host</code> zeroes its copy and copies <code>min(size, 112)</code>, so a level 2 or 3 caller gets its own prefix. Callbacks run on the game thread, may call <code>SC_*</code>, and must never throw. A null callback fails closed: a null <code>target_ok</code> or <code>ore_loc</code> ends the move with <code>error: rock lost</code>, a null <code>bubble_profile</code> erases the ship's ladder state, a null <code>first_blocker</code> reads as clear.</p>
+<table>
+<tr><th>Offset</th><th>Field</th><th>Level</th><th>Meaning</th></tr>
+<tr><td>0</td><td><code>int32 size</code></td><td>all</td><td>24, 80 or 112</td></tr>
+<tr><td>8</td><td><code>log(const wchar_t*)</code></td><td>2</td><td>ShipControl log text</td></tr>
+<tr><td>16</td><td><code>on_speed_abort(int sid, double ratio)</code></td><td>2</td><td>once per abort, after the ship is zeroed</td></tr>
+<tr><td>24</td><td><code>tlog(const wchar_t*)</code></td><td>3</td><td>every move-job text line</td></tr>
+<tr><td>32</td><td><code>on_move_done(int sid, int seq, const wchar_t* result)</code></td><td>3</td><td>job ended by ShipControl (already erased, ship zeroed); runs after the lock is released</td></tr>
+<tr><td>40</td><td><code>warp_begin(int sid, const ScMoveReq* req) -&gt; int</code></td><td>3</td><td>once inside <code>SC_move_start</code>, kind 1 (approach); 1 = warp sent, the job waits for the landing</td></tr>
+<tr><td>48</td><td><code>remain_m(int sid, const double ship_m[3], double* out_m) -&gt; int</code></td><td>3</td><td>surface distance (m) to the rock with tag &gt; 0, for the warp settle; mode 0 only</td></tr>
+<tr><td>56</td><td><code>target_ok(int sid, void* handle) -&gt; int</code></td><td>3</td><td>1 = rock actor still valid</td></tr>
+<tr><td>64</td><td><code>ore_loc(int sid, void* handle, double* out3_uu) -&gt; int</code></td><td>3</td><td>1 = ore actor location (uu)</td></tr>
+<tr><td>72</td><td><code>braking(int sid) -&gt; int</code></td><td>3</td><td>1 = a bubble brake holds Throttle 0</td></tr>
+<tr><td>80</td><td><code>first_blocker(int sid, int sys, int phase, int rock, const double p[3], const double b[3], double clear_m, ScBlockHit* out) -&gt; int</code></td><td>4</td><td>blocker id on p..b (0 clear, &lt; 0 ship sphere); fills <code>out</code></td></tr>
+<tr><td>88</td><td><code>bubble_profile(int sid, ScBubbleProfile* out) -&gt; int</code></td><td>4</td><td>1 = profile filled; 0 = refused, ShipControl erases the ladder state</td></tr>
+<tr><td>96</td><td><code>on_bubble(int sid, const ScBubbleEvent* ev) -&gt; int</code></td><td>4</td><td>ladder event: kind 1 REPLAN, 2 SKIP, 3 FLY; 1 = done (FLY: flight started)</td></tr>
+<tr><td>104</td><td><code>near_rock(int sid, const double p[3], double ship_r_m, double* out_c3, double* out_r) -&gt; int</code></td><td>4</td><td>1 = ship too near a rock; centre and radius out</td></tr>
+</table>
+
+<h3 id="sc-structs">Structs</h3>
+<p>Offsets of all structs are checked by <code>static_assert</code> in <code>sc_api.h</code> (x64). <code>ScTune</code> and <code>ScSpeed</code> have no <code>static_assert</code>; their <code>size</code> field must equal <code>sizeof</code> and is checked at runtime.</p>
+<table>
+<tr><th>Struct</th><th>Size</th><th>Fields and notes</th></tr>
+<tr><td><code>ScMoveReq</code></td><td>128</td><td><code>size, kind</code> (0 face, 1 approach), <code>seq</code> (-1 internal), <code>mode</code> (0 world point + optional handle, 1 chunk point <code>sys, ch[3], loc[3]</code>, 2 floating ore), <code>tag</code> (registry rock id, warp settle), <code>pt_uu[3]</code> (uu), <code>handle</code>, <code>radius_m</code> (0 for points and ore), <code>stop_m</code> (surface stop distance, m, kind 1). OUT: <code>out_cid, out_steps</code></td></tr>
+<tr><td><code>ScMoveStatus</code></td><td>64</td><td><code>active, phase</code> (1 aim, 2 approach), <code>warp_wait, thr, kind, err_deg</code> (-1 none yet), <code>t_s, ore_loc[3]</code></td></tr>
+<tr><td><code>ScBlockHit</code></td><td>56</td><td><code>geom_ok, d</code> (blocker centre to the nose line, m), <code>block_r</code> (m), <code>rock_r</code> (m, 0 = no id), <code>c[3]</code> (m)</td></tr>
+<tr><td><code>ScBubbleProfile</code></td><td>72</td><td><code>active, thrust, pt_on, ore_on, job_active, warp_wait, rock, dst_ok, dst_m[3]</code> (m), <code>clearance_m</code></td></tr>
+<tr><td><code>ScBubbleEvent</code></td><td>88</td><td><code>kind</code> (1 REPLAN, 2 SKIP, 3 FLY), <code>phase, act, blk, reason</code> (FLY: 1 waypoint, 2 nudge, 3 resume), <code>sys, blk_d, ch[3], loc[3]</code> (FLY target, mining PtTarget meaning)</td></tr>
+<tr><td><code>ScBubbleStatus</code></td><td>56</td><td><code>have, braking, replans, pending, wp, resume, blk, phase, why, rock, blk_d</code></td></tr>
+<tr><td><code>ScTune</code></td><td>size field + <code>double speed_k</code></td><td><code>speed_k</code> = <code>steer_probe_speed_k</code> (limit = max speed x speed_k). ShipControl default 60</td></tr>
+<tr><td><code>ScSpeed</code></td><td>size field + <code>have, v_raw, lim_raw, aborted</code></td><td>raw per s; <code>have</code> = 1 when <code>v</code> is valid; <code>aborted</code> = over-limit already reported</td></tr>
+</table>
+
+<h3 id="sc-tick">Tick model</h3>
+<p>Host-driven: ShipControl has no engine hook. The mod calls the ticks. In MiningBenchMod <code>cmd_tick</code> (mb_testcmd.hpp):</p>
+<pre>
+every engine tick (step 2):    move_tick(dt)          -&gt; SC_tick_frame(dt)            move jobs
+0.25 s block (CMD_POLL_S):
+  thr_check
+  spd_update_sc(step)          -&gt; SC_set_tune, SC_watch, SC_tick_speed(step)   speed guard
+  pin_hook_ensure, cmd_poll, warp_check, warp_real_tick, pin_file_tick, jobs_tick, warp_wait_tick,
+  fast_watch_tick, probe_avoid_tick, probe_power_tick
+  bubble_tick(step)            -&gt; SC_tick_bubble(step)                        bubble ladder
+  beam_tick, mining_tick, registry_frame, station_destroy_tick
+</pre>
+<p>Order: frame first (every engine tick), then speed, then bubble (both in the 0.25 s block). ShipControl has no thread of its own: a tick that is not called stops its feature.</p>
+
+<h3 id="sc-mining">How mining calls it (mb_shipctl.hpp)</h3>
+<ul>
+<li><b>Load</b>: <code>sc_load()</code> does <code>LoadLibraryW</code> of <code>..\..\ShipControl\dlls\main.dll</code> (relative to the mining DLL), binds the exports, fills the ScHost sized by API level and calls <code>SC_set_host</code> once. It runs in the mod constructor and again at Start, retried at most every 10 s. Logs <code>SHIPCTL loaded: &lt;path&gt;</code> or <code>SHIPCTL load failed: &lt;path&gt;</code> once.</li>
+<li><b>Claim</b>: <code>sc_claim_ship(sid)</code>, owner <code>mining</code>, from Start (<code>mine_cmd</code>), Collect (<code>sweep_cmd</code>) and <code>move_start</code>. Held ships are in <code>g_sc_held</code>. A refusal returns <code>ship &lt;err&gt;</code> (for example <code>ship owned by X</code>).</li>
+<li><b>Release</b>: <code>sc_sync(sid, active)</code> every tick from <code>mining_tick</code>. When the loop is not active (not running, not sweeping, state HALT or OFF) it cancels the move job (<code>mv_cancel</code>) and releases the claim. <code>mine_forget_ship</code> releases a destroyed ship. The destructor calls <code>sc_host_clear()</code>, then <code>sc_release_all()</code> (logs the count).</li>
+<li><b>Speed watch</b>: <code>spd_update_sc</code> sets the watch set (<code>g_sc_watch</code>) to <code>spd_ids()</code> (command ship, move-job ships, dock-job ships) with <code>SC_watch</code>. <code>g_sc_speed_on</code> = ShipControl does the speed guard this poll.</li>
+<li><b>Move jobs</b>: <code>sc_move_ready(sid)</code> checks caps bit 4, the claim and the watch (watching the ship on first use). <code>move_start</code> builds the <code>ScMoveReq</code> and calls <code>sc_move_start</code>. <code>g_sc_start_mv</code> lets <code>sc_host_warp_begin</code> reach the job being started.</li>
+<li><b>Host callbacks</b> (set in <code>sc_load</code>): <code>sc_host_log</code> (goes to mining's <code>log_line</code>, so the keep-list filter applies), <code>sc_host_abort</code> (queues a fresh speed abort in <code>g_sc_abort</code>), <code>sc_host_tlog</code>, <code>sc_host_move_done</code>, <code>sc_host_warp_begin</code>, <code>sc_host_remain</code>, <code>sc_host_target_ok</code>, <code>sc_host_ore_loc</code>, <code>sc_host_first_blocker</code>, <code>sc_host_bubble_profile</code>, <code>sc_host_on_bubble</code>, <code>sc_host_near_rock</code>. <code>braking</code> is null (the legacy bubble brake is gone).</li>
+</ul>
+
+<h3 id="sc-policy">Fail-closed policy and refusal text</h3>
+<p>Start, Collect and move jobs in mining refuse unless ShipControl is loaded and the move, bubble and speed caps are usable (<code>sc_policy_ok</code>). There is no legacy path (removed in SC6-D2). The exact text (<code>SC_NEED_TEXT</code>, mb_shipctl.hpp):</p>
+<pre>error: ShipControl not installed or too old (needs API 4); update MSCore Manager</pre>
+<p>Start sets the loop status to <code>error</code> with this text. The command result is <code>error: ...</code>. A claim refused by another owner gives <code>error: ship owned by X</code>.</p>
+<p>ShipControl's own refusals (<code>err</code> of <code>SC_move_start</code>, and the job end texts), in the order they are checked:</p>
+<table>
+<tr><th>Text</th><th>When</th></tr>
+<tr><td><code>error: ShipControl killed</code></td><td>kill switch on</td></tr>
+<tr><td><code>error: ship owned by X</code></td><td>another owner holds the ship</td></tr>
+<tr><td><code>error: move job already running</code></td><td>a job exists for the ship</td></tr>
+<tr><td><code>error: MSCore flight unavailable</code></td><td>MSCore flight not bound</td></tr>
+<tr><td><code>error: ship not found</code></td><td>flight snapshot: ship gone or not alive</td></tr>
+<tr><td><code>error: PilotConsoleObject not found</code></td><td><code>MSCore_ship_console</code> &lt;= 0</td></tr>
+<tr><td><code>error: Throttle steps unreadable</code></td><td>steps &lt; 1</td></tr>
+</table>
+
+<h3 id="sc-kill">Kill switch and fault handling</h3>
+<ul>
+<li><code>SC_kill(1)</code> refuses every control export (claim, release, set_host, set_tune, watch, speed, zero, move start, bubble status) until <code>SC_kill(0)</code>. <code>SC_tick_speed</code> and <code>SC_tick_bubble</code> return -1 and write nothing. <code>SC_tick_frame</code> ends every move job with <code>error: ShipControl killed</code> and writes nothing to the ship. Logs <code>kill switch ON</code> / <code>kill switch OFF</code>. Mining's own zero (<code>zero_all</code>) is not behind the switch.</li>
+<li>Every move step runs under SEH (<code>sc_seh_run</code>, a plain function with no C++ objects). A fault logs <code>MOVE fault ship=N job=face_rock|approach_rock code=0x...</code>, ends that job with <code>error: target lost</code> (a second fault there logs <code>MOVE fault finish faulted too</code>), and the other jobs go on.</li>
+<li>Every bubble ship pass runs under SEH too. A fault logs <code>BUBBLE fault ship=N code=0x...</code> and erases that ship's ladder state.</li>
+<li>A failed Throttle write logs <code>MOVE throttle write failed ship=N: &lt;err&gt;</code> once per job. A failed view send ends the job with <code>error: view_send &lt;err&gt;</code>.</li>
+</ul>
+
+<h3 id="sc-speed">Speed guard</h3>
+<ul>
+<li>Limit = <code>GetModifiedMaxSpeed</code>, else <code>GetMaxSpeed</code> (raw per s), times speed_k (<code>SC_set_tune</code>, default 60).</li>
+<li>Position: the ship actor location (uu, converted to raw) when the actor frame reads; else chunk x 2048 m + object <code>Location</code> (fallback). A sample that gives a ratio above 10 is a glitch: dropped, nothing zeroed.</li>
+<li>Ratio v / lim above 1.1: the ship is zeroed on every step while over. The first step over is reported once (<code>ABORT speed ship=N v/lim=..</code>, then <code>on_speed_abort</code>). A ratio below 1 re-arms the report. Mining turns the fresh abort into <code>error: ABORT speed v/lim=..</code> on the job.</li>
+</ul>
+
+<h3 id="sc-move">Move jobs</h3>
+<p>One job per ship (<code>g_jobs_mv</code>). Kind 0 = face_rock (aim only), kind 1 = approach_rock (aim, then thrust). Mode 0 = rock actor (fixed point and handle), 1 = chunk point, 2 = floating ore (the ore position is re-read through the host, about every second when within 100 m).</p>
+<p><b>Start</b> (<code>SC_move_start</code>), first failure returns: owner may act; no job running; MSCore flight bound; flight POSE + STATE read (ship alive); console id; Throttle steps &gt; 0; build the job; for kind 1, <code>warp_begin</code> (1 = warp sent, job waits); store the job, set <code>out_cid</code> and <code>out_steps</code>.</p>
+<p><b>Each tick</b> (<code>step_job</code>): one flight snapshot (POSE; POWER too in the approach when not warping); turn rate from a quat sample every 0.25 s; frame and aim against the target; phase 1 (aim): face done under 2 deg, face timeout 30 s, approach starts under 10 deg; aim offset sent with <code>MSCore_view_send</code> every 0.1 s (dead zone 7 deg added, capped at 20 deg, aligned = one (0,0) send); no thrust while a bubble brake holds; low power (approach timeout 300 s, divided by MaxLowPowerSpeed in low power, Throttle cap from LowPowerThrottle); approach step: target 0 above 10 deg error, full steps beyond 500 m, linear down to 1 step inside, step rises by 1 per 0.5 s and falls at once, brake at -2 once past the stop distance until under 1 m/s; Throttle written every tick; trace line about once a second.</p>
+<p>A far approach warp waits: no thrust until the landing (at least 2 s, at most 30 s, and within 1000 m of the target). Trace <code>far warp landed ship=N after X s</code>.</p>
+<table>
+<tr><th>Job end text</th><th>Meaning</th></tr>
+<tr><td><code>ok heading_error=..deg</code></td><td>face done</td></tr>
+<tr><td><code>ok surface_m=.. speed=.. m/s</code></td><td>approach done: stop distance reached, speed under 1 m/s</td></tr>
+<tr><td><code>error: face timeout err=..</code></td><td>face not done in 30 s</td></tr>
+<tr><td><code>error: approach timeout</code></td><td>approach over 300 s (300 / MaxLowPowerSpeed in low power)</td></tr>
+<tr><td><code>error: rock lost</code></td><td>rock actor gone (<code>target_ok</code>), ore read failed, or the aim failed</td></tr>
+<tr><td><code>error: point lost</code></td><td>chunk point could not be placed in the ship frame; or a point job's frame read failed</td></tr>
+<tr><td><code>error: ship not found during move</code>, <code>error: Quat unreadable</code>, <code>error: MSCore flight unavailable</code></td><td>snapshot failed in the tick</td></tr>
+<tr><td><code>error: target lost</code></td><td>a fault inside the job step (SEH)</td></tr>
+</table>
+<p>Frame: the ship frame is the actor frame when it reads (uu); otherwise the object pose (chunk x 2048 m + raw Location / 65536, axes from the Quat through a calibration learned once from a ship that has both, <code>sc_calib_learn</code>). A job that has no frame ends with <code>error: rock lost</code> or <code>error: point lost</code>.</p>
+
+<h3 id="sc-bubble">Bubble ladder</h3>
+<p>One pass per watched ship and per ship with a ladder state, in each 0.25 s block. Look-ahead along the nose = speed x 4 s (at least 100 m). A blocker that is ahead and closing (or first seen while moving) brakes the ship: Throttle 0 until under 3 m/s. Then the fix:</p>
+<ul>
+<li><b>SEEK</b> (approach job): replan (path check with the blocker left out, up to 2 replans per target), then skip (the target is given up).</li>
+<li><b>WAYPOINT / ORE</b> (point or ore flight): a waypoint beside the blocker, up to 2 per flight, then skip.</li>
+<li><b>MINE</b> (drifting): nudge 100 m away from a rock that is too near; otherwise resume (brake only).</li>
+</ul>
+<p>A flown waypoint is flown again to its destination when it ends (arrived within 30 m). Activation: a game autopilot, docking autopilot or warp travel turns the ladder off (state erased). Otherwise active when a thrust move job runs or the speed is over 3 m/s. Ship radius = CollisionRadius (cached once read), default 12 m. Clearance = ship radius + <code>bubble_clearance_m</code>. A rock blocks with radius = rock radius x 0.8 + clearance. A pass over 2 ms logs <code>BUBBLE slow ship=N ms=..</code> (once per 30 s) and the ship is not checked for 10 s (never while braking).</p>
+<p>The ladder state is read through <code>SC_bubble_status</code> (mining status line, <code>bub_ladder</code>). The registry query and the rock geometry are answered by mining through <code>first_blocker</code> and <code>near_rock</code>.</p>
+
+<h3 id="sc-not-held">What ShipControl does not hold</h3>
+<ul>
+<li>The rock registry (MSCore API 16, client <code>mb_registry.hpp</code>): rock centres and radii come from MSCore; the blocker query (ship spheres included) is answered by mining through <code>first_blocker</code>.</li>
+<li>The dock queue, dock jobs and holding slots (<code>mb_net.hpp</code>, <code>mb_dockjob.hpp</code>).</li>
+<li><code>path_guard</code>, <code>path_give_up</code>, the skip lists and the choice of a replan target (<code>mb_mining.hpp</code>). ShipControl only asks for them (<code>on_bubble</code> REPLAN / SKIP).</li>
+<li><code>beam_tick</code>: the laser hold for the 300 m zone (<code>mb_bubble.hpp</code>).</li>
+<li>Rock choice, the mining state machine, cargo, orders, fuel, the warp send path, chunk hold.</li>
+</ul>
+
+<h3 id="sc-logs">ShipControl log lines</h3>
+<p>ShipControl's own lines (load, kill switch) go to UE4SS.log unfiltered with the prefix <code>[ShipControl]</code>. Its host lines go through mining's <code>log_line</code> (<code>sc_host_log</code>, <code>sc_host_tlog</code>) and follow the keep-list filter of <a href="#logging">Logging</a>.</p>
+<table>
+<tr><th>Line</th><th>Source</th><th>Without debug</th></tr>
+<tr><td><code>[ShipControl] ShipControl v0.3.0 loaded ...</code>, <code>kill switch ON</code> / <code>OFF</code></td><td>own log</td><td>written</td></tr>
+<tr><td><code>MOVE fault ship=N job=.. code=0x..</code></td><td>host log</td><td>written ("fault")</td></tr>
+<tr><td><code>BUBBLE fault ship=N code=0x..</code></td><td>host log</td><td>written ("fault")</td></tr>
+<tr><td><code>MOVE throttle write failed ship=N: ..</code>, <code>SC_zero failed ..</code></td><td>host log</td><td>written ("fail")</td></tr>
+<tr><td><code>ABORT speed ship=N v/lim=..</code></td><td>host log, and the mining trace</td><td>dropped (debug only). The job result <code>error: ABORT speed ..</code> is written</td></tr>
+<tr><td><code>BUBBLE brake ship=N phase=.. rock=.. dist=.. rad=.. speed=.. -&gt; replan|waypoint|skip|nudge|resume</code>, <code>BUBBLE slow ship=N ms=..</code></td><td>host log</td><td>dropped (debug only)</td></tr>
+<tr><td><code>ACTFRAME calibrated qmode=.. ax=..</code>, <code>SC_watch refused ..</code>, <code>SC_zero refused ..</code></td><td>host log</td><td>dropped (debug only)</td></tr>
+<tr><td><code>start approach_rock ship=N seq=.. cid=.. rock=..</code>, <code>approach phase, err=..</code>, <code>aim err=.. offset yaw=.. pitch=..</code>, <code>approach surface_m=.. md=.. remaining_m=..</code>, <code>far warp landed ship=N after X s</code></td><td>mining trace (<code>tlog</code>, prefix <code>test cmd: </code>)</td><td>dropped (debug only)</td></tr>
+<tr><td><code>seq=.. result: error: ..</code>, <code>view_zero failed: ..</code></td><td>mining trace</td><td>written ("error", "fail")</td></tr>
+</table>
+
+<h3 id="sc-build">Build, test, release</h3>
+<pre>
+$env:MS_GAME_DIR = '&lt;game&gt;\Windows\MainSequence'   # install target; see Build &amp; deploy
+.\build.ps1 -Mod ShipControl              # compile: copies sources to the RE-UE4SS mirror, adds add_subdirectory(ShipControl) once
+.\build.ps1 -Mod ShipControl -Install     # compile + back up + main.dll, mscore.mod (version from sc_version.hpp), enabled.txt, MSCore install list (game CLOSED)
+.\tests\run.ps1                           # test_shipcontrol (cl, pure rules and owner registry), test_abi.py (SC_ exports vs sc_api.h), test_logic, run_compat, python checks, Lua syntax
+</pre>
+<p>For MiningBenchMod, <code>build.ps1</code> also copies <code>sc_api.h</code>, <code>sc_logic_path.hpp</code>, <code>sc_logic_steer.hpp</code>, <code>sc_logic_bubble.hpp</code> and <code>sc_flight_abi.h</code> into its mirror, so the mining build sees the same ABI and rules. <code>tests/test_shipcontrol.cpp</code> covers the pure rules (warp settle, hazard direction, path geometry, steering, power, approach, view offset, aim, calibration, move ABI, bubble ladder) and the owner registry.</p>
+<p><b>Release</b> (done 2026-11-20; the same script call shape): <code>scripts\release-mod.ps1 -Name ShipControl -Repo xxalex3xx97/ShipControl -Version 0.3.0 -Files @(...) -Empty @('Mods/ShipControl/enabled.txt') -Requires xxalex3xx97/MSCore@0.8.13</code>. The script writes <code>mscore.mod</code> and <code>manifest.txt</code> (<code>min_mscore_native</code>, default 0.5.0 via <code>-MinNative</code>, and <code>requires=</code>). Zip paths must be <code>Mods/</code> or <code>Paks/</code>; source files are refused. Release order: MSCore 0.8.13, then ShipControl 0.3.0, then MiningBenchMod 0.3.0 (see the release contents under Build &amp; deploy).</p>
+
+<!-- ============ MSCORE API ============ -->
+<h2 id="mscore-api">MSCore native API used by mods</h2>
+<p>MSCore is the one module that knows the game names. Mods (MiningBenchMod, ShipControl) load <code>MSCore\dlls\main.dll</code> by path and resolve exports by name with <code>GetProcAddress</code>. Source: <code>cpp\MSCore\</code> in the MSCore repo (<code>msc_*.hpp</code>, <code>dllmain.cpp</code>). Full export list and error convention: <code>docs\mod-authors\native-api.md</code>. Current version: MSCore 0.8.13, <code>MSCore_api()</code> returns 10.</p>
+
+<h3 id="mscore-levels">Native API levels used here</h3>
+<table>
+<tr><th>API</th><th>MSCore</th><th>Exports (used by mods)</th></tr>
+<tr><td>8</td><td>0.8.10</td><td><code>MSCore_class</code> (logical class names), <code>MSCore_scan_rocks</code></td></tr>
+<tr><td>9</td><td>0.8.12</td><td><code>MSCore_ship_shields</code></td></tr>
+<tr><td>10</td><td>0.8.13</td><td>flight: <code>MSCore_ship_flight</code>, <code>MSCore_ship_set_throttle</code>, <code>MSCore_ship_zero</code>, <code>MSCore_ship_console</code>, <code>MSCore_actor_loc</code> (and <code>MSCore_view_send</code>, which ShipControl binds for its API 3 move jobs)</td></tr>
+</table>
+
+<h3 id="mscore-classes">Logical class names</h3>
+<p><code>MSCore_class(const char* logical, char* out, int n)</code> returns the game class name for a logical name (<code>1</code> found, <code>0</code> unknown or too small). Names live in <code>msc_contract.hpp</code>. Logical names: <code>asteroid, asteroid_actor, floating_ore, station, player_station, container, container_actor, item_crate, ship</code>. Mod rule: call by logical name; the game class stays in MSCore.</p>
+
+<h3 id="mscore-shields">Ship shields (API 9)</h3>
+<div class="sig">int MSCore_ship_shields(void* ship, int* cur, int* max)   // bitmask: 1 cur readable, 2 max readable, 0 none, -2 module off, -1 exception</div>
+<p>Shield in whole units (raw PNum / 65536, floored). <code>Shields</code> / <code>MaxShields</code> PNum first, <code>GetShields</code> / <code>GetMaxShields</code> when the PNum is missing. Negative or NaN = unreadable (<code>-1</code>). Source <code>msc_ships.hpp</code>. Kill switch: <code>module_disable("ships")</code>.</p>
+
+<h3 id="mscore-flight">Flight (API 10)</h3>
+<table>
+<tr><th>Export</th><th>Signature</th><th>Returns</th></tr>
+<tr><td><code>MSCore_ship_flight</code></td><td><code>int sid, int mask, MsFlight* out</code></td><td><code>1</code> read, <code>0</code> ship gone, <code>-1</code> exception or a group faulted (module off), <code>-2</code> flight module off, <code>-3</code> bad size or null out</td></tr>
+<tr><td><code>MSCore_ship_set_throttle</code></td><td><code>int sid, int step, wchar_t* err, int errlen</code></td><td><code>1</code> ok (writes the <code>Throttle</code> IntProperty), <code>0</code> fail</td></tr>
+<tr><td><code>MSCore_ship_zero</code></td><td><code>int sid, wchar_t* err, int errlen</code></td><td><code>1</code> ok: <code>Throttle = 0</code> and <code>RotationImpulseInput</code> X, Y, Z = 0; <code>0</code> fail</td></tr>
+<tr><td><code>MSCore_ship_console</code></td><td><code>int sid</code></td><td><code>&gt; 0</code> PilotConsoleObject id (ShipID, then ParentID), <code>0</code> none, <code>-2</code> flight off, <code>-1</code> exception</td></tr>
+<tr><td><code>MSCore_actor_loc</code></td><td><code>void* actor, double* out3</code></td><td><code>1</code> ok (<code>K2_GetActorLocation</code>, uu), <code>0</code> fail, <code>-2</code> flight off, <code>-1</code> exception</td></tr>
+</table>
+<p><code>MSCore_view_send(int cid, long long yaw_raw, long long pitch_raw, wchar_t* err, int errlen)</code> sets the aim offset of a console (65536 raw per degree). It is the only rotation actuator of a move job.</p>
+<p><b>Mask groups</b> (<code>mask</code> argument, OR them): <code>FL_POSE = 1</code> (actor frame, chunk, Location, Quat, system), <code>FL_STATE = 2</code> (Throttle, steps, the three bool flags, collision radius), <code>FL_LIMITS = 4</code> (both max speeds), <code>FL_POWER = 8</code> (power grid, low-power flag, low-power limits). Each group runs under its own SEH guard: a faulted group does not blank the others; the export then disables module <code>flight</code> and returns <code>-1</code>. Each value is written only when its read worked; <code>flags</code> says which.</p>
+<h4>MsFlight <small>264 bytes, <code>msc_api.hpp</code>; byte-for-byte copy in <code>sc_flight_abi.h</code>, which ShipControl and mining (<code>mb_mscore.hpp</code>) include</small></h4>
+<table>
+<tr><th>Off</th><th>Field</th><th>Type</th><th>Group</th><th>Meaning</th></tr>
+<tr><td>0</td><td><code>size</code></td><td>int32</td><td>-</td><td>set by the caller to <code>sizeof(MsFlight)</code> (mismatch: <code>-3</code>)</td></tr>
+<tr><td>4</td><td><code>flags</code></td><td>int32</td><td>-</td><td><code>FF_*</code> bits (below)</td></tr>
+<tr><td>8</td><td><code>sid</code></td><td>int32</td><td>-</td><td>ship id</td></tr>
+<tr><td>12</td><td><code>sys</code></td><td>int32</td><td>POSE</td><td>solar system id (0 when unreadable)</td></tr>
+<tr><td>16</td><td><code>throttle</code></td><td>int32</td><td>STATE</td><td><code>Throttle</code></td></tr>
+<tr><td>20</td><td><code>steps</code></td><td>int32</td><td>STATE</td><td><code>GetThrottleSteps</code></td></tr>
+<tr><td>24</td><td><code>lp_thr</code></td><td>int32</td><td>POWER</td><td><code>FlightModel.LowPowerThrottle</code></td></tr>
+<tr><td>28</td><td><code>pad</code></td><td>int32</td><td>-</td><td>unused</td></tr>
+<tr><td>32</td><td><code>ch[3]</code></td><td>int64</td><td>POSE</td><td>chunk location (2048 m cells)</td></tr>
+<tr><td>56</td><td><code>max_mod_raw</code></td><td>int64</td><td>LIMITS</td><td><code>GetModifiedMaxSpeed</code>, raw</td></tr>
+<tr><td>64</td><td><code>max_base_raw</code></td><td>int64</td><td>LIMITS</td><td><code>GetMaxSpeed</code>, raw</td></tr>
+<tr><td>72</td><td><code>coll_radius_raw</code></td><td>int64</td><td>STATE</td><td><code>CollisionRadius</code>, raw</td></tr>
+<tr><td>80</td><td><code>act_loc[3]</code></td><td>double</td><td>POSE</td><td>actor location, uu</td></tr>
+<tr><td>104</td><td><code>fw[3]</code></td><td>double</td><td>POSE</td><td>actor forward axis</td></tr>
+<tr><td>128</td><td><code>R[3]</code></td><td>double</td><td>POSE</td><td>actor right axis</td></tr>
+<tr><td>152</td><td><code>U[3]</code></td><td>double</td><td>POSE</td><td>actor up axis</td></tr>
+<tr><td>176</td><td><code>loc_raw[3]</code></td><td>double</td><td>POSE</td><td>ship object <code>Location</code>, raw, chunk-relative</td></tr>
+<tr><td>200</td><td><code>quat[4]</code></td><td>double</td><td>POSE</td><td>ship <code>Quat</code> W, X, Y, Z, divided by 65536</td></tr>
+<tr><td>232</td><td><code>grid_prod</code></td><td>double</td><td>POWER</td><td><code>PowerGrid.TotalProduction</code></td></tr>
+<tr><td>240</td><td><code>grid_cons</code></td><td>double</td><td>POWER</td><td><code>PowerGrid.TotalConsumption</code></td></tr>
+<tr><td>248</td><td><code>grid_eff</code></td><td>double</td><td>POWER</td><td><code>PowerGrid.ConsumerEfficiency</code></td></tr>
+<tr><td>256</td><td><code>lp_frac</code></td><td>double</td><td>POWER</td><td><code>FlightModel.MaxLowPowerSpeed</code> (fraction)</td></tr>
+</table>
+<p><b>Flags</b> (<code>FF_*</code>): <code>1</code> ALIVE, <code>2</code> HAS_ACTOR (Actor non-null), <code>4</code> ACTOR_FRAME (act_loc, fw, R, U read), <code>8</code> OBJ_POSE (ch, loc_raw, quat), <code>16</code> AUTOPILOT, <code>32</code> DOCK_AP, <code>64</code> TRAVELLING (the three bool bits are set only when true, so false and unreadable look the same), <code>128</code> GRID, <code>256</code> LP_KNOWN, <code>512</code> LP_ON, <code>1024</code> LP_LIMITS, <code>2048</code> THROTTLE, <code>4096</code> STEPS, <code>8192</code> COLL (collision radius &gt; 0).</p>
+
+<h3 id="mscore-caps">Caps, kill switches and selftest</h3>
+<ul>
+<li><b>Caps line</b>: once at startup (caps_once block in <code>dllmain.cpp</code>): <code>[MSCore] COMPAT CAPS rocks=ok ships=ok flight=ok ...</code>. Each module is one cap: <code>name=ok</code> or <code>name=off:why</code>.</li>
+<li><b>Kill switch</b>: <code>module_disable(name, why)</code> turns one module off for the session and logs <code>COMPAT CAPS name=off:why (runtime)</code> once per name. The exports of that module return their failure value. Module names in the code: <code>rocks</code>, <code>ships</code>, <code>flight</code>, <code>chunkhold</code>, <code>cmd</code>, <code>refund</code>, <code>misc</code>, plus <code>widgets</code>, <code>blocks</code> (docs\ISOLATION.md).</li>
+<li><b>Selftest</b> (<code>mods\MSCore\Scripts\selfcheck.lua</code>): checks named <code>world.&lt;name&gt;</code> for <code>classes, controller, sectors, arrival, jump_cost, pin_hook, filters_read, find_item, find_dock, scan, rocks, ships, flight, chunks</code>. The <code>world.flight</code> check reads without writing: <code>OK</code> when THROTTLE, STEPS and OBJ_POSE are set and steps &gt; 0; detail <code>thr= steps= actor= objpose= grid= lpflag= console=</code>. <code>SKIP no ships</code> when the world has no ship.</li>
+</ul>
+
+<h3 id="mscore-manager">Manager: requires=, install order, updates</h3>
+<ul>
+<li><b>requires=</b> in <code>mscore.mod</code> and in the release manifest: <code>requires=owner/repo@1.2.3,owner2/repo2@0.1.0</code> (empty = no deps). Bad entries are refused.</li>
+<li><b>Install order</b>: manifest, <code>min_mscore_native</code> check, then each required dependency that is not satisfied (installed first, recursively), then the zip. A dependency that fails stops the install with <code>needs &lt;repo&gt;: &lt;why&gt;</code> before anything is staged.</li>
+<li><b>Depth guard</b>: the user request is depth 0 and each dependency hop adds 1. At depth 4 the install stops with <code>dependency chain too deep</code>.</li>
+<li><b>Remove</b>: deletes only the files listed in <code>ue4ss\Mods\MSCore\installed\&lt;mod&gt;.txt</code>. Game closed. If other mods require it, the warning <code>remove: warning: required by X: they will stop working</code> is logged (the remove goes on).</li>
+<li><b>needs: rows</b>: a mod whose <code>requires=</code> is not satisfied shows state <code>needs:&lt;repo&gt;</code>. The Update button (and <code>--update</code>) installs the missing or too old dependencies and the update together. Row states: <code>uptodate</code>, <code>update</code>, <code>needs:&lt;repo&gt;</code>, <code>error:&lt;msg&gt;</code>, <code>skipped:min_native</code>.</li>
+<li><b>CLI</b>: <code>--remove &lt;ModName&gt;</code>, <code>--update &lt;ModName&gt;</code> (headless, same as the Update button for one row). Source <code>cpp\manager\main.cpp</code>, <code>cpp\MSCore\msc_loader.hpp</code>.</li>
+</ul>
 
 <!-- ============ LUA / UI ============ -->
 <h2 id="lua">Lua &amp; UI layer</h2>
@@ -602,19 +971,26 @@ ship tick: if JumpAnimProgress &gt; 0: JumpAnimProgress++; UpdateJumpChargeProgr
 <h3 id="deploy">Build &amp; deploy</h3>
 <pre>
 # C++ (needs VS2022 BuildTools + RE-UE4SS at &lt;repo&gt;\build\RE-UE4SS, not in git)
+# MS_GAME_DIR = the game's Windows\MainSequence folder (the game root that holds Binaries). The default in build.ps1 is a
+# Steam path on the author's machine, so set it first: $env:MS_GAME_DIR = '&lt;game&gt;\Windows\MainSequence'
 cd &lt;repo&gt;
-.\build.ps1             # compile only (check for 'error C')
-.\build.ps1 -Install    # compile + back up (build\backups\main.&lt;ts&gt;.dll) + install into the game (game CLOSED)
-                        # note: cwd changes after -Install; full game restart needed for any DLL change
+.\build.ps1                          # MiningBenchMod: compile only (check for 'error C')
+.\build.ps1 -Install                 # MiningBenchMod: compile + back up (build\backups\main.&lt;ts&gt;.dll) + install (game CLOSED)
+.\build.ps1 -Mod ShipControl         # ShipControl: compile only (output bin\ShipControl.dll)
+.\build.ps1 -Mod ShipControl -Install   # ShipControl: back up (build\backups\ShipControl-main.&lt;ts&gt;.dll), install, mscore.mod, enabled.txt
+                                     # note: cwd changes after -Install; full game restart needed for any DLL change
 
 # Lua: copy to  &lt;game&gt;\...\Mods\SandboxMenu\Scripts\   (Ctrl+R reloads; not mid-callback)
 
 # UMG pak (ue\MiningUnitUI)
 python scripts\gen_paste.py        -> paste\WBP_MiningUnit_tree.txt
 (user: open editor, delete Root, click empty, Ctrl+V, compile, save, close editor)
-scripts\cook.ps1 -Versioned ; scripts\pack.ps1 ; scripts\install.ps1   -> pakchunk98-MiningUnitUI_P
+scripts\cook.ps1 [-Versioned] ; scripts\pack.ps1 ; scripts\install.ps1   -> pakchunk98-MiningUnitUI_P
 </pre>
-<p>Check the game is not running with <code>tasklist</code> (MainSequence / UnrealEditor) before installing. Workflow of the repo: branch <code>refactor/clean-code</code>, never push, no attribution trailers.</p>
+<p><b>Cook mode</b>: <code>cook.ps1</code> cooks unversioned by default; <code>-Versioned</code> only when retoc rejects the unversioned cook. Cook writes to <code>ue\MiningUnitUI\Saved\Cooked</code> and the script does not clear it: delete that folder by hand when switching between the two modes, so no cook of the other mode is left behind.</p>
+<p><b>Three mods at runtime</b>: MSCore (MSCoreManager, Install/Repair MSCore), ShipControl and MiningBenchMod. <code>build.ps1</code> installs one native mod per run, so run it once for ShipControl and once for MiningBenchMod. Install order: MSCore first, then ShipControl, then MiningBenchMod (the manager installs a mod's <code>requires=</code> before the mod).</p>
+<p><b>Release order and contents</b>: released 2026-11-20 in this order: MSCore 0.8.13, then ShipControl 0.3.0, then MiningBenchMod 0.3.0 (the mining release went out at 02:55, after ShipControl at 02:30). MSCore: the native DLL plus the new manager exe (it reads <code>requires=</code>, <code>needs:</code> rows, <code>--update</code>). ShipControl: <code>Mods/ShipControl/dlls/main.dll</code>, <code>mscore.mod</code>, empty <code>enabled.txt</code>. MiningBenchMod: <code>Mods/MiningBenchMod/dlls/main.dll</code> and <code>mscore.mod</code> with <code>requires=xxalex3xx97/ShipControl@0.3.0</code> and <code>min_mscore_native</code> (set with <code>release-mod.ps1 -Requires ... -MinNative 0.8.13</code>; the script default is 0.5.0). <code>build.ps1 -Install</code> writes <code>mscore.mod</code> without <code>requires=</code>: only the release script writes it.</p>
+<p>Check the game is not running with <code>tasklist</code> (MainSequence / UnrealEditor) before installing. Workflow of the repo: <code>main</code> is protected, never push to it: feature branch, pull request, CI (<code>ci</code> check) green, then merge. No attribution trailers.</p>
 
 <!-- ============ GOTCHAS ============ -->
 <h2 id="gotchas">Gotchas &amp; hard rules</h2>
@@ -627,6 +1003,12 @@ scripts\cook.ps1 -Versioned ; scripts\pack.ps1 ; scripts\install.ps1   -> pakchu
 <li>Desktop logging: <code>io.open</code> a file on the Desktop and an agent can read it directly (truncate on probe press).</li>
 <li><b>Always undock before any warp or teleport.</b> Each ship runs its own AI; F4 only commands. Mods must not interfere with co-op; don't restore an old backup over the user's live save.</li>
 <li>Don't invent requirements: build what the user asked.</li>
+<li><b>UMG SizeBox:</b> <code>MinDesiredHeight</code> with its override flag set is <b>not applied at runtime</b>. Use <code>HeightOverride</code> (measured: header row 21 vs 40 units).</li>
+<li><b>No widget tree walks from Lua.</b> <code>GetChildrenCount</code> / <code>GetContent</code> loops crashed the game (the log ended inside the walk). Never tree-walk from a hook or timer: use named lookups (<code>GetWidgetFromName</code>, see the UMG notes).</li>
+<li><b>ScHost size must match the ShipControl API level:</b> 112 for level 4, 80 for level 3, 24 for level 2. SC_set_host refuses any other size, and an API 3 ShipControl rejects the 112-byte host. <code>sc_host_size()</code> in mb_shipctl.hpp picks the size from <code>SC_api()</code>.</li>
+<li><b>Mod <code>log_line</code> is filtered</b> unless debug is on: a line without a keep word is dropped (see Logging). A ShipControl callback line (<code>BUBBLE brake</code>, <code>ABORT speed</code>) reaches the log through the same filter.</li>
+<li><b><code>windows.h</code> macros:</b> <code>min</code> and <code>max</code> break <code>std::min</code> / <code>std::max</code> calls: write <code>(std::min)(a, b)</code>, as in sc_logic_path.hpp. Do not name a variable <code>near</code>.</li>
+<li><b>Game-fragile names live only in MSCore.</b> Mods call logical names (<code>MSCore_ship_flight</code>, <code>MSCore_class</code>); a game update should only need an MSCore fix. Names still held by mining (follow-up SC7, vault <code>MiningBenchMod/tasks/2026-11-20-SC3-SC6-spec.md</code>): <code>DMSPlayerShipObject</code> lookups (about 60 <code>find_by_id</code> sites), pose reads (<code>act_frame</code>, <code>get_chunk</code>, <code>get_loc</code>, <code>quat4</code>, the Actor chain in mb_rocks.hpp), ID / PilotID / Dock / DockID / Health / Inventory / InventorySize / CurrentOrderIndex / Orders / Weapons rows, <code>reactors_of</code>, inventory reads (<code>inv_total</code>, ItemTotals), the mb_devcmd probes, the SolarSystem ChunkMap, the warp send path.</li>
 </ul>
 </div>
 
@@ -638,6 +1020,18 @@ scripts\cook.ps1 -Versioned ; scripts\pack.ps1 ; scripts\install.ps1   -> pakchu
 <li><span class="badge u">UNKNOWN</span> Whether far, never-visited chunks always exist in <code>ChunkMap</code> with <code>+0xfd</code> set (true for the tested sector 1008).</li>
 <li><span class="badge i">UNTESTED</span> Low-fuel belt hop case, chunk release on dock/stop, full AUTO loop hop with 3 ships.</li>
 <li>Ideas not built: ping resources in other systems, cargo capacity probe, README refresh, trim <code>native_probe.lua</code> dead exports, <code>SPEC.md</code> line 89 text.</li>
+<li><span class="badge u">UNKNOWN</span> <b>ShipControl, far warp with landing wait</b>: not yet run in game with ShipControl (<code>far warp landed ship=N after X s</code> is the check). Warp settle: 2 s minimum, 30 s maximum, landed within 1000 m of the target.</li>
+<li><span class="badge u">UNKNOWN</span> <b>ShipControl, per-frame cost</b> of <code>MSCore_ship_flight</code> (one POSE + STATE read per move job per engine tick, plus POWER in the approach) is not measured. The SC2b check "frame time with 4+ moving ships no worse" is open.</li>
+<li><span class="badge u">UNKNOWN</span> <b>SC7 migration</b>: the names listed under Gotchas (f) still in mining. Not started. Until then mining keeps those reads and ShipControl stays game-name free.</li>
+<li><span class="badge u">UNKNOWN</span> <b>Attacker / follow / defend</b> behaviours are not in ShipControl (not started). Only the owner registry, speed guard, move jobs and bubble ladder exist.</li>
+<li><b>Hits and enemies</b> (from <code>main-sequence/probe-findings-2026-11-19.md</code>, live probe runs 1-4; summary for the attacker mode):
+<ol>
+<li><span class="badge v">VERIFIED</span> No event gives damage, attacker and victim together. <code>OnTakeDamage(HitLocation)</code> on the victim actor (BP class hook) gives only the side that was hit, no amount, no source. The attacker has to be derived (who fires, beam geometry, <code>TargettedBy</code>).</li>
+<li><span class="badge v">VERIFIED</span> Native base-class hooks (<code>/Script/MainSequence.DMSPlayerShip:OnTakeDamage</code>, <code>Weapon:SetFiring</code>, <code>Weapon:OnFire</code>) never fired. BP-class hooks fire: <code>BP_Scout_C:OnTakeDamage</code>, <code>BP_RelicDirk_C:OnTakeDamage</code>, <code>BP_BasicCannon_C:OnFire</code>, <code>BP_MiningLaser_C:SetFiring</code>.</li>
+<li><span class="badge v">VERIFIED</span> The mining laser damages ships in its beam (run 4: 14 of 14 hits came while a laser fired, about every 0.2 s, victims 71-168 m from the shooter). The shield takes the first hits; then the hull drops about 7 per s.</li>
+<li><span class="badge v">VERIFIED</span> <code>DMSWorldSubsystem:GetDMSWorld()</code> gives <code>EnemyShips</code> and <code>EnemyStations</code>, readable by name and indexable (435 ships and 220 stations counted in run 1, all systems). Chunk and location frame match ours. Do not use <code>FindAllOf</code> (it froze the game).</li>
+<li><span class="badge v">VERIFIED</span> Enemies move: about 30 m/s while <code>CurrentTask</code> = 2 (attack / hunt). <code>CurrentTask</code> 4 = holding, does not move. Positions must be re-read each poll, never cached.</li>
+</ol></li>
 </ul>
 
 <h2 id="history">Timeline</h2>
