@@ -103,3 +103,4 @@ New: Btn_TabLog/Txt_TabLog (4th tab), Pnl_PageLog (PageSwitcher index 3) > Txt_L
 
 ## Ore icons + log cards (2026-10-28)
 New: Row_<P>MineRow_<i> > Txt_<P>MineLbl_<i>, Img_<P>Ore_<i>, Txt_<P>Mine_<i> (Card and Fleet); Pnl_LogAll > Row_LogAllScroll > Pnl_LogCard_1..20 > Txt_LogCardName_<f>, Txt_LogCardStatus_<f>, Txt_LogCard_<f>_1..10. Re-paste the whole tree (art or flat), then cook.
+- Added Txt_OpStationZoneLabel + Edt_StationZoneRadius (Mining card, after Max radius): row added headless via scripts\add_station_zone_row.py (no re-paste).

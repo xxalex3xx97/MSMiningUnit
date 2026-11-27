@@ -1279,6 +1279,7 @@ local OPS = {
   { w = "Edt_IdleSeconds", k = "idle_seconds", sc = "ship", kind = "int", min = 30, max = 3600, zero = true, msg = "idle seconds must be 0 (off) or 30..3600" },
   { w = "Edt_WaitSeconds", k = "wait_seconds", sc = "global", kind = "int", def = "10", min = 0, max = 300, msg = "wait must be an integer 0..300" },
   { w = "Edt_DockHoldLimit", k = "dock_hold_limit", sc = "ship", kind = "int", def = "300", min = 30, max = 3600, zero = true, msg = "dock time limit must be 0 (off) or 30..3600" },
+  { w = "Edt_StationZoneRadius", k = "station_zone_radius_m", sc = "global", kind = "int", def = "2000", min = 0, max = 20000, msg = "station safe radius must be an integer 0 (off)..20000 m" },
   { w = "Edt_WarpTripKm", k = "warp_trip_km", sc = "ship", kind = "int", def = "5", min = 1, max = 100, zero = true, msg = "warp trip distance must be 0 (off) or 1..100 km" },
   { w = "Chk_Enabled", k = "enabled", sc = "ship", kind = "chk", def = "1" },
   { w = "Chk_Repeat", k = "repeat", sc = "ship", kind = "chk", def = "0" },
