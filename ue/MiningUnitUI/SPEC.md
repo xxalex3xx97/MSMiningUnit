@@ -87,12 +87,13 @@ Page_Items (key: items):
 - add_items_groups.py must run after build_lists.py (build_lists.py recreates WBP_ItemRow).
 - The list scrolls with the page. Rows are a fixed pool of 20: Lua never creates widgets.
 
-Page_Operation (keys: radius, mining_distance, max_radius, idle_seconds, wait_seconds, dock_hold_limit, warp_trip_km, enabled, repeat, fuel_<k>_threshold, fuel_<k>_amount):
-Save: per-ship keys (radius, mining_distance, idle_seconds, dock_hold_limit, warp_trip_km, enabled, repeat) -> [ship.<id>]; global-only keys (max_radius, wait_seconds, fuel_<k>_on/_threshold/_amount) -> top level (C++ ignores them per ship). Text boxes saved on change, checkboxes polled. Applied at next loop start. Invalid input shows "error: ..." in Txt_Status and is not saved.
+Page_Operation (keys: radius, mining_distance, max_radius, idle_seconds, wait_seconds, dock_hold_limit, warp_trip_km, station_zone_radius_m, enabled, repeat, fuel_<k>_threshold, fuel_<k>_amount):
+Save: per-ship keys (radius, mining_distance, idle_seconds, dock_hold_limit, warp_trip_km, enabled, repeat) -> [ship.<id>]; global-only keys (max_radius, station_zone_radius_m, wait_seconds, fuel_<k>_on/_threshold/_amount) -> top level (C++ ignores them per ship). Text boxes saved on change, checkboxes polled. Applied at next loop start. Invalid input shows "error: ..." in Txt_Status and is not saved.
 Layout (names below unchanged; only Row_*/Lbl_* layout widgets are added, none are variables): bordered cards (Row_CardOutline<K> > Row_CardBody<K> > Row_CardInner<K> = gold title Lbl_Hdr<K> + 2px gold Row_CardLine<K> + rows). Row_OpTop = two columns: left card Mining (Radius, Mining distance, Max radius), right cards Timing (Idle, Wait, Dock time limit) and Run (Enabled, Repeat). Then full-width card Fuel (3 rows: icon | checkbox | "min" box | "max" box), full-width card Unload ores (4 columns x 2 rows, icon + checkbox per cell), Btn_ApplyGlobal bottom right. Columns 60/40 (fill 1.2 / 0.8). The Mining card stretches to the height of the Timing+Run column (no gap). Number boxes are fixed width 80. Display labels Lbl_Fuel<K>Threshold / Lbl_Fuel<K>Amount read "min" / "max" (widget names and Lua keys fuel_<k>_threshold/_amount unchanged).
 - Txt_OpRadiusLabel "Radius" / Edt_Radius
 - Txt_OpMiningDistLabel "Mining distance" / Edt_MiningDistance
 - Txt_OpMaxRadiusLabel "Max radius (global)" / Edt_MaxRadius
+- Txt_OpStationZoneLabel "Station safe radius (m)" / Edt_StationZoneRadius (Mining card, after Max radius; 0 = off, 0..20000, default 2000; global key station_zone_radius_m)
 - Warp management card: Txt_OpWarpRangeLabel "Warp range" / Edt_WarpRange (belt mode: a rock farther than this is not flown to, the ship warps instead; empty = 50km; per ship)
 - Txt_OpWarpTripLabel "Warp trip distance (km)" / Edt_WarpTripKm (in the Warp card, after Warp range; trip longer than this km warps if warp fuel, default 5; per ship)
 - Txt_OpIdleLabel "Idle seconds" / Edt_IdleSeconds

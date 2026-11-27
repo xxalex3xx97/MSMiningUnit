@@ -124,7 +124,7 @@ namespace
         long long need = 0;
         if (same) { km = dist * 2.048; need = warp_fuel_need(dist); }
         const bool ok = warp_fuel_ok(same, dist, cost, drive);
-        log_line(STR("FUELCHK sector=") + std::to_wstring(s.id) + STR(" rule=") + (same ? STR("km") : STR("jumpcost")) +
+        if (g_debug) log_line(STR("FUELCHK sector=") + std::to_wstring(s.id) + STR(" rule=") + (same ? STR("km") : STR("jumpcost")) +
                  STR(" dist_km=") + std::to_wstring(static_cast<long long>(km)) + STR(" need=") + std::to_wstring(need) +
                  STR(" drive=") + std::to_wstring(drive) + STR(" jump_cost=") + std::to_wstring(cost) +
                  STR(" round_trip_ok=") + (ok ? STR("yes") : STR("no")));

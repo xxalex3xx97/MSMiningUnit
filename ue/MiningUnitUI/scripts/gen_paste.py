@@ -466,6 +466,7 @@ TIPS = {
     "Edt_Radius": "Radius: how far from where the ship is that it looks for a rock to mine (50km, 2500m; a plain number means meters). Default 50km. 0 = no limit. With a sector selected it can never be more than Warp range. Saved per ship.",
     "Edt_MiningDistance": "Mining distance: how far from the rock the ship stops while mining (50m, 0.2km; a plain number means meters). Default 50m. Saved per ship.",
     "Edt_MaxRadius": "Max radius: upper limit for Radius on every ship (50km, 8000m; a plain number means meters). Default 50km. 0 = no limit. Applies to all ships.",
+    "Edt_StationZoneRadius": "Station safe radius: mining ships pick no rock and fire no laser within this many meters of a station. 0 = off. Default 2000. Applies to all ships.",
     "Edt_IdleSeconds": "Idle seconds: how long the ship may find nothing to mine (or gain no ore) before it goes home. 0 = never. Also how long a refuel may stall before it stops. Saved per ship.",
     "Edt_WaitSeconds": "Wait seconds: how long the ship waits at the dock after its unload or refuel orders before it checks them. Applies to all ships.",
     "Edt_DockHoldLimit": "Dock time limit: most seconds the ship stays docked unloading or refuelling with items still left. After that it undocks, waits and docks again; after 10 rounds it undocks and goes idle. 0 = no limit. Saved per ship.",
@@ -485,7 +486,7 @@ for _k, _n in FUEL_TIP.items():
 for _k in ORES:
     _n = "Water Ice" if _k == "WaterIce" else _k
     TIPS["Chk_Unload%s" % _k] = "%s: when on, this ore is unloaded at this ship's unload docks for it (Ship tab). Off = it stays in the cargo. Applies to all ships." % _n
-TIP_LABELS = {"Edt_Radius": "Txt_OpRadiusLabel", "Edt_MiningDistance": "Txt_OpMiningDistLabel", "Edt_MaxRadius": "Txt_OpMaxRadiusLabel",
+TIP_LABELS = {"Edt_Radius": "Txt_OpRadiusLabel", "Edt_MiningDistance": "Txt_OpMiningDistLabel", "Edt_MaxRadius": "Txt_OpMaxRadiusLabel", "Edt_StationZoneRadius": "Txt_OpStationZoneLabel",
               "Edt_IdleSeconds": "Txt_OpIdleLabel", "Edt_WaitSeconds": "Txt_OpWaitLabel", "Edt_DockHoldLimit": "Txt_OpDockLimitLabel",
               "Sel_Belt": "Txt_OpBeltLabel", "Edt_WarpRange": "Txt_OpWarpRangeLabel", "Edt_WarpTripKm": "Txt_OpWarpTripLabel"}
 for _k in FUELS:
@@ -646,7 +647,8 @@ def build_tree():
     c_mining = card("Mining","Lbl_HdrMining", "Mining", [
         crow("Txt_OpRadiusLabel", "Radius", edt("Edt_Radius")),
         crow("Txt_OpMiningDistLabel", "Mining distance", edt("Edt_MiningDistance")),
-        crow("Txt_OpMaxRadiusLabel", "Max radius (global)", edt("Edt_MaxRadius"))])
+        crow("Txt_OpMaxRadiusLabel", "Max radius (global)", edt("Edt_MaxRadius")),
+        crow("Txt_OpStationZoneLabel", "Station safe radius (m)", edt("Edt_StationZoneRadius"))])
     c_timing = card("Timing", "Lbl_HdrTiming", "Timing", [
         crow("Txt_OpIdleLabel", "Idle seconds", edt("Edt_IdleSeconds")),
         crow("Txt_OpWaitLabel", "Wait seconds", edt("Edt_WaitSeconds")),

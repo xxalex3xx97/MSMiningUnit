@@ -45,6 +45,10 @@ namespace
     static_assert(sizeof(MsRegShip) == 64, "MsRegShip layout must match msc_api.hpp");
     static_assert(sizeof(MsRegState) == 40, "MsRegState layout must match msc_api.hpp");
 
+    // ---- API 29 station zones (layout = MSCore msc_stshield_logic.hpp): pos = station centre, metres, rockreg frame. extent_m / range_m (-1 unknown) are ignored by this mod. ----
+    struct MsStationZone { int32_t id; int32_t sys; double pos[3]; double extent_m; double range_m; };
+    static_assert(sizeof(MsStationZone) == 48, "MsStationZone layout must match msc_stshield_logic.hpp");
+
     // WHAT: resolved MSCore entry points. h is the loaded module (nullptr = not loaded).
     struct MsApi
     {
@@ -93,6 +97,7 @@ namespace
         int (*rockreg_nearest_surface)(int, const double*, int, double, MsRegRock*, double*) = nullptr;
         int (*rockreg_area_ready)(int, const double*) = nullptr;
         int (*rockreg_report)(int, int, const double*, double, wchar_t*, int) = nullptr;
+        int (*station_zones)(MsStationZone*, int) = nullptr;    // API 29, optional: missing = no station zones
     };
     MsApi g_ms;
 
@@ -154,6 +159,8 @@ namespace
                 m.rockreg_area_ready = reinterpret_cast<int (*)(int, const double*)>(GetProcAddress(h, "MSCore_rockreg_area_ready"));
                 m.rockreg_report = reinterpret_cast<int (*)(int, int, const double*, double, wchar_t*, int)>(GetProcAddress(h, "MSCore_rockreg_report"));
             }
+            if (m.api && m.api() >= 29)
+                m.station_zones = reinterpret_cast<int (*)(MsStationZone*, int)>(GetProcAddress(h, "MSCore_station_zones"));
         }
         const bool full = m.api && m.add_input && m.view_send && m.throttle && m.find_item && m.find_dock && m.new_order &&
                           m.update_order && m.delete_order && m.autopilot && m.skip_to && m.filter_send && m.filters_read &&
@@ -283,6 +290,21 @@ namespace
     int ms_mining_caps(UObject* ship)
     {
         return g_ms.ship_mining_caps(static_cast<void*>(ship));
+    }
+
+    // WHAT: MSCore_station_zones into out (max rows). Returns the row count (may exceed max), 0 when the export is missing (MSCore < API 29: one log line), -1 fault, -2 module off.
+    // WHY: optional feature: without it there are simply no station zones.
+    int ms_station_zones(MsStationZone* out, int max)
+    {
+        std::wstring err;
+        if (!ms_load(err)) return 0;
+        if (!g_ms.station_zones)
+        {
+            static bool logged = false;
+            if (!logged) { logged = true; log_line(STR("MSCore station zones unavailable (needs MSCore API 29): no station safe zone")); }
+            return 0;
+        }
+        return g_ms.station_zones(out, max);
     }
 
     // WHAT: MSCore_presence_step (pure debounce). Returns the accepted flag (1 / 0) and sets bad_out (may be null).

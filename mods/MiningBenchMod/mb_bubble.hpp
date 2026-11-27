@@ -150,6 +150,7 @@ namespace
             g_beams.clear();
             return;
         }
+        st_zones_refresh();
         std::set<int> prev_blk;
         for (const auto& kv : g_ship_blk) prev_blk.insert(kv.first);
         g_ship_blk.clear();
@@ -198,15 +199,29 @@ namespace
                 }
                 if (hit) { victim = vid; break; }
             }
+            // station safe bubble: a ship inside it holds its laser (not a ship-vs-ship hold: no yield / g_path_skip)
+            bool station_hold = false;
+            static std::set<std::pair<int, int>> st_seen;
+            if (!victim)
+            {
+                const int stid = station_zone_hit(bm.sys, bm.a, g_st_zones, g_cfg.station_zone_radius_m);
+                if (stid)
+                {
+                    station_hold = true;
+                    if (zone_log_once(st_seen, sid, stid))
+                        log_line(STR("STZONE laser off ship=") + std::to_wstring(sid) + STR(" station=") + std::to_wstring(stid));
+                }
+            }
             const bool held = g_beam_held.count(sid) > 0;
-            const bool now_held = beam_hold_next(held, victim != 0, g_beam_clear_t[sid], dt);
+            const bool now_held = beam_hold_next(held, victim != 0 || station_hold, g_beam_clear_t[sid], dt);
             double& ht = g_beam_hold_t[sid];
-            ht = now_held ? ht + dt : 0.0;
+            ht = (now_held && !station_hold) ? ht + dt : 0.0;
             if (now_held && !held)
             {
                 g_beam_held.insert(sid);
                 run_cmd(-1, sid, "laser_off");
-                log_line(STR("BEAM hold ship=") + std::to_wstring(sid) + STR(" victim=") + std::to_wstring(victim));
+                if (station_hold) log_line(STR("BEAM hold ship=") + std::to_wstring(sid) + STR(" station bubble"));
+                else log_line(STR("BEAM hold ship=") + std::to_wstring(sid) + STR(" victim=") + std::to_wstring(victim));
             }
             else if (!now_held && held)
             {
@@ -214,7 +229,7 @@ namespace
                 run_cmd(-1, sid, "laser_on");
                 log_line(STR("BEAM resume ship=") + std::to_wstring(sid));
             }
-            if (now_held && beam_yield_due(g_beam_hold_t[sid]))
+            if (now_held && !station_hold && beam_yield_due(g_beam_hold_t[sid]))
             {   // held too long in a shared zone: this ship gives its rock up and seeks the next one
                 UObject* ys = find_by_id(scls.c_str(), sid);
                 MineSt& ym = g_mine[sid];

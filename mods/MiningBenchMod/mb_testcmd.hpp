@@ -61,7 +61,7 @@ namespace
             MineSt& bm = g_mine[sid];
             bm.run = false; bm.leave = true; bm.fin = false; bm.btn = true;
             bm.unl_prev = -1; bm.unl_undock = false;
-            trip_begin(bship, sid, bm, STR("button"), "");
+            trip_begin(bship, sid, bm, STR("button"), "dock_mining");
             return STR("ok");
         }
         if (cmd == "park")

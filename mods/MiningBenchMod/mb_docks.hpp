@@ -79,7 +79,7 @@ namespace
             }
             // DOCKDIAG: when the dock list changes, log what each dock object looks like (alive, reachable, outer), so a removed dock that
             // lingers in the F4 list shows which flag tells it apart. Diagnostic only: docks.txt is unchanged.
-            if (dk != g_sig_dock_file)
+            if (g_debug && dk != g_sig_dock_file)
             {
                 for (UObject* o : v)
                 {

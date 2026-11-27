@@ -1855,6 +1855,13 @@ static void t_parking()
     CHECK(!park_wanted({3}, 0, false, true));
     CHECK(!park_wanted({3}, 3, false, false));
     CHECK(park_wanted({3}, 0, false, false));
+    // park fallback (no dock, button trip): only with a parking dock, no flee, no Dock-at pick, not already parking
+    CHECK(park_fallback_wanted(false, false, false, true, true));
+    CHECK(!park_fallback_wanted(true, false, false, true, true));
+    CHECK(!park_fallback_wanted(false, true, false, true, true));
+    CHECK(!park_fallback_wanted(false, false, true, true, true));
+    CHECK(!park_fallback_wanted(false, false, false, false, true));
+    CHECK(!park_fallback_wanted(false, false, false, true, false));
     // manual parking_docks merged with tags; stripped from other lists
     reset_globals();
     g_dock_tags = {dock_tag_parse(9, "[PARKING]")};
@@ -1913,6 +1920,31 @@ static void t_mining_read_from_caps()
     CHECK(mining_read_from_caps(1) == 1);
     CHECK(mining_read_from_caps(2) == 0);
     CHECK(mining_read_from_caps(3) == 1);
+}
+
+static void t_station_zone()
+{
+    StZone a; a.id = 1; a.sys = 5;
+    // boundary inclusive, just outside false
+    const double c0[3] = {0, 0, 0}, in[3] = {500, 0, 0}, out[3] = {500.5, 0, 0};
+    CHECK(in_zone(in, c0, 500));
+    CHECK(!in_zone(out, c0, 500));
+    // other system ignored, any zone of the same system counts
+    StZone b; b.id = 2; b.sys = 5; b.c[0] = 10000;
+    std::vector<StZone> zs = {a, b};
+    const double p[3] = {10050, 0, 0};
+    CHECK(in_station_zone(5, p, zs, 100));
+    CHECK(station_zone_hit(5, p, zs, 100) == 2);
+    CHECK(!in_station_zone(6, p, zs, 100));
+    CHECK(!in_station_zone(5, out, std::vector<StZone>{b}, 100));
+    CHECK(!in_station_zone(5, p, zs, 0));    // 0 = bubble off
+    CHECK(Config{}.station_zone_radius_m == 2000);
+    // log once per (ship, station)
+    std::set<std::pair<int, int>> seen;
+    CHECK(zone_log_once(seen, 7, 1));
+    CHECK(!zone_log_once(seen, 7, 1));
+    CHECK(zone_log_once(seen, 7, 2));
+    CHECK(zone_log_once(seen, 8, 1));
 }
 
 static void t_laser_gate()
@@ -1990,7 +2022,7 @@ int main()
         {"ship_tags", t_ship_tags},
         {"parking", t_parking},
         {"rock_depleted", t_rock_depleted},
-        {"ship_zone", t_ship_zone},
+        {"ship_zone", t_ship_zone}, {"station_zone", t_station_zone},
         {"mining_read_from_caps", t_mining_read_from_caps}, {"laser_gate", t_laser_gate},
         {"approach_throttle", t_approach_throttle}, {"bubble", t_bubble}, {"bubble_ladder", t_bubble_ladder}, {"bubble_scope", t_bubble_scope}, {"tune_geom", t_tune_geom}, {"flight_warp", t_flight_warp}, {"sweep_return_flee", t_sweep_return_flee}, {"path2_rules", t_path2_rules},
         {"reg_abs_m", t_reg_abs_m}, {"reg_chunk_of_m", t_reg_chunk_of_m},
