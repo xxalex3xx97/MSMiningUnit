@@ -91,6 +91,7 @@ namespace
         bool watchdog = true;                // 1 = freeze watchdog on: MiningFreeze.txt lines when the game thread stalls 10 s. Global only. (INI: watchdog)
         int flee_on_target = 1;              // 1 = a ship targeted by a hostile (or in combat) flees to a dock like after a hull hit. Global only. (INI: flee_on_target)
         int path_clearance_m = 4;            // clear-path check: extra clearance (m) beyond the rock block radius. Global only. (INI: path_clearance_m)
+        int station_zone_margin_m = 300;     // station safe zone fallback: metres added to the station radius when the game shield range is unknown. ASSUMED default. Global only. (INI: station_zone_margin_m)
         int bubble_clearance_m = 6;         // bubble reflex: extra clearance (m) beyond ship radius + rock block radius. Global only. (INI: bubble_clearance_m)
         int flee_target_range_km = 5;        // a hostile targeter farther than this (km) does not trigger the flee. Global only. (INI: flee_target_range_km)
         int low_power_return = 1;            // 1 = a ship in low power for LOWPOWER_GRACE_S while flying/mining goes to dock like fuel low. Global only. (INI: low_power_return)
@@ -867,6 +868,40 @@ namespace
         return std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]) < SHIP_ZONE_M;
     }
 
+    // WHAT: one known station safe zone: centre c (m, system frame), the station extent (m, <0 = unknown) and the game shield range (m, <=0 = unknown).
+    // WHY: mining ships keep out of it and cut the laser inside it; data comes from MSCore, this file only does the maths.
+    struct StZone { int id = 0; int sys = 0; double c[3] = {0, 0, 0}; double extent_m = -1; double range_m = -1; };
+
+    // WHAT: zone radius (m): the shield range when known, else the station extent (0 if unknown) + margin_m.
+    // WHY: the shield range is the wanted size; the fallback keeps a zone when the range is unreadable.
+    inline double station_zone_radius_m(const StZone& z, double margin_m)
+    {
+        return z.range_m > 0 ? z.range_m : (z.extent_m < 0 ? 0 : z.extent_m) + margin_m;
+    }
+
+    // WHAT: true when point p is within r (m) of centre c; the boundary counts as inside.
+    inline bool in_zone(const double p[3], const double c[3], double r)
+    {
+        const double d[3] = {p[0] - c[0], p[1] - c[1], p[2] - c[2]};
+        return d[0] * d[0] + d[1] * d[1] + d[2] * d[2] <= r * r;
+    }
+
+    // WHAT: true when p (system sys) is inside any station zone of that system.
+    // WHY: zones of other systems share no frame with p, so they are skipped.
+    inline bool in_station_zone(int sys, const double p[3], const std::vector<StZone>& zones, double margin_m)
+    {
+        for (const auto& z : zones)
+            if (z.sys == sys && in_zone(p, z.c, station_zone_radius_m(z, margin_m))) return true;
+        return false;
+    }
+
+    // WHAT: true the first time a (ship, station) pair is seen, false after.
+    // WHY: the laser-cut log line is written once per ship and station, not every tick.
+    inline bool zone_log_once(std::set<std::pair<int, int>>& seen, int ship, int station)
+    {
+        return seen.insert({ship, station}).second;
+    }
+
     // WHAT: true when this ship must HOLD its laser for the other ship inside the zone: the other is not firing, or fired earlier (t, ms), or same t and lower sid.
     // WHY: first ship to fire in a shared zone keeps firing; the other holds, with a fixed tiebreak so both never hold at once.
     inline bool zone_hold_for(bool other_fires, uint64_t other_t, int other_sid, uint64_t my_t, int my_sid)
@@ -1555,6 +1590,7 @@ namespace
         {"flee_on_target", 0, 1, true, false},
         {"path_clearance_m", 0, 100, true, false},
         {"bubble_clearance_m", 0, 100, true, false},
+        {"station_zone_margin_m", 0, 5000, true, false},
         {"flee_target_range_km", 1, 100, false, false},
         {"low_power_return", 0, 1, false, false},
         {"reactor_auto_input", 0, 1, false, false},

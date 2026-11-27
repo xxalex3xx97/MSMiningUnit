@@ -62,6 +62,7 @@ namespace
             {STR("flee_on_target"), std::to_wstring(c.flee_on_target)},
             {STR("path_clearance_m"), std::to_wstring(c.path_clearance_m)},
             {STR("bubble_clearance_m"), std::to_wstring(c.bubble_clearance_m)},
+            {STR("station_zone_margin_m"), std::to_wstring(c.station_zone_margin_m)},
             {STR("flee_target_range_km"), std::to_wstring(c.flee_target_range_km)},
             {STR("low_power_return"), std::to_wstring(c.low_power_return)},
             {STR("reactor_auto_input"), std::to_wstring(c.reactor_auto_input)},
@@ -162,6 +163,8 @@ namespace
                      "path_clearance_m=4\n"
                      "# bubble_clearance_m: bubble reflex, metres beyond ship radius + rock block radius (0-100, global only)\n"
                      "bubble_clearance_m=6\n"
+                     "# station_zone_margin_m: station safe zone fallback, metres added to the station radius when the game shield range is unknown (0-5000, global only)\n"
+                     "station_zone_margin_m=300\n"
                      "# flee_target_range_km: a hostile targeter farther than this many km does not trigger the flee (1-100, global only)\n"
                      "flee_target_range_km=5\n"
                      "# low_power_return: 1 = a ship in low power for 10 s while flying or mining goes to dock to refuel like fuel low, 0 = off (global only)\n"
@@ -222,6 +225,7 @@ namespace
             ensure_key("flee_on_target", "1", "flee_on_target: 1 = a ship targeted by a hostile or in combat flees to a dock like after a hull hit (global only)");
             ensure_key("path_clearance_m", "4", "path_clearance_m: clear-path check clearance in m beyond the rock block radius, 0-100 (global only)");
             ensure_key("bubble_clearance_m", "6", "bubble_clearance_m: bubble reflex clearance in m beyond ship radius + rock block radius, 0-100 (global only)");
+            ensure_key("station_zone_margin_m", "300", "station_zone_margin_m: station safe zone fallback, metres added to the station radius when the game shield range is unknown, 0-5000 (global only)");
             ensure_key("flee_target_range_km", "5", "flee_target_range_km: flee trigger range in km for hostile targeters, 1-100 (global only)");
             ensure_key("low_power_return", "1", "low_power_return: 1 = low power for 10 s while flying or mining sends the ship to dock like fuel low, 0 = off (global only)");
             ensure_key("reactor_auto_input", "1", "reactor_auto_input: 1 = reactors of active bench ships get bAutoInputFuel on, 0 = off (global only)");
@@ -287,6 +291,7 @@ namespace
             if (kv.count("flee_on_target")) nc.flee_on_target = to_int(kv["flee_on_target"], 1) != 0 ? 1 : 0;
             if (kv.count("path_clearance_m")) nc.path_clearance_m = std::clamp(to_int(kv["path_clearance_m"], 4), 0, 100);
             if (kv.count("bubble_clearance_m")) nc.bubble_clearance_m = std::clamp(to_int(kv["bubble_clearance_m"], 6), 0, 100);
+            if (kv.count("station_zone_margin_m")) nc.station_zone_margin_m = std::clamp(to_int(kv["station_zone_margin_m"], 300), 0, 5000);
             if (kv.count("flee_target_range_km")) nc.flee_target_range_km = std::clamp(to_int(kv["flee_target_range_km"], 5), 1, 100);
             if (kv.count("low_power_return")) nc.low_power_return = std::clamp(to_int(kv["low_power_return"], 1), 0, 1);
             if (kv.count("reactor_auto_input")) nc.reactor_auto_input = std::clamp(to_int(kv["reactor_auto_input"], 1), 0, 1);

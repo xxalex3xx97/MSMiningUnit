@@ -1915,6 +1915,34 @@ static void t_mining_read_from_caps()
     CHECK(mining_read_from_caps(3) == 1);
 }
 
+static void t_station_zone()
+{
+    // range > 0 wins; else extent + margin; unknown extent = margin only
+    StZone a; a.id = 1; a.sys = 5; a.extent_m = 200; a.range_m = 1000;
+    CHECK(station_zone_radius_m(a, 300) == 1000);
+    a.range_m = -1;
+    CHECK(station_zone_radius_m(a, 300) == 500);
+    a.extent_m = -1;
+    CHECK(station_zone_radius_m(a, 300) == 300);
+    // boundary inclusive, just outside false
+    const double c0[3] = {0, 0, 0}, in[3] = {500, 0, 0}, out[3] = {500.5, 0, 0};
+    CHECK(in_zone(in, c0, 500));
+    CHECK(!in_zone(out, c0, 500));
+    // other system ignored, any zone of the same system counts
+    StZone b; b.id = 2; b.sys = 5; b.c[0] = 10000; b.range_m = 100;
+    std::vector<StZone> zs = {a, b};
+    const double p[3] = {10050, 0, 0};
+    CHECK(in_station_zone(5, p, zs, 300));
+    CHECK(!in_station_zone(6, p, zs, 300));
+    CHECK(!in_station_zone(5, out, std::vector<StZone>{b}, 300));
+    // log once per (ship, station)
+    std::set<std::pair<int, int>> seen;
+    CHECK(zone_log_once(seen, 7, 1));
+    CHECK(!zone_log_once(seen, 7, 1));
+    CHECK(zone_log_once(seen, 7, 2));
+    CHECK(zone_log_once(seen, 8, 1));
+}
+
 static void t_laser_gate()
 {
     // laser gate mode: no export or module off = bench-only fallback; unknown read = hold; 0..3 = check
@@ -1990,7 +2018,7 @@ int main()
         {"ship_tags", t_ship_tags},
         {"parking", t_parking},
         {"rock_depleted", t_rock_depleted},
-        {"ship_zone", t_ship_zone},
+        {"ship_zone", t_ship_zone}, {"station_zone", t_station_zone},
         {"mining_read_from_caps", t_mining_read_from_caps}, {"laser_gate", t_laser_gate},
         {"approach_throttle", t_approach_throttle}, {"bubble", t_bubble}, {"bubble_ladder", t_bubble_ladder}, {"bubble_scope", t_bubble_scope}, {"tune_geom", t_tune_geom}, {"flight_warp", t_flight_warp}, {"sweep_return_flee", t_sweep_return_flee}, {"path2_rules", t_path2_rules},
         {"reg_abs_m", t_reg_abs_m}, {"reg_chunk_of_m", t_reg_chunk_of_m},
