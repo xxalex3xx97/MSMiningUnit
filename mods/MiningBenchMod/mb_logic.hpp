@@ -91,7 +91,7 @@ namespace
         bool watchdog = true;                // 1 = freeze watchdog on: MiningFreeze.txt lines when the game thread stalls 10 s. Global only. (INI: watchdog)
         int flee_on_target = 1;              // 1 = a ship targeted by a hostile (or in combat) flees to a dock like after a hull hit. Global only. (INI: flee_on_target)
         int path_clearance_m = 4;            // clear-path check: extra clearance (m) beyond the rock block radius. Global only. (INI: path_clearance_m)
-        int station_zone_margin_m = 300;     // station safe zone fallback: metres added to the station radius when the game shield range is unknown. ASSUMED default. Global only. (INI: station_zone_margin_m)
+        int station_zone_radius_m = 2000;    // station safe bubble radius (m), same for every station; 0 = bubble off. Global only. (INI: station_zone_radius_m)
         int bubble_clearance_m = 6;         // bubble reflex: extra clearance (m) beyond ship radius + rock block radius. Global only. (INI: bubble_clearance_m)
         int flee_target_range_km = 5;        // a hostile targeter farther than this (km) does not trigger the flee. Global only. (INI: flee_target_range_km)
         int low_power_return = 1;            // 1 = a ship in low power for LOWPOWER_GRACE_S while flying/mining goes to dock like fuel low. Global only. (INI: low_power_return)
@@ -868,16 +868,9 @@ namespace
         return std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]) < SHIP_ZONE_M;
     }
 
-    // WHAT: one known station safe zone: centre c (m, system frame), the station extent (m, <0 = unknown) and the game shield range (m, <=0 = unknown).
-    // WHY: mining ships keep out of it and cut the laser inside it; data comes from MSCore, this file only does the maths.
-    struct StZone { int id = 0; int sys = 0; double c[3] = {0, 0, 0}; double extent_m = -1; double range_m = -1; };
-
-    // WHAT: zone radius (m): the shield range when known, else the station extent (0 if unknown) + margin_m.
-    // WHY: the shield range is the wanted size; the fallback keeps a zone when the range is unreadable.
-    inline double station_zone_radius_m(const StZone& z, double margin_m)
-    {
-        return z.range_m > 0 ? z.range_m : (z.extent_m < 0 ? 0 : z.extent_m) + margin_m;
-    }
+    // WHAT: one known station: centre c (m, rockreg frame). The safe bubble radius is the INI value station_zone_radius_m, the same for every station.
+    // WHY: mining ships keep out of the bubble and cut the laser inside it; data comes from MSCore, this file only does the maths.
+    struct StZone { int id = 0; int sys = 0; double c[3] = {0, 0, 0}; };
 
     // WHAT: true when point p is within r (m) of centre c; the boundary counts as inside.
     inline bool in_zone(const double p[3], const double c[3], double r)
@@ -886,13 +879,18 @@ namespace
         return d[0] * d[0] + d[1] * d[1] + d[2] * d[2] <= r * r;
     }
 
-    // WHAT: true when p (system sys) is inside any station zone of that system.
+    // WHAT: id of the first station of system sys whose bubble (radius_m) holds p; 0 = none. radius_m <= 0 = bubble off.
     // WHY: zones of other systems share no frame with p, so they are skipped.
-    inline bool in_station_zone(int sys, const double p[3], const std::vector<StZone>& zones, double margin_m)
+    inline int station_zone_hit(int sys, const double p[3], const std::vector<StZone>& zones, double radius_m)
     {
+        if (radius_m <= 0) return 0;
         for (const auto& z : zones)
-            if (z.sys == sys && in_zone(p, z.c, station_zone_radius_m(z, margin_m))) return true;
-        return false;
+            if (z.sys == sys && in_zone(p, z.c, radius_m)) return z.id;
+        return 0;
+    }
+    inline bool in_station_zone(int sys, const double p[3], const std::vector<StZone>& zones, double radius_m)
+    {
+        return station_zone_hit(sys, p, zones, radius_m) != 0;
     }
 
     // WHAT: true the first time a (ship, station) pair is seen, false after.
@@ -1590,7 +1588,7 @@ namespace
         {"flee_on_target", 0, 1, true, false},
         {"path_clearance_m", 0, 100, true, false},
         {"bubble_clearance_m", 0, 100, true, false},
-        {"station_zone_margin_m", 0, 5000, true, false},
+        {"station_zone_radius_m", 0, 20000, true, false},
         {"flee_target_range_km", 1, 100, false, false},
         {"low_power_return", 0, 1, false, false},
         {"reactor_auto_input", 0, 1, false, false},

@@ -353,6 +353,52 @@ namespace
         }
     }
 
+    // WHAT: known station centres (MSCore_station_zones), refreshed every ST_ZONE_REFRESH_MS. Game thread only.
+    // WHY: mining ships keep out of a fixed bubble (cfg station_zone_radius_m) around every station: no rock picking, no laser.
+    constexpr ULONGLONG ST_ZONE_REFRESH_MS = 2000;
+    std::vector<StZone> g_st_zones;
+    void st_zones_refresh()
+    {
+        static ULONGLONG next = 0;
+        static std::vector<MsStationZone> buf;   // scratch (game thread only)
+        const ULONGLONG now = GetTickCount64();
+        if (now < next) return;
+        next = now + ST_ZONE_REFRESH_MS;
+        if (g_cfg.station_zone_radius_m <= 0) { g_st_zones.clear(); return; }
+        if (buf.size() < 64) buf.resize(64);
+        int n = ms_station_zones(buf.data(), static_cast<int>(buf.size()));
+        if (n > static_cast<int>(buf.size())) { buf.resize(static_cast<size_t>(std::min(n, 4096))); n = ms_station_zones(buf.data(), static_cast<int>(buf.size())); }
+        if (n < 0) return;   // fault / module off: keep the last zones
+        n = std::min(n, static_cast<int>(buf.size()));
+        std::vector<StZone> z;
+        for (int i = 0; i < n; ++i)
+        {
+            StZone s;
+            s.id = buf[static_cast<size_t>(i)].id; s.sys = buf[static_cast<size_t>(i)].sys;
+            std::copy(buf[static_cast<size_t>(i)].pos, buf[static_cast<size_t>(i)].pos + 3, s.c);
+            z.push_back(s);
+        }
+        if (z.size() != g_st_zones.size()) log_line(STR("STZONE stations=") + std::to_wstring(z.size()) + STR(" r=") + std::to_wstring(g_cfg.station_zone_radius_m));
+        g_st_zones.swap(z);
+    }
+
+    // WHAT: adds to out the rock ids inside any station bubble (same system only).
+    // WHY: a ship must not pick or approach a rock inside a station safe zone.
+    void zone_rocks_of_stations(std::set<int>& out)
+    {
+        st_zones_refresh();
+        static std::vector<RegRock> rocks;   // scratch (game thread only)
+        const double r = g_cfg.station_zone_radius_m;
+        for (const StZone& z : g_st_zones)
+        {
+            const double lo[3] = {z.c[0] - r, z.c[1] - r, z.c[2] - r};
+            const double hi[3] = {z.c[0] + r, z.c[1] + r, z.c[2] + r};
+            reg_box(z.sys, lo, hi, rocks);
+            for (const RegRock& rk : rocks)
+                if (rk.alive && in_zone(rk.c, z.c, r)) out.insert(rk.id);
+        }
+    }
+
     // nearest rock holding `item` measured from the anchor (not the ship); nullptr when none or outside the radius
     // skip_ids: no-yield rock ids left out (MineSt::noy_skip); g_hazard_rocks and this ship's g_path_skip are always left out too
     UObject* rock_in_range(int sid, const double anchor[3], UObject* item, double rad_m, UObject* skip = nullptr, const std::set<int>* skip_ids = nullptr)
@@ -367,6 +413,7 @@ namespace
         std::set<int> claims;
         rock_claims_of_others(sid, claims);
         zone_rocks_of_others(sid, claims);
+        zone_rocks_of_stations(claims);
         if (!g_hazard_rocks.empty() || !g_depleted_rocks.empty() || path_any || !claims.empty())
         {
             if (skip_ids) merged = *skip_ids;
@@ -1363,6 +1410,7 @@ namespace
         if (psk != g_path_skip.end()) skip.insert(psk->second.begin(), psk->second.end());
         rock_claims_of_others(sid, skip);
         zone_rocks_of_others(sid, skip);
+        zone_rocks_of_stations(skip);
         static std::vector<std::pair<double, RegRock>> cand;   // scratch (game thread only)
         if (m.abandon_id > 0) skip.insert(m.abandon_id);
         reg_nearest_n(sys, item, ps, &skip, PATH_PICK_M, PATH_CANDIDATES, cand);

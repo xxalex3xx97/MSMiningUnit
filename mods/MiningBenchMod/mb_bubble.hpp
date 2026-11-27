@@ -150,6 +150,7 @@ namespace
             g_beams.clear();
             return;
         }
+        st_zones_refresh();
         std::set<int> prev_blk;
         for (const auto& kv : g_ship_blk) prev_blk.insert(kv.first);
         g_ship_blk.clear();
@@ -197,6 +198,18 @@ namespace
                     hit = zone_hold_for(g_ship_blk.count(vid) > 0, ft != g_fire_t.end() ? ft->second : 0, vid, g_fire_t[sid], sid);
                 }
                 if (hit) { victim = vid; break; }
+            }
+            // station safe bubble: a ship inside it holds its laser (victim -1 = station, not a ship)
+            static std::set<std::pair<int, int>> st_seen;
+            if (!victim)
+            {
+                const int stid = station_zone_hit(bm.sys, bm.a, g_st_zones, g_cfg.station_zone_radius_m);
+                if (stid)
+                {
+                    victim = -1;
+                    if (zone_log_once(st_seen, sid, stid))
+                        log_line(STR("STZONE laser off ship=") + std::to_wstring(sid) + STR(" station=") + std::to_wstring(stid));
+                }
             }
             const bool held = g_beam_held.count(sid) > 0;
             const bool now_held = beam_hold_next(held, victim != 0, g_beam_clear_t[sid], dt);
