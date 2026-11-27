@@ -268,6 +268,7 @@ namespace
         if (v.k == NetVerdict::ERR) { subject = net_dock_label(cands.front()); return v; }
         if (pur == P_PARK && v.k == NetVerdict::WAIT) { net_drop_wait(g_net_docks, g_net_ships[sid]); NetVerdict e; e.k = NetVerdict::ERR; e.reason = NR_NOTHING_TO_UNLOAD; return e; }
         if (pur == P_FLEE && v.k == NetVerdict::GO) combat_log(STR("COMBAT flee dock chosen ship=") + std::to_wstring(sid) + STR(" dock=") + widen(net_dock_label(v.dock)));
+        if (fixed > 0) return v;   // manual Dock: simply dock, no ore-list check, nothing unloaded
         // ores unloaded at the chosen dock: cargo ores first, then (picker dock only) the other ores that list it
         std::vector<int> pool;
         for (int i = 0; i < N_ORE; ++i) if (has_docks[i] && in_cargo[i]) pool.push_back(i);
@@ -480,7 +481,7 @@ namespace
             { const std::wstring u = undock_first(sid, ship, v.dock, cmd, seq); if (!u.empty()) return u; }
             if (v.k == NetVerdict::WAIT) { tlog(STR("unload dock busy, ship ") + std::to_wstring(sid) + STR(" waits")); return STR("waiting dock"); }
             dk = v.dock;
-            if (unl.empty() && unlm.empty() && !g_flee_pick.count(sid) && !g_park_pick.count(sid)) return STR("error: no ore lists this dock");
+            if (unl.empty() && unlm.empty() && !g_flee_pick.count(sid) && !g_park_pick.count(sid) && fixed <= 0) return STR("error: no ore lists this dock");
         }
         // 4b. checks dock_order_issue would fail on: a job that would fail must not warp
         if (!int_array(ship, STR("OrderIDs"))) return STR("error: OrderIDs unreadable");

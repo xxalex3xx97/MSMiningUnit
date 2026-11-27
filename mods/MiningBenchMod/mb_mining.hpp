@@ -904,6 +904,14 @@ namespace
         m.wait_gate = LogGate(); m.q_gate = LogGate();   // a new trip starts its own wait lines
         if (r == STR("waiting dock")) { m.st = MS_TRIP; m.dwait = true; m.dwait_t = 0.0; m.dwait_shown = -1.0; dock_wait_text(sid, m); return; }
         if (r == STR("nothing to unload")) { g_flee_pick.erase(sid); const bool was_park = g_park_pick.erase(sid) != 0; if (m.leave && !was_park && park_try(ship, sid, m, STR("stopped"))) return; m.st = MS_HALT; mset(sid, m, STR("Nothing to unload")); return; }
+        // no dock (refuel: "no dock configured"; unload: "No unload dock configured for ...") on a button trip: park instead when a parking dock exists
+        if ((net_real_error(r) || r == STR("no dock configured")) && park_fallback_wanted(m.flee, g_dock_pick.count(sid) != 0, g_park_pick.count(sid) != 0, !eff_cfg(sid).park_docks.empty(), true) && m.btn)
+        {
+            g_park_pick.insert(sid);
+            mlog(sid, STR("No dock: parking instead"));
+            trip_begin(ship, sid, m, STR("no dock: parking"), "dock_mining");
+            return;
+        }
         if (net_real_error(r)) { g_flee_pick.erase(sid); g_park_pick.erase(sid); m.st = MS_HALT; m.err = true; mset(sid, m, STR("ERROR: ") + r.substr(7), STR("ERROR: ") + r.substr(7)); return; }
         if (r != STR("waiting")) { g_flee_pick.erase(sid); g_park_pick.erase(sid); m.st = MS_HALT; mset(sid, m, STR("dock trip failed: ") + r); return; }
         g_flee_pick.erase(sid);   // the flee pick is used up once its job runs

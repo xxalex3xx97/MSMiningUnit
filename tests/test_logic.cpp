@@ -1855,6 +1855,13 @@ static void t_parking()
     CHECK(!park_wanted({3}, 0, false, true));
     CHECK(!park_wanted({3}, 3, false, false));
     CHECK(park_wanted({3}, 0, false, false));
+    // park fallback (no dock, button trip): only with a parking dock, no flee, no Dock-at pick, not already parking
+    CHECK(park_fallback_wanted(false, false, false, true, true));
+    CHECK(!park_fallback_wanted(true, false, false, true, true));
+    CHECK(!park_fallback_wanted(false, true, false, true, true));
+    CHECK(!park_fallback_wanted(false, false, true, true, true));
+    CHECK(!park_fallback_wanted(false, false, false, false, true));
+    CHECK(!park_fallback_wanted(false, false, false, true, false));
     // manual parking_docks merged with tags; stripped from other lists
     reset_globals();
     g_dock_tags = {dock_tag_parse(9, "[PARKING]")};

@@ -317,6 +317,10 @@ namespace
     // WHAT: should an idle ship park now? Needs a parking dock, no user stop, no error, and not already docked at one.
     inline bool park_wanted(const std::vector<int>& ids, int docked_at, bool user_stop, bool err) {
         return !ids.empty() && !user_stop && !err && std::find(ids.begin(), ids.end(), docked_at) == ids.end(); }
+    // WHAT: should a refuel/unload button trip with no dock park instead? Needs a parking dock, no flee, no Dock-at pick, not already a park trip.
+    // WHY: user rule: no dock (or no space) -> go park; no parking dock or all busy -> the old error path.
+    inline bool park_fallback_wanted(bool flee, bool manual_pick, bool is_park, bool has_park, bool no_dock) {
+        return no_dock && has_park && !flee && !manual_pick && !is_park; }
     // WHAT: current queue row per ship id (runtime only; 0 = first row). Advanced by item_advance, reset by mine_cmd start.
     std::map<int, int> g_item_idx;
     // WHAT: copies the keys present in kv into c. An empty value counts as missing and keeps c's value.
