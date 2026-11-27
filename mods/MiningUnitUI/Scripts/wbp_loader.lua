@@ -459,8 +459,8 @@ local function modalTick()  -- search is view-only, never saved
   if m.build and os.clock() - m.t0 > (#m.opts == 0 and 1 or 2) then  -- ships.txt is empty for a few seconds after a save load and gains ships later: refetch, redraw only when the id list changed
     m.t0 = os.clock()
     local n, a, b = m.build() or {}, {}, {}
-    for i, o in ipairs(n) do a[i] = tostring(o.id) end
-    for i, o in ipairs(m.opts) do b[i] = tostring(o.id) end
+    for i, o in ipairs(n) do a[i] = tostring(o.id) .. "\1" .. tostring(o.text) end
+    for i, o in ipairs(m.opts) do b[i] = tostring(o.id) .. "\1" .. tostring(o.text) end
     if table.concat(a, ",") ~= table.concat(b, ",") then m.opts = n; modalRender() end
   end
   local e = w("Edt_ModalSearch"); if not e or not reading() then return end

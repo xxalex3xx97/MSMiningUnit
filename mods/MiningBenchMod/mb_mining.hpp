@@ -357,6 +357,7 @@ namespace
     // WHY: mining ships keep out of a fixed bubble (cfg station_zone_radius_m) around every station: no rock picking, no laser.
     constexpr ULONGLONG ST_ZONE_REFRESH_MS = 2000;
     std::vector<StZone> g_st_zones;
+    unsigned g_st_zones_gen = 0;   // bumped on every refresh pass: the station-rock cache rebuilds when it changes
     void st_zones_refresh()
     {
         static ULONGLONG next = 0;
@@ -364,11 +365,13 @@ namespace
         const ULONGLONG now = GetTickCount64();
         if (now < next) return;
         next = now + ST_ZONE_REFRESH_MS;
+        ++g_st_zones_gen;
         if (g_cfg.station_zone_radius_m <= 0) { g_st_zones.clear(); return; }
         if (buf.size() < 64) buf.resize(64);
         int n = ms_station_zones(buf.data(), static_cast<int>(buf.size()));
         if (n > static_cast<int>(buf.size())) { buf.resize(static_cast<size_t>(std::min(n, 4096))); n = ms_station_zones(buf.data(), static_cast<int>(buf.size())); }
-        if (n < 0) return;   // fault / module off: keep the last zones
+        if (n == -2) { g_st_zones.clear(); return; }   // module off: no stale bubbles
+        if (n < 0) return;   // fault: keep the last zones
         n = std::min(n, static_cast<int>(buf.size()));
         std::vector<StZone> z;
         for (int i = 0; i < n; ++i)
@@ -388,15 +391,24 @@ namespace
     {
         st_zones_refresh();
         static std::vector<RegRock> rocks;   // scratch (game thread only)
+        static std::set<int> cache;          // rebuilt only when the zone list refreshed (2 s) or the radius changed
+        static unsigned cache_gen = ~0u;
+        static double cache_r = -1.0;
         const double r = g_cfg.station_zone_radius_m;
-        for (const StZone& z : g_st_zones)
+        if (cache_gen != g_st_zones_gen || cache_r != r)
         {
-            const double lo[3] = {z.c[0] - r, z.c[1] - r, z.c[2] - r};
-            const double hi[3] = {z.c[0] + r, z.c[1] + r, z.c[2] + r};
-            reg_box(z.sys, lo, hi, rocks);
-            for (const RegRock& rk : rocks)
-                if (rk.alive && in_zone(rk.c, z.c, r)) out.insert(rk.id);
+            cache_gen = g_st_zones_gen; cache_r = r;
+            cache.clear();
+            for (const StZone& z : g_st_zones)
+            {
+                const double lo[3] = {z.c[0] - r, z.c[1] - r, z.c[2] - r};
+                const double hi[3] = {z.c[0] + r, z.c[1] + r, z.c[2] + r};
+                reg_box(z.sys, lo, hi, rocks);
+                for (const RegRock& rk : rocks)
+                    if (rk.alive && in_zone(rk.c, z.c, r)) cache.insert(rk.id);
+            }
         }
+        out.insert(cache.begin(), cache.end());
     }
 
     // nearest rock holding `item` measured from the anchor (not the ship); nullptr when none or outside the radius
