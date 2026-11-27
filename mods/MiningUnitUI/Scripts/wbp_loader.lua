@@ -456,8 +456,12 @@ end
 M.modalSelect = modalSelect
 local function modalTick()  -- search is view-only, never saved
   local m = S.modal; if not m then return end
-  if m.build and #m.opts == 0 and os.clock() - m.t0 > 1 then  -- ships.txt is empty for a few seconds after a save load: refetch until it fills
-    m.t0 = os.clock(); m.opts = m.build() or {}; modalRender()
+  if m.build and os.clock() - m.t0 > (#m.opts == 0 and 1 or 2) then  -- ships.txt is empty for a few seconds after a save load and gains ships later: refetch, redraw only when the id list changed
+    m.t0 = os.clock()
+    local n, a, b = m.build() or {}, {}, {}
+    for i, o in ipairs(n) do a[i] = tostring(o.id) end
+    for i, o in ipairs(m.opts) do b[i] = tostring(o.id) end
+    if table.concat(a, ",") ~= table.concat(b, ",") then m.opts = n; modalRender() end
   end
   local e = w("Edt_ModalSearch"); if not e or not reading() then return end
   local s, v = pcall(function() return e:GetText() end); if not s then return end
