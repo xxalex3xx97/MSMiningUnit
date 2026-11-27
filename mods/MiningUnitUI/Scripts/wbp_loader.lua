@@ -1973,6 +1973,15 @@ end
 -- one loop per open: stops when S.gen changes (M.close / next open). Work runs on the game thread.
 local function startLoop()
   local g = S.gen
+  -- UE4SS v4: game-thread timer, stop via CancelDelayedAction. Old UE4SS without it: LoopAsync + ExecuteInGameThread below.
+  if LoopInGameThreadWithDelay and CancelDelayedAction then
+    local h
+    local okL, res = pcall(LoopInGameThreadWithDelay, 500, function()
+      if g ~= S.gen then pcall(CancelDelayedAction, h) return end
+      if ok(S.root) then try("refresh", refresh) end
+    end)
+    if okL then h = res; return end
+  end
   LoopAsync(500, function()
     if g ~= S.gen then return true end
     ExecuteInGameThread(function()

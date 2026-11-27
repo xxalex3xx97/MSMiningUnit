@@ -161,6 +161,8 @@ local function dfApply()
     end
   end
 end
-pcall(LoopAsync, 5000, function() pcall(ExecuteInGameThread, function() pcall(dfApply) end) return false end)
+-- UE4SS v4: game-thread timer (LoopAsync is deprecated and runs Lua off-thread). Old UE4SS: LoopAsync fallback.
+local dfOkL = LoopInGameThreadWithDelay and pcall(LoopInGameThreadWithDelay, 5000, function() pcall(dfApply) end)
+if not dfOkL then pcall(LoopAsync, 5000, function() pcall(ExecuteInGameThread, function() pcall(dfApply) end) return false end) end
 
 print(TAG .. "loaded. F4 = fleet window, block interact = Mining Unit window\n")
