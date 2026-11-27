@@ -128,6 +128,16 @@ namespace
                     }
                 }
             }
+            if (id > 0)
+            {   // SHIPGATE: one line per ship, only when its read changes (why a ship is or is not in the mining list)
+                static std::map<int, std::string> gate_sig;
+                const std::string sig = std::to_string(bb) + "," + std::to_string(so) + "," + std::to_string(lavail) + "," + (has ? "1" : "0") + (dead ? "d" : "");
+                if (gate_sig[id] != sig)
+                {
+                    gate_sig[id] = sig;
+                    log_line(STR("SHIPGATE ship=") + std::to_wstring(id) + STR(" bench_bb=") + std::to_wstring(bb) + STR(" bench_sub=") + std::to_wstring(so) + STR(" laser_avail=") + std::to_wstring(lavail) + STR(" listed=") + (has ? STR("1") : STR("0")));
+                }
+            }
             if (id > 0) txt += std::to_string(id) + "|" + u8(name) + "|" + (has && !dead ? "1" : "0") + "\n";
             if (dead)
             {
