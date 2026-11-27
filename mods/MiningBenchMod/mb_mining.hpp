@@ -581,7 +581,7 @@ namespace
                 if (!al || r.sys <= 0 || !get_chunk(o, r.c)) continue;
                 e.second.push_back(r);
             }
-            log_line(STR("SAVEROCK ") + item->GetName() + STR(" alive save rocks=") + std::to_wstring(e.second.size()));
+            if (g_debug) log_line(STR("SAVEROCK ") + item->GetName() + STR(" alive save rocks=") + std::to_wstring(e.second.size()));
         }
         // WHY: a rock that was picked many times and still gave no actor in range (mined out, or loaded but outside the radius) is skipped, so the next nearest is tried.
         auto& picks = save_rock_picks()[sid];
@@ -3690,7 +3690,7 @@ namespace
             if (m.clog_t >= 30.0)
             {
                 m.clog_t = 0.0;
-                log_line(STR("MINE cargo ship=") + std::to_wstring(sid) + STR(" slots=") + std::to_wstring(slots) + STR(" fuel_slots=") + std::to_wstring(fuel_s) +
+                if (g_debug) log_line(STR("MINE cargo ship=") + std::to_wstring(sid) + STR(" slots=") + std::to_wstring(slots) + STR(" fuel_slots=") + std::to_wstring(fuel_s) +
                          STR(" other_slots=") + std::to_wstring(other_s) + STR(" pct=") + std::to_wstring(m.cargo_pct));
             }
             m.eta_left = (m.st == MS_HOLD) ? hold_left(ship, sid, c, m.trip) : -1;
